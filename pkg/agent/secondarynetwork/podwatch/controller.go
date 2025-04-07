@@ -555,7 +555,11 @@ func (pc *PodController) Run(stopCh <-chan struct{}) {
 }
 
 func checkForPodSecondaryNetworkAttachment(pod *corev1.Pod) (string, bool) {
-	netObj, netObjExist := pod.GetAnnotations()[netdefv1.NetworkAttachmentAnnot]
+	annotations := pod.GetAnnotations()
+	if annotations == nil {
+		return "", false
+	}
+	netObj, netObjExist := annotations[netdefv1.NetworkAttachmentAnnot]
 	return netObj, netObjExist
 }
 
