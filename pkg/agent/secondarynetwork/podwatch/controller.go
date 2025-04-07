@@ -461,30 +461,29 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 		res, err := pc.configureSecondaryInterface(pod, network, resourceName, podCNIInfo, networkConfig)
 		if err != nil {
 			klog.ErrorS(err, "Secondary interface configuration failed",
-				"Pod", klog.KRef(pod.Namespace, pod.Name), "interface", network.InterfaceRequest,
+				"Pod", klog.KObj(pod), "interface", network.InterfaceRequest,
 				"networkType", networkConfig.NetworkType)
 			savedErr = err
-		} else {
-			interfacesConfigured++
+			continue
 		}
-		if res != nil {
-			status := &netdefv1.NetworkStatus{}
-			status.Name = network.Name
-			status.Default = false
-
-			for _, ifs := range res.Interfaces {
-				if ifs.Sandbox != "" {
-					status.Interface = ifs.Name
-					status.Mac = ifs.Mac
-				}
-			}
-
-			for _, ipconfig := range res.IPs {
-				status.IPs = append(status.IPs, ipconfig.Address.IP.String())
-			}
-
-			netStatus = append(netStatus, *status)
+		status := &netdefv1.NetworkStatus{
+			Name:    network.Name,
+			Default: false, // interface is not for the default Pod network
 		}
+
+		for _, iface := range res.Interfaces {
+			if iface.Sandbox != "" {
+				status.Interface = iface.Name
+				status.Mac = iface.Mac
+			}
+		}
+
+		for _, ip := range res.IPs {
+			status.IPs = append(status.IPs, ip.Address.IP.String())
+		}
+
+		netStatus = append(netStatus, *status)
+		interfacesConfigured++
 	}
 
 	if savedErr != nil && interfacesConfigured == 0 {
@@ -496,9 +495,9 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 	// Update the Pod's network status annotation
 	if netStatus != nil {
 		if err := netdefutils.SetNetworkStatus(pc.kubeClient, pod, netStatus); err != nil {
-			klog.ErrorS(err, "Pod network status annotation update failed", "Pod", klog.KRef(pod.Namespace, pod.Name))
+			klog.ErrorS(err, "Pod network status annotation update failed", "Pod", klog.KObj(pod))
 		} else {
-			klog.V(2).InfoS("Pod network status annotation updated", "Pod", klog.KRef(pod.Namespace, pod.Name), "NetworkStatus", netStatus)
+			klog.V(2).InfoS("Pod network status annotation updated", "Pod", klog.KObj(pod), "NetworkStatus", netStatus)
 		}
 	}
 	return nil

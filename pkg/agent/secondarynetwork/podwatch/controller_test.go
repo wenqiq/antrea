@@ -608,7 +608,7 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 				updatedPod, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 				require.NoError(t, err)
 				networkStatusAnnot, ok := updatedPod.GetAnnotations()[netdefv1.NetworkStatusAnnot]
-				assert.True(t, ok, "Annotations not contains NetworkStatusAnnot", "res", networkStatusAnnot)
+				require.True(t, ok, "Annotations not contains NetworkStatusAnnot", "res", networkStatusAnnot)
 				assert.Equal(t, tc.expectedNetworkStatusAnnot, networkStatusAnnot)
 			}
 		})
