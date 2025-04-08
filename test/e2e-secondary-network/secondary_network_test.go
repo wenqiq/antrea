@@ -478,14 +478,21 @@ func (data *testData) assertPodAnnotation(t *testing.T, pods []*testPodInfo, cli
 		return false
 	}
 	for _, pod := range pods {
-		podActual, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), pod.podName, metav1.GetOptions{})
-		if err != nil {
+		var networkStatus []v1.NetworkStatus
+		if err := wait.PollUntilContextTimeout(context.Background(), time.Second, 10*time.Second, false, func(ctx context.Context) (done bool, err error) {
+			podActual, err := clientset.CoreV1().Pods(namespace).Get(ctx, pod.podName, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			networkStatus, err = utils.GetNetworkStatus(podActual)
+			if err != nil {
+				return false, nil
+			}
+			return true, nil
+		}); err != nil {
 			return err
 		}
-		networkStatus, err := utils.GetNetworkStatus(podActual)
-		if err != nil {
-			return err
-		}
+
 		for inf, name := range pod.interfaceNetworks {
 			expectNetworkStatus := v1.NetworkStatus{
 				Name:      name,
@@ -519,24 +526,20 @@ func TestSRIOVNetwork(t *testing.T) {
 
 	testData := &testData{e2eTestData: e2eTestData, networkType: networkTypeSriov, pods: pods}
 
-	err = testData.createPods(t, e2eTestData.GetTestNamespace())
-	if err != nil {
+	if err := testData.createPods(t, e2eTestData.GetTestNamespace()); err != nil {
 		t.Fatalf("Error when create test Pods: %v", err)
 	}
 	clientset, err := kubernetes.NewForConfig(e2eTestData.KubeConfig)
 	if err != nil {
 		t.Fatalf("Error when creating kubernetes client: %v", err)
 	}
-	err = testData.assertPodAnnotation(t, pods, clientset)
-	if err != nil {
+	if err := testData.assertPodAnnotation(t, pods, clientset); err != nil {
 		t.Fatalf("Error when checking the Pod annotation: %v", err)
 	}
-	err = testData.assignIP(clientset)
-	if err != nil {
+	if err := testData.assignIP(clientset); err != nil {
 		t.Fatalf("Error when assign IP to ec2 instance: %v", err)
 	}
-	err = testData.pingBetweenInterfaces(t)
-	if err != nil {
+	if err := testData.pingBetweenInterfaces(t); err != nil {
 		t.Fatalf("Error when pinging between interfaces: %v", err)
 	}
 }
