@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	v1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	netattdef "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
+	"github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 	logs "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -484,6 +486,33 @@ func (data *testData) assignIP(clientset *kubernetes.Clientset) error {
 	return nil
 }
 
+func (data *testData) assertPodAnnotation(t *testing.T, pods []*testPodInfo, clientset *kubernetes.Clientset) error {
+	namespace := data.e2eTestData.GetTestNamespace()
+	assertNetworkStatusContains := func(networkStatus []v1.NetworkStatus, expectNetworkStatus v1.NetworkStatus) bool {
+		for _, status := range networkStatus {
+			if status.Name == expectNetworkStatus.Name && status.Interface == expectNetworkStatus.Interface {
+				return true
+			}
+		}
+		return false
+	}
+	for _, pod := range pods {
+		podActual, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), pod.podName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		networkStatus, err := utils.GetNetworkStatus(podActual)
+		if err != nil {
+			return err
+		}
+		expectNetworkStatus := v1.NetworkStatus{
+			Name:      "sriov-net1",
+			Interface: "eth1",
+		}
+		assert.True(t, assertNetworkStatusContains(networkStatus, expectNetworkStatus), "The Pod network-status annotation is not expected")
+	}
+}
+
 func TestSRIOVNetwork(t *testing.T) {
 	e2eTestData, err := antreae2e.SetupTest(t)
 	if err != nil {
@@ -512,7 +541,11 @@ func TestSRIOVNetwork(t *testing.T) {
 	}
 	clientset, err := kubernetes.NewForConfig(e2eTestData.KubeConfig)
 	if err != nil {
-		t.Fatalf("error when creating kubernetes client: %v", err)
+		t.Fatalf("Error when creating kubernetes client: %v", err)
+	}
+	err = testData.assertPodAnnotation(t, pods, clientset)
+	if err != nil {
+		t.Fatalf("Error when checking the Pod annotation: %v", err)
 	}
 	err = testData.assignIP(clientset)
 	if err != nil {
