@@ -311,7 +311,7 @@ func (data *testData) getOVSPortsOnSecondaryBridge(t *testing.T, nodeName string
 }
 
 // reconcilationAfterAgentRestart verifies OVS Ports cleanup and IP release.
-func (data *testData) reconcilationAfterAgentRestart(t *testing.T) {
+func (data *testData) reconcilationAfterAgentRestart(t *testing.T) error {
 	beforeAgentRestartOvsPorts := make(map[string][]string)
 	beforeAgentRestartIPsAndIfaces := make(map[string]map[string]net.IP)
 	for _, pod := range data.pods {
@@ -369,7 +369,7 @@ func (data *testData) reconcilationAfterAgentRestart(t *testing.T) {
 
 	assert.NotEqual(t, beforeDeletionOvsPorts, afterDeletionOvsPorts, "OVS Ports for VLAN Pod still exist")
 
-	data.checkIPReleased(ipPools, ifacesIPs, ifaces)
+	return data.checkIPReleased(ipPools, ifacesIPs, ifaces)
 }
 
 func testSecondaryNetwork(t *testing.T, networkType string, pods []*testPodInfo) {
@@ -381,41 +381,22 @@ func testSecondaryNetwork(t *testing.T, networkType string, pods []*testPodInfo)
 
 	testData := &testData{e2eTestData: e2eTestData, networkType: networkType, pods: pods}
 
-	t.Run("testCreateTestPodOnNode", func(t *testing.T) {
-		err := testData.createPods(t, e2eTestData.GetTestNamespace())
-		require.NoError(t, err, "Error when create test Pods")
-	})
-	t.Run("testPingBetweenInterfaces", func(t *testing.T) {
-		err := testData.pingBetweenInterfaces(t)
-		require.NoError(t, err, "Error when pinging between interfaces")
-	})
-	t.Run("testReconcilationAfterAgentRestart", func(t *testing.T) {
-		testData.reconcilationAfterAgentRestart(t)
-	})
-}
-
-func TestSriovNetwork(t *testing.T) {
-	// Create Pods on the control plane Node, assuming a single Node cluster for the SR-IOV
-	// test.
-	nodeName := antreae2e.NodeName(0)
-	pods := []*testPodInfo{
-		{
-			podName:           "sriov-pod1",
-			nodeName:          nodeName,
-			interfaceNetworks: map[string]string{"eth1": "sriov-net1", "eth2": "sriov-net2"},
-		},
-		{
-			podName:           "sriov-pod2",
-			nodeName:          nodeName,
-			interfaceNetworks: map[string]string{"eth2": "sriov-net1", "eth3": "sriov-net3"},
-		},
-		{
-			podName:           "sriov-pod3",
-			nodeName:          nodeName,
-			interfaceNetworks: map[string]string{"eth4": "sriov-net1"},
-		},
+	if err := testData.createPods(t, e2eTestData.GetTestNamespace()); err != nil {
+		t.Fatalf("Error when create test Pods: %v", err)
 	}
-	testSecondaryNetwork(t, networkTypeSriov, pods)
+	clientset, err := kubernetes.NewForConfig(e2eTestData.KubeConfig)
+	if err != nil {
+		t.Fatalf("Error when creating kubernetes client: %v", err)
+	}
+	if err := testData.assertPodAnnotation(t, pods, clientset); err != nil {
+		t.Fatalf("Error when checking the Pod annotation: %v", err)
+	}
+	if err := testData.pingBetweenInterfaces(t); err != nil {
+		t.Fatalf("Error when pinging between interfaces: %v", err)
+	}
+	if err := testData.reconcilationAfterAgentRestart(t); err != nil {
+		t.Fatalf("Error when testReconcilationAfterAgentRestart: %v", err)
+	}
 }
 
 func TestVLANNetwork(t *testing.T) {
@@ -505,12 +486,15 @@ func (data *testData) assertPodAnnotation(t *testing.T, pods []*testPodInfo, cli
 		if err != nil {
 			return err
 		}
-		expectNetworkStatus := v1.NetworkStatus{
-			Name:      "sriov-net1",
-			Interface: "eth1",
+		for inf, name := range pod.interfaceNetworks {
+			expectNetworkStatus := v1.NetworkStatus{
+				Name:      name,
+				Interface: inf,
+			}
+			assert.True(t, assertNetworkStatusContains(networkStatus, expectNetworkStatus), "The Pod network-status annotation is not expected")
 		}
-		assert.True(t, assertNetworkStatusContains(networkStatus, expectNetworkStatus), "The Pod network-status annotation is not expected")
 	}
+	return nil
 }
 
 func TestSRIOVNetwork(t *testing.T) {
