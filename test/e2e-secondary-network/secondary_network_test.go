@@ -486,7 +486,7 @@ func (data *testData) assertPodAnnotation(t *testing.T, pods []*testPodInfo, cli
 			}
 			t.Logf("GetNetworkStatus: %+v", podActual.Annotations)
 			networkStatus, err = utils.GetNetworkStatus(podActual)
-			if err != nil {
+			if err != nil || len(networkStatus) != (len(pod.interfaceNetworks)+1) {
 				return false, nil
 			}
 			return true, nil

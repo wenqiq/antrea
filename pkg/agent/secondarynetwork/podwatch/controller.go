@@ -497,6 +497,7 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 	if netStatus != nil {
 		podActual, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 		if err != nil {
+			klog.ErrorS(err, "Get Pod failed", "Pod", klog.KObj(pod))
 			return err
 		}
 		oldNetworkStatus, err := netdefutils.GetNetworkStatus(podActual)
