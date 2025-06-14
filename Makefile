@@ -123,6 +123,11 @@ antrea-agent-simulator:
 	@mkdir -p $(BINDIR)
 	GOOS=linux $(GO) build -o $(BINDIR) $(GOFLAGS) -ldflags '$(LDFLAGS)' antrea.io/antrea/cmd/antrea-agent-simulator
 
+.PHONY: antrea-scale
+antrea-scale:
+	@mkdir -p $(BINDIR)
+	GOOS=linux $(GO) build -o $(BINDIR) $(GOFLAGS) -ldflags '$(LDFLAGS)' antrea.io/antrea/cmd/antrea-scale
+
 .PHONY: antrea-agent-instr-binary
 antrea-agent-instr-binary:
 	@mkdir -p $(BINDIR)
@@ -380,6 +385,7 @@ build-agent-ubuntu:
 	@echo "===> Building antrea/antrea-agent-ubuntu Docker image <==="
 	docker build -t antrea/antrea-agent-ubuntu:$(DOCKER_IMG_VERSION) -f build/images/Dockerfile.build.agent.ubuntu $(DOCKER_BUILD_ARGS) .
 	docker tag antrea/antrea-agent-ubuntu:$(DOCKER_IMG_VERSION) antrea/antrea-agent-ubuntu
+
 
 # These 2 targets are here for "backwards-compatibility". They will build the agent and controller
 # images for the requested distribution.
