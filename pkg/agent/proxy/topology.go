@@ -115,36 +115,39 @@ func (p *proxier) categorizeEndpoints(endpoints map[string]k8sproxy.Endpoint, sv
 
 // canUseTopology returns true if topology aware routing is enabled and properly configured in this cluster. That is,
 // it checks that:
-// - The TopologyAwareHints feature is enabled.
-// - The "service.kubernetes.io/topology-aware-hints" annotation on this Service is set to "Auto".
-// - The node's labels include "topology.kubernetes.io/zone".
-// - All of the Endpoints for this Service have a topology hint.
-// - At least one Endpoint for this Service is hinted for this Node's zone.
+//   - The TopologyAwareHints or ServiceTrafficDistribution feature is enabled.
+//   - If ServiceTrafficDistribution feature is not enabled, then the "service.kubernetes.io/topology-aware-hints"
+//     annotation on this Service should be set to "Auto" or "auto".
+//   - The node's labels include "topology.kubernetes.io/zone".
+//   - All of the Endpoints for this Service have a topology hint.
+//   - At least one Endpoint for this Service is hinted for this Node's zone.
 func (p *proxier) canUseTopology(endpoints map[string]k8sproxy.Endpoint, svcInfo k8sproxy.ServicePort) bool {
-	if !p.topologyAwareHintsEnabled {
+	if !p.topologyAwareHintsEnabled && !p.serviceTrafficDistributionEnabled {
 		return false
 	}
-	hintsAnnotation := svcInfo.HintsAnnotation()
-	if hintsAnnotation != "Auto" && hintsAnnotation != "auto" {
-		if hintsAnnotation != "" && hintsAnnotation != "Disabled" && hintsAnnotation != "disabled" {
-			klog.InfoS("Skipping topology aware Endpoint filtering since Service has unexpected value", "annotationTopologyAwareHints", v1.AnnotationTopologyAwareHints, "hints", hintsAnnotation)
+	if !p.serviceTrafficDistributionEnabled {
+		// Any non-empty and non-disabled values for the hints annotation are acceptable.
+		hintsAnnotation := svcInfo.HintsAnnotation()
+		if hintsAnnotation == "" || hintsAnnotation == "disabled" || hintsAnnotation == "Disabled" {
+			return false
 		}
-		return false
 	}
 
-	zone, ok := p.nodeLabels[v1.LabelTopologyZone]
-	if !ok || zone == "" {
-		klog.InfoS("Skipping topology aware Endpoint filtering since Node is missing label", "label", v1.LabelTopologyZone)
-		return false
-	}
-
+	zone, foundZone := p.nodeLabels[v1.LabelTopologyZone]
 	hasEndpointForZone := false
 	for _, endpoint := range endpoints {
 		if !endpoint.IsReady() {
 			continue
 		}
+		// If any of the Endpoints do not have zone hints, we bail out.
 		if endpoint.GetZoneHints().Len() == 0 {
-			klog.InfoS("Skipping topology aware Endpoint filtering since one or more Endpoints is missing a zone hint")
+			klog.V(7).InfoS("Skipping topology aware Endpoint filtering since one or more Endpoints is missing a zone hint")
+			return false
+		}
+		// If we've made it this far, we have Endpoints with hints set. Now we check if there is a zone label, if
+		// there isn't one we log a warning and bail out.
+		if !foundZone || zone == "" {
+			klog.V(2).InfoS("Skipping topology aware Endpoint filtering since Node is missing label", "label", v1.LabelTopologyZone)
 			return false
 		}
 		if endpoint.GetZoneHints().Has(zone) {
@@ -153,7 +156,7 @@ func (p *proxier) canUseTopology(endpoints map[string]k8sproxy.Endpoint, svcInfo
 	}
 
 	if !hasEndpointForZone {
-		klog.InfoS("Skipping topology aware Endpoint filtering since no hints were provided for zone", "zone", zone)
+		klog.V(7).InfoS("Skipping topology aware Endpoint filtering since no hints were provided for zone", "zone", zone)
 		return false
 	}
 

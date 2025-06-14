@@ -45,20 +45,21 @@ func checkExpectedEndpoints(expected sets.Set[string], actual []k8sproxy.Endpoin
 
 func TestCategorizeEndpoints(t *testing.T) {
 	testCases := []struct {
-		name             string
-		hintsEnabled     bool
-		nodeLabels       map[string]string
-		serviceInfo      k8sproxy.ServicePort
-		endpoints        map[string]k8sproxy.Endpoint
-		clusterEndpoints sets.Set[string]
-		localEndpoints   sets.Set[string]
-		allEndpoints     sets.Set[string]
+		name               string
+		hintsEnabled       bool
+		trafficDistEnabled bool
+		nodeLabels         map[string]string
+		serviceInfo        k8sproxy.ServicePort
+		endpoints          map[string]k8sproxy.Endpoint
+		clusterEndpoints   sets.Set[string]
+		localEndpoints     sets.Set[string]
+		allEndpoints       sets.Set[string]
 	}{
 		{
 			name:         "hints enabled, hints annotation == auto",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -72,7 +73,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "hints enabled, hints annotation == disabled, hints ignored",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "disabled"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "disabled"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -86,7 +87,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "hints disabled, hints annotation == auto",
 			hintsEnabled: false,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -97,24 +98,24 @@ func TestCategorizeEndpoints(t *testing.T) {
 			localEndpoints:   nil,
 		},
 		{
-			name:         "hints enabled, hints annotation == aUto (wrong capitalization), hints ignored",
+			name:         "hints enabled, hints annotation == aUto (wrong capitalization), hints no longer ignored",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "aUto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "aUto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
 				"10.1.2.5:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.5:80", ZoneHints: sets.New[string]("zone-c"), Ready: true},
 				"10.1.2.6:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.6:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 			},
-			clusterEndpoints: sets.New[string]("10.1.2.3:80", "10.1.2.4:80", "10.1.2.5:80", "10.1.2.6:80"),
+			clusterEndpoints: sets.New[string]("10.1.2.3:80", "10.1.2.6:80"),
 			localEndpoints:   nil,
 		},
 		{
 			name:         "hints enabled, hints annotation empty, hints ignored",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, ""),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -125,10 +126,41 @@ func TestCategorizeEndpoints(t *testing.T) {
 			localEndpoints:   nil,
 		},
 		{
-			name:         "eTP: Local, topology ignored for Local endpoints",
-			hintsEnabled: true,
-			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, false, nil, "auto"),
+			name:               "hints enabled, hints annotation empty but trafficDist enabled, hints are not ignored",
+			hintsEnabled:       true,
+			trafficDistEnabled: true,
+			nodeLabels:         map[string]string{v1.LabelTopologyZone: "zone-a"},
+			serviceInfo:        k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
+			endpoints: map[string]k8sproxy.Endpoint{
+				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
+				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
+				"10.1.2.5:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.5:80", ZoneHints: sets.New[string]("zone-c"), Ready: true},
+				"10.1.2.6:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.6:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
+			},
+			clusterEndpoints: sets.New[string]("10.1.2.3:80", "10.1.2.6:80"),
+			localEndpoints:   nil,
+		},
+		{
+			name:               "hints disabled, trafficDist enabled, hints are not ignored",
+			hintsEnabled:       true,
+			trafficDistEnabled: true,
+			nodeLabels:         map[string]string{v1.LabelTopologyZone: "zone-a"},
+			serviceInfo:        k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
+			endpoints: map[string]k8sproxy.Endpoint{
+				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
+				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
+				"10.1.2.5:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.5:80", ZoneHints: sets.New[string]("zone-c"), Ready: true},
+				"10.1.2.6:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.6:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
+			},
+			clusterEndpoints: sets.New[string]("10.1.2.3:80", "10.1.2.6:80"),
+			localEndpoints:   nil,
+		},
+		{
+			name:               "eTP: Local, topology ignored for Local endpoints",
+			hintsEnabled:       true,
+			trafficDistEnabled: true,
+			nodeLabels:         map[string]string{v1.LabelTopologyZone: "zone-a"},
+			serviceInfo:        k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true, IsLocal: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true, IsLocal: true},
@@ -140,10 +172,11 @@ func TestCategorizeEndpoints(t *testing.T) {
 			allEndpoints:     sets.New[string]("10.1.2.3:80", "10.1.2.4:80", "10.1.2.6:80"),
 		},
 		{
-			name:         "iTP: Local, topology ignored for Local endpoints",
-			hintsEnabled: true,
-			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, "auto"),
+			name:               "iTP: Local, topology ignored for Local endpoints",
+			hintsEnabled:       true,
+			trafficDistEnabled: true,
+			nodeLabels:         map[string]string{v1.LabelTopologyZone: "zone-a"},
+			serviceInfo:        k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, false, true, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true, IsLocal: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true, IsLocal: true},
@@ -158,7 +191,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "empty node labels",
 			hintsEnabled: true,
 			nodeLabels:   nil,
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 			},
@@ -169,7 +202,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "empty zone label",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: ""},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 			},
@@ -180,7 +213,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "node in different zone, no endpoint filtering",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-b"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.5:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.5:80", ZoneHints: sets.New[string]("zone-c"), Ready: true},
@@ -192,7 +225,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "normal endpoint filtering, auto annotation",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -206,7 +239,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "unready endpoint",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -220,7 +253,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "only unready endpoints in same zone (should not filter)",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: false},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -234,7 +267,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "normal endpoint filtering, Auto annotation",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "Auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "Auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -248,7 +281,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "hintsAnnotation empty, no filtering applied",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, ""),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -262,7 +295,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "hintsAnnotation disabled, no filtering applied",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "disabled"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "disabled"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -276,7 +309,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "missing hints, no filtering applied",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b"), Ready: true},
@@ -290,7 +323,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "multiple hints per endpoint, filtering includes any endpoint with zone included",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-c"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.1.2.3:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.3:80", ZoneHints: sets.New[string]("zone-a", "zone-b", "zone-c"), Ready: true},
 				"10.1.2.4:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.1.2.4:80", ZoneHints: sets.New[string]("zone-b", "zone-c"), Ready: true},
@@ -304,7 +337,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 			name:         "conflicting topology and localness require merging allEndpoints",
 			hintsEnabled: true,
 			nodeLabels:   map[string]string{v1.LabelTopologyZone: "zone-a"},
-			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, "auto"),
+			serviceInfo:  k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, false, true, nil, "auto"),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", ZoneHints: sets.New[string]("zone-a"), Ready: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", ZoneHints: sets.New[string]("zone-b"), Ready: true, IsLocal: true},
@@ -317,7 +350,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:             "iTP: Local, with empty endpoints",
-			serviceInfo:      k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, ""),
+			serviceInfo:      k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, true, nil, ""),
 			endpoints:        map[string]k8sproxy.Endpoint{},
 			clusterEndpoints: nil,
 			localEndpoints:   sets.New[string](),
@@ -325,7 +358,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 
 		{
 			name:        "iTP: Local, but all endpoints are remote",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: false},
@@ -335,7 +368,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, all endpoints are local",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: true},
@@ -345,7 +378,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, some endpoints are local",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: false},
@@ -355,7 +388,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "Cluster traffic policy, endpoints not Ready",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: false},
@@ -365,7 +398,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "Cluster traffic policy, some endpoints are Ready",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true},
@@ -375,7 +408,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "Cluster traffic policy, all endpoints are terminating",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, false, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: false, Serving: true, Terminating: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: false, Serving: true, Terminating: true, IsLocal: false},
@@ -385,7 +418,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, eTP: Cluster, some endpoints local",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, false, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: false},
@@ -396,7 +429,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Cluster, eTP: Local, some endpoints local",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, false, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: false},
@@ -407,7 +440,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, eTP: Local, some endpoints local",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: true},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: false},
@@ -418,7 +451,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, eTP: Local, all endpoints remote",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: false},
@@ -429,7 +462,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, eTP: Local, all endpoints remote and terminating",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: false, Serving: true, Terminating: true, IsLocal: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: false, Serving: true, Terminating: true, IsLocal: false},
@@ -440,7 +473,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Local, eTP: Local, all endpoints remote and terminating",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: false, Serving: true, Terminating: true, IsLocal: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: false, Serving: true, Terminating: true, IsLocal: false},
@@ -451,7 +484,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "iTP: Cluster, eTP: Local, with terminating endpoints",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, true, false, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 8080, nil, "", 0, nil, nil, 0, true, false, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: false, Serving: false, IsLocal: true},
@@ -464,7 +497,7 @@ func TestCategorizeEndpoints(t *testing.T) {
 		},
 		{
 			name:        "no cluster endpoints for iTP:Local internal-only service",
-			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, v1.LoadBalancerStatus{}, "", 0, nil, nil, 0, false, true, nil, ""),
+			serviceInfo: k8sproxy.NewBaseServiceInfo(net.ParseIP("10.96.0.1"), 80, v1.ProtocolTCP, 0, nil, "", 0, nil, nil, 0, false, true, nil, ""),
 			endpoints: map[string]k8sproxy.Endpoint{
 				"10.0.0.0:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.0:80", Ready: true, IsLocal: false},
 				"10.0.0.1:80": &k8sproxy.BaseEndpointInfo{Endpoint: "10.0.0.1:80", Ready: true, IsLocal: true},
@@ -477,8 +510,9 @@ func TestCategorizeEndpoints(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			fp := &proxier{nodeLabels: tc.nodeLabels,
-				endpointSliceEnabled:      true,
-				topologyAwareHintsEnabled: tc.hintsEnabled}
+				endpointSliceEnabled:              true,
+				topologyAwareHintsEnabled:         tc.hintsEnabled,
+				serviceTrafficDistributionEnabled: tc.trafficDistEnabled}
 
 			clusterEndpoints, localEndpoints, allEndpoints := fp.categorizeEndpoints(tc.endpoints, tc.serviceInfo)
 

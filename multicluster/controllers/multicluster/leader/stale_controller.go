@@ -19,6 +19,7 @@ package leader
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,7 +32,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	mcv1alpha1 "antrea.io/antrea/multicluster/apis/multicluster/v1alpha1"
-	"antrea.io/antrea/multicluster/controllers/multicluster/common"
 	"antrea.io/antrea/multicluster/controllers/multicluster/commonarea"
 )
 
@@ -97,7 +97,7 @@ func (c *StaleResCleanupController) Run(stopCh <-chan struct{}) {
 	klog.InfoS("Starting StaleResCleanupController")
 	defer klog.InfoS("Shutting down StaleResCleanupController")
 
-	ctx, _ := wait.ContextForChannel(stopCh)
+	ctx := wait.ContextForChannel(stopCh)
 	go wait.UntilWithContext(ctx, c.cleanUpExpiredMemberClusterAnnounces, memberClusterAnnounceStaleTime/2)
 	<-stopCh
 }
@@ -127,8 +127,10 @@ func (c *StaleResCleanupController) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// When cleanup is done, remove the Finalizer of this MemberClusterAnnounce.
-	finalizer := fmt.Sprintf("%s/%s", MemberClusterAnnounceFinalizer, memberAnnounce.ClusterID)
-	memberAnnounce.Finalizers = common.RemoveStringFromSlice(memberAnnounce.Finalizers, finalizer)
+	finalizerToRemove := fmt.Sprintf("%s/%s", MemberClusterAnnounceFinalizer, memberAnnounce.ClusterID)
+	memberAnnounce.Finalizers = slices.DeleteFunc(slices.Clone(memberAnnounce.Finalizers), func(s string) bool {
+		return s == finalizerToRemove
+	})
 	if err := c.Update(context.TODO(), memberAnnounce); err != nil {
 		klog.ErrorS(err, "Failed to update MemberClusterAnnounce", "MemberClusterAnnounce", klog.KObj(memberAnnounce))
 		return ctrl.Result{}, err
@@ -149,6 +151,7 @@ func (c *StaleResCleanupController) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcv1alpha1.MemberClusterAnnounce{}).
+		Named("memberclusterannounce_stale").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 1,
 		}).

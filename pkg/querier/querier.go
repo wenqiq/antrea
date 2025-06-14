@@ -15,9 +15,16 @@
 package querier
 
 import (
+	"context"
+	"regexp"
+
 	v1 "k8s.io/api/core/v1"
 	apitypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 
+	"antrea.io/antrea/pkg/agent/apis"
+	"antrea.io/antrea/pkg/agent/bgp"
+	bgpcontroller "antrea.io/antrea/pkg/agent/controller/bgp"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/multicast"
 	"antrea.io/antrea/pkg/agent/types"
@@ -41,6 +48,7 @@ type AgentNetworkPolicyInfoQuerier interface {
 	GetAppliedNetworkPolicies(pod, namespace string, npFilter *NetworkPolicyQueryFilter) []cpv1beta.NetworkPolicy
 	GetNetworkPolicyByRuleFlowID(ruleFlowID uint32) *cpv1beta.NetworkPolicyReference
 	GetRuleByFlowID(ruleFlowID uint32) *types.PolicyRule
+	GetFQDNCache(fqdnFilter *FQDNCacheFilter) []types.DnsCacheEntry
 }
 
 type AgentMulticastInfoQuerier interface {
@@ -62,7 +70,7 @@ type ControllerNetworkPolicyInfoQuerier interface {
 
 type EgressQuerier interface {
 	GetEgressIPByMark(mark uint32) (string, error)
-	GetEgress(podNamespace, podName string) (string, string, error)
+	GetEgress(podNamespace, podName string) (string, string, string, error)
 }
 
 // GetSelfPod gets current pod.
@@ -95,6 +103,12 @@ func GetVersion() string {
 	return version.GetFullVersion()
 }
 
+// FQDNCacheFilter is used to filter the result while retrieving FQDN cache
+type FQDNCacheFilter struct {
+	// The Name or wildcard matching expression of the domain that is being filtered
+	DomainRegex *regexp.Regexp
+}
+
 // NetworkPolicyQueryFilter is used to filter the result while retrieve network policy
 // An empty attribute, which won't be used as a condition, means match all.
 // e.g SourceType = "" means all type network policy will be retrieved
@@ -107,22 +121,41 @@ type NetworkPolicyQueryFilter struct {
 	SourceName string
 	// The namespace of the original Namespace that the internal NetworkPolicy is created for.
 	Namespace string
-	// The type of the original NetworkPolicy that the internal NetworkPolicy is created for.(K8sNP, ACNP, ANNP)
+	// The type of the original NetworkPolicy that the internal NetworkPolicy is created for.(K8sNP, ACNP, ANNP, ANP and BANP)
 	SourceType cpv1beta.NetworkPolicyType
 }
+
+// From user shorthand input to cpv1beta1.NetworkPolicyType
+var NetworkPolicyTypeMap = map[string]cpv1beta.NetworkPolicyType{
+	"K8SNP": cpv1beta.K8sNetworkPolicy,
+	"ACNP":  cpv1beta.AntreaClusterNetworkPolicy,
+	"ANNP":  cpv1beta.AntreaNetworkPolicy,
+	"ANP":   cpv1beta.AdminNetworkPolicy,
+	"BANP":  cpv1beta.BaselineAdminNetworkPolicy,
+}
+
+func GetNetworkPolicyTypeShorthands() []string {
+	validTypes := make([]string, 0, len(NetworkPolicyTypeMap))
+	for k := range NetworkPolicyTypeMap {
+		validTypes = append(validTypes, k)
+	}
+	return validTypes
+}
+
+var NamespaceScopedPolicyTypes = sets.New[string]("ANNP", "K8SNP")
 
 // ServiceExternalIPStatusQuerier queries the Service external IP status for debugging purposes.
 // Ideally, every Node should have consistent results eventually. This should only be used when
 // ServiceExternalIP feature is enabled.
 type ServiceExternalIPStatusQuerier interface {
-	GetServiceExternalIPStatus() []ServiceExternalIPInfo
+	GetServiceExternalIPStatus() []apis.ServiceExternalIPInfo
 }
 
-// ServiceExternalIPInfo contains the essential information for Services with type of Loadbalancer managed by Antrea.
-type ServiceExternalIPInfo struct {
-	ServiceName    string `json:"serviceName,omitempty" antctl:"name,Name of the Service"`
-	Namespace      string `json:"namespace,omitempty"`
-	ExternalIP     string `json:"externalIP,omitempty"`
-	ExternalIPPool string `json:"externalIPPool,omitempty"`
-	AssignedNode   string `json:"assignedNode,omitempty"`
+type AgentBGPPolicyInfoQuerier interface {
+	// GetBGPPolicyInfo returns Name, RouterID, LocalASN and ListenPort of effective BGP Policy applied on the Node.
+	GetBGPPolicyInfo() (string, string, int32, int32)
+	// GetBGPPeerStatus returns current status of BGP Peers of effective BGP Policy applied on the Node.
+	GetBGPPeerStatus(ctx context.Context) ([]bgp.PeerStatus, error)
+	// GetBGPRoutes returns the advertised BGP routes.
+	GetBGPRoutes(ctx context.Context) (map[bgp.Route]bgpcontroller.RouteMetadata, error)
 }

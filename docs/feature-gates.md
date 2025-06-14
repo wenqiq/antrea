@@ -35,7 +35,8 @@ edit the Agent configuration in the
 | `AntreaProxy`                 | Agent              | `true`  | GA    | v0.8          | v0.11        | v1.14      | Yes                | Must be enabled for Windows.                  |
 | `EndpointSlice`               | Agent              | `true`  | GA    | v0.13.0       | v1.11        | v1.14      | Yes                |                                               |
 | `TopologyAwareHints`          | Agent              | `true`  | Beta  | v1.8          | v1.12        | N/A        | Yes                |                                               |
-| `CleanupStaleUDPSvcConntrack` | Agent              | `false` | Alpha | v1.13         | N/A          | N/A        | Yes                |                                               |
+| `ServiceTrafficDistribution`  | Agent              | `true`  | Beta  | N/A           | v2.2         | N/A        | Yes                |                                               |
+| `CleanupStaleUDPSvcConntrack` | Agent              | `true`  | Beta  | v1.13         | v2.1         | N/A        | Yes                |                                               |
 | `LoadBalancerModeDSR`         | Agent              | `false` | Alpha | v1.13         | N/A          | N/A        | Yes                |                                               |
 | `AntreaPolicy`                | Agent + Controller | `true`  | Beta  | v0.8          | v1.0         | N/A        | No                 | Agent side config required from v0.9.0+.      |
 | `Traceflow`                   | Agent + Controller | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                |                                               |
@@ -47,7 +48,7 @@ edit the Agent configuration in the
 | `AntreaIPAM`                  | Agent + Controller | `false` | Alpha | v1.4          | N/A          | N/A        | Yes                |                                               |
 | `Multicast`                   | Agent + Controller | `true`  | Beta  | v1.5          | v1.12        | N/A        | Yes                |                                               |
 | `SecondaryNetwork`            | Agent              | `false` | Alpha | v1.5          | N/A          | N/A        | Yes                |                                               |
-| `ServiceExternalIP`           | Agent + Controller | `false` | Alpha | v1.5          | N/A          | N/A        | Yes                |                                               |
+| `ServiceExternalIP`           | Agent + Controller | `false` | Beta  | v1.5          | v2.3         | N/A        | Yes                |                                               |
 | `TrafficControl`              | Agent              | `false` | Alpha | v1.7          | N/A          | N/A        | No                 |                                               |
 | `Multicluster`                | Agent + Controller | `false` | Alpha | v1.7          | N/A          | N/A        | Yes                | Controller side feature gate added in v1.10.0 |
 | `IPsecCertAuth`               | Agent + Controller | `false` | Alpha | v1.7          | N/A          | N/A        | No                 |                                               |
@@ -56,25 +57,25 @@ edit the Agent configuration in the
 | `L7NetworkPolicy`             | Agent + Controller | `false` | Alpha | v1.10         | N/A          | N/A        | Yes                |                                               |
 | `AdminNetworkPolicy`          | Controller         | `false` | Alpha | v1.13         | N/A          | N/A        | Yes                |                                               |
 | `EgressTrafficShaping`        | Agent              | `false` | Alpha | v1.14         | N/A          | N/A        | Yes                | OVS meters should be supported                |
-| `EgressSeparateSubnet`        | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | No                 |                                               |
+| `EgressSeparateSubnet`        | Agent              | `true`  | Beta  | v1.15         | v2.3         | N/A        | No                 |                                               |
 | `NodeNetworkPolicy`           | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | Yes                |                                               |
 | `L7FlowExporter`              | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | Yes                |                                               |
+| `BGPPolicy`                   | Agent              | `false` | Alpha | v2.1          | N/A          | N/A        | No                 |                                               |
+| `NodeLatencyMonitor`          | Agent              | `false` | Alpha | v2.1          | N/A          | N/A        | No                 |                                               |
+| `PacketCapture`               | Agent              | `false` | Alpha | v2.2          | N/A          | N/A        | No                 |                                               |
 
 ## Description and Requirements of Features
 
 ### AntreaProxy
 
-`AntreaProxy` implements Service load-balancing for ClusterIP Services as part of the OVS pipeline, as opposed to
-relying on kube-proxy. This only applies to traffic originating from Pods, and destined to ClusterIP Services. In
-particular, it does not apply to NodePort Services. Please note that due to some restrictions on the implementation of
-Services in Antrea, the maximum number of Endpoints that Antrea can support at the moment is 800. If the number of
-Endpoints for a given Service exceeds 800, extra Endpoints will be dropped.
+`AntreaProxy` enables Antrea Proxy which implements Service load-balancing for ClusterIP Services as part of the OVS
+pipeline, as opposed to relying on kube-proxy. By default, this only applies to traffic originating from Pods, and
+destined to ClusterIP Services. However, it can be configured to support all types of Services, replacing kube-proxy
+entirely. Please refer to this [document](antrea-proxy.md) for extra information on Antrea Proxy and how it can be configured.
 
 Note that this feature must be enabled for Windows. The Antrea Windows YAML manifest provided as part of releases
 enables this feature by default. If you edit the manifest, make sure you do not disable it, as it is needed for correct
 NetworkPolicy implementation for Pod-to-Service traffic.
-
-Please refer to this [document](antrea-proxy.md) for extra information on AntreaProxy and how it can be configured.
 
 #### Requirements for this Feature
 
@@ -83,9 +84,9 @@ opposed to >= 4.4 without this feature).
 
 ### EndpointSlice
 
-`EndpointSlice` enables Service EndpointSlice support in AntreaProxy. The EndpointSlice API was introduced in Kubernetes
+`EndpointSlice` enables Service EndpointSlice support in Antrea Proxy. The EndpointSlice API was introduced in Kubernetes
 1.16 (alpha) and it is enabled by default in Kubernetes 1.17 (beta), promoted to GA in Kubernetes 1.21. The EndpointSlice
-feature will take no effect if AntreaProxy is not enabled. Refer to this [link](https://kubernetes.io/docs/tasks/administer-cluster/enabling-endpointslices/)
+feature will take no effect if Antrea Proxy is not enabled. Refer to this [link](https://kubernetes.io/docs/tasks/administer-cluster/enabling-endpointslices/)
 for more information about EndpointSlice. If this feature is enabled but the EndpointSlice v1 API is not available
 (Kubernetes version is lower than 1.21), Antrea Agent will log a message and fallback to the Endpoints API.
 
@@ -96,14 +97,27 @@ for more information about EndpointSlice. If this feature is enabled but the End
 
 ### TopologyAwareHints
 
-`TopologyAwareHints` enables TopologyAwareHints support in AntreaProxy. For AntreaProxy, traffic can be routed to the
-Endpoint which is closer to where it originated when this feature is enabled. Refer to this [link](https://kubernetes.io/docs/concepts/services-networking/topology-aware-hints/)
-for more information about TopologyAwareHints.
+`TopologyAwareHints` enables Topology Aware Routing support in Antrea Proxy. For Antrea Proxy, traffic can be routed to the
+Endpoint which is closer to where it originated when this feature is enabled. Prior to Kubernetes 1.27, this feature was known as Topology Aware Hints.
+Refer to this [link](https://kubernetes.io/docs/concepts/services-networking/topology-aware-routing/) for more information about Topology Aware Routing.
 
 #### Requirements for this Feature
 
 - Option `antreaProxy.enable` is set to true.
 - EndpointSlice API version v1 is available in Kubernetes.
+
+### ServiceTrafficDistribution
+
+`ServiceTrafficDistribution` enables Traffic Distribution for Services in Antrea Proxy. This feature allows for more
+flexible and intelligent routing decisions by considering both topology and non-topology factors. For more details,
+refer to this [link](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/4444-service-traffic-distribution).
+
+#### Requirements for this Feature
+
+- Option `antreaProxy.enable` is set to true.
+- EndpointSlice API version v1 is available in Kubernetes.
+- Kubernetes must be version 1.30 or higher, with the `ServiceTrafficDistribution` feature gate (a Kubernetes-specific
+  feature gate) enabled.
 
 ### LoadBalancerModeDSR
 
@@ -111,7 +125,7 @@ for more information about TopologyAwareHints.
 mode determines how external traffic destined to LoadBalancerIPs and ExternalIPs of Services is processed when it's load
 balanced across Nodes. In DSR mode, external traffic is never SNAT'd and backend Pods running on Nodes that are not the
 ingress Node can reply to clients directly, bypassing the ingress Node. Therefore, DSR mode can preserve client IP of
-requests, and usually has lower latency and higher throughput. It's only meaningful to use this feature when AntreaProxy
+requests, and usually has lower latency and higher throughput. It's only meaningful to use this feature when Antrea Proxy
 is enabled and configured to proxy external traffic (proxyAll=true). Refer to this [link](
 antrea-proxy.md#configuring-load-balancer-mode-for-external-traffic) for more information about load balancer mode.
 
@@ -124,7 +138,7 @@ antrea-proxy.md#configuring-load-balancer-mode-for-external-traffic) for more in
 
 ### CleanupStaleUDPSvcConntrack
 
-`CleanupStaleUDPSvcConntrack` enables support for cleaning up stale UDP Service conntrack connections in AntreaProxy.
+`CleanupStaleUDPSvcConntrack` enables support for cleaning up stale UDP Service conntrack connections in Antrea Proxy.
 
 #### Requirements for this Feature
 
@@ -155,7 +169,7 @@ for both Linux and Windows). In v0.11, this feature was graduated to Beta (enabl
 lifted.
 
 In order to support cluster Services as the destination for tracing requests, option `antreaProxy.enable` should be set
-to true to enable AntreaProxy.
+to true to enable Antrea Proxy.
 
 ### Flow Exporter
 
@@ -173,7 +187,7 @@ This feature is currently only supported for Nodes running Linux. Windows suppor
 Stats API, which can be accessed by kubectl get commands, e.g. `kubectl get networkpolicystats`. The statistical data
 includes total number of sessions, packets, and bytes allowed or denied by a NetworkPolicy. It is collected
 asynchronously so there may be a delay of up to 1 minute for changes to be reflected in API responses. The feature
-supports K8s NetworkPolicies and Antrea native policies, the latter of which requires
+supports K8s NetworkPolicies and Antrea-native policies, the latter of which requires
 `AntreaPolicy` to be enabled. Usage examples:
 
 ```bash
@@ -315,9 +329,7 @@ This feature is only supported:
 ### SecondaryNetwork
 
 The `SecondaryNetwork` feature enables support for provisioning secondary network interfaces for Pods, by annotating
-them appropriately.
-
-More documentation will be coming in the future.
+them appropriately. Refer to this [document](secondary-network.md) for more information
 
 #### Requirements for this Feature
 
@@ -438,3 +450,92 @@ Refer to this [document](network-flow-visibility.md#l7-visibility) for more info
 #### Requirements for this Feature
 
 - Linux Nodes only.
+
+### BGPPolicy
+
+`BGPPolicy` allows users to initiate BGP process on selected Kubernetes Nodes and advertise Service IPs (e.g.,
+ClusterIPs, ExternalIPs, LoadBalancerIPs), Pod IPs and Egress IPs to remote BGP peers, providing a flexible mechanism
+for integrating Kubernetes clusters with external BGP-enabled networks.
+
+#### Requirements for this Feature
+
+- Linux Nodes only.
+
+### NodeLatencyMonitor
+
+`NodeLatencyMonitor` enables latency measurements between all pairs of Nodes using ICMP probes,
+which are generated periodically by each Antrea Agent. After enabling the feature gate, you will
+need to create a `NodeLatencyMonitor` Custom Resource named `default`, after which probes will start
+being generated. For example, you can apply the following YAML manifest using kubectl:
+
+```yaml
+apiVersion: crd.antrea.io/v1alpha1
+kind: NodeLatencyMonitor
+metadata:
+  name: default
+spec:
+  pingIntervalSeconds: 60
+```
+
+You can adjust `pingIntervalSeconds` to any positive value that suits your needs. To stop latency
+measurements, simply delete the Custom Resource with `kubectl delete nodelatencymonitor/default`.
+
+Latency measurements can be queried using the `NodeLatencyStats` API in `stats.antrea.io/v1alpha1`.
+This can be done with kubectl:
+
+```bash
+> kubectl get nodelatencystats
+NODE NAME            NUM LATENCY ENTRIES   AVG LATENCY   MAX LATENCY
+kind-control-plane   2                     7.110553ms    8.94447ms
+kind-worker          2                     11.177585ms   11.508751ms
+kind-worker2         2                     11.356675ms   15.265629ms
+```
+
+Note that it may take up to one period interval (`pingIntervalSeconds`) for results to become
+visible. Use `kubectl get nodelatencystats -o yaml` or `kubectl get nodelatencystats -o json` to see all the
+individual latency measurements. For example:
+
+```bash
+> kubectl get nodelatencystats/kind-worker -o yaml
+```
+
+```yaml
+apiVersion: stats.antrea.io/v1alpha1
+kind: NodeLatencyStats
+metadata:
+  creationTimestamp: null
+  name: kind-worker
+peerNodeLatencyStats:
+- nodeName: kind-control-plane
+  targetIPLatencyStats:
+  - lastMeasuredRTTNanoseconds: 5837000
+    lastRecvTime: "2024-07-26T22:40:03Z"
+    lastSendTime: "2024-07-26T22:40:33Z"
+    targetIP: 10.10.0.1
+- nodeName: kind-worker2
+  targetIPLatencyStats:
+  - lastMeasuredRTTNanoseconds: 4704000
+    lastRecvTime: "2024-07-26T22:40:03Z"
+    lastSendTime: "2024-07-26T22:40:33Z"
+    targetIP: 10.10.2.1
+```
+
+The feature supports both IPv4 and IPv6. When enabled in a dual-stack cluster, Antrea Agents will
+generate both ICMP and ICMPv6 probes, and report both latency results. In general (except when
+`networkPolicyOnly` mode is used), inter-Node latency will be measured between Antrea gateway
+interfaces. Therefore, in `encap` mode, ICMP probes will traverse the overlay, just like regular
+inter-Node Pod traffic. We believe this gives an accurate representation of the east-west latency
+experienced by Pod traffic.
+
+#### Requirements for this Feature
+
+- Linux Nodes only - the feature has not been tested on Windows Nodes yet.
+
+### PacketCapture
+
+`PacketCapture` allows user to capture live traffic packets from specified flows for further analysis.
+Refer to this [document](packetcapture-guide.md) for more information.
+
+#### Requirements for this Feature
+
+This feature is only supported on Linux for now.

@@ -28,7 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow"
@@ -41,6 +41,7 @@ import (
 var (
 	egressName = "dummyEgress"
 	egressIP   = "192.168.100.100"
+	egressNode = "fakeEgressNode"
 )
 
 func prepareMockTables() {
@@ -144,7 +145,7 @@ func TestParseCapturedPacket(t *testing.T) {
 		SrcIP: tcpPktIn.NWSrc.String(), DstIP: tcpPktIn.NWDst.String(), Length: int32(tcpPktIn.Length),
 		IPHeader: &crdv1beta1.IPHeader{Protocol: int32(tcpPktIn.Protocol), TTL: int32(tcpPktIn.TTL), Flags: int32(tcpPktIn.Flags)},
 		TransportHeader: crdv1beta1.TransportHeader{
-			TCP: &crdv1beta1.TCPHeader{SrcPort: int32(tcp.PortSrc), DstPort: int32(tcp.PortDst), Flags: pointer.Int32(int32(tcp.Code))},
+			TCP: &crdv1beta1.TCPHeader{SrcPort: int32(tcp.PortSrc), DstPort: int32(tcp.PortDst), Flags: ptr.To(int32(tcp.Code))},
 		},
 	}
 
@@ -208,8 +209,8 @@ func getTestPacketBytes(dstIP string) []byte {
 		Protocol: uint8(8),
 		DSCP:     1,
 		Length:   20,
-		NWSrc:    net.IP(pod1IPv4),
-		NWDst:    net.IP(dstIP),
+		NWSrc:    net.ParseIP(pod1IPv4),
+		NWDst:    net.ParseIP(dstIP),
 	}
 	ethernetPkt := protocol.NewEthernet()
 	ethernetPkt.HWSrc = pod1MAC
@@ -235,6 +236,13 @@ func TestParsePacketIn(t *testing.T) {
 		Field: openflow15.NXM_NX_PKT_MARK,
 		Value: &openflow15.Uint32Message{
 			Data: 1,
+		},
+	}
+	matchCTSrc := &openflow15.MatchField{
+		Class: openflow15.OXM_CLASS_NXM_1,
+		Field: openflow15.NXM_NX_CT_NW_SRC,
+		Value: &openflow15.Ipv4SrcField{
+			Ipv4Src: net.ParseIP(pod1IPv4),
 		},
 	}
 	matchTunDst := openflow15.NewTunnelIpv4DstField(net.ParseIP(egressIP), nil)
@@ -297,14 +305,13 @@ func TestParsePacketIn(t *testing.T) {
 				PacketIn: &openflow15.PacketIn{
 					TableId: openflow.OutputTable.GetID(),
 					Match: openflow15.Match{
-						Fields: []openflow15.MatchField{*matchOutPort, *matchPktMark},
+						Fields: []openflow15.MatchField{*matchOutPort, *matchPktMark, *matchCTSrc},
 					},
 					Data: util.NewBuffer(pktBytesPodToIP),
 				},
 			},
 			expectedCalls: func(npQuerierq *queriertest.MockAgentNetworkPolicyInfoQuerier, egressQuerier *queriertest.MockEgressQuerier) {
-				egressQuerier.EXPECT().GetEgress(pod1.Namespace, pod1.Name).Return(egressName, egressIP, nil)
-				egressQuerier.EXPECT().GetEgressIPByMark(uint32(1)).Return(egressIP, nil)
+				egressQuerier.EXPECT().GetEgress(pod1.Namespace, pod1.Name).Return(egressName, egressIP, egressNode, nil)
 			},
 			expectedTf: &crdv1beta1.Traceflow{
 				ObjectMeta: metav1.ObjectMeta{
@@ -329,12 +336,14 @@ func TestParsePacketIn(t *testing.T) {
 					{
 						Component: crdv1beta1.ComponentSpoofGuard,
 						Action:    crdv1beta1.ActionForwarded,
+						SrcPodIP:  pod1IPv4,
 					},
 					{
-						Component: crdv1beta1.ComponentEgress,
-						Action:    crdv1beta1.ActionMarkedForSNAT,
-						Egress:    egressName,
-						EgressIP:  egressIP,
+						Component:  crdv1beta1.ComponentEgress,
+						Action:     crdv1beta1.ActionMarkedForSNAT,
+						Egress:     egressName,
+						EgressIP:   egressIP,
+						EgressNode: egressNode,
 					},
 					{
 						Component:     crdv1beta1.ComponentForwarding,
@@ -364,13 +373,15 @@ func TestParsePacketIn(t *testing.T) {
 				PacketIn: &openflow15.PacketIn{
 					TableId: openflow.OutputTable.GetID(),
 					Match: openflow15.Match{
+						// We are omitting matchCTSrc intentionally here to test
+						// the case where there is no valid ct_nw_src match in the packet metadata.
 						Fields: []openflow15.MatchField{*matchTunDst, *matchOutPort},
 					},
 					Data: util.NewBuffer(pktBytesPodToIP),
 				},
 			},
 			expectedCalls: func(npQuerierq *queriertest.MockAgentNetworkPolicyInfoQuerier, egressQuerier *queriertest.MockEgressQuerier) {
-				egressQuerier.EXPECT().GetEgress(pod1.Namespace, pod1.Name).Return(egressName, egressIP, nil)
+				egressQuerier.EXPECT().GetEgress(pod1.Namespace, pod1.Name).Return(egressName, egressIP, egressNode, nil)
 			},
 			expectedTf: &crdv1beta1.Traceflow{
 				ObjectMeta: metav1.ObjectMeta{
@@ -395,12 +406,14 @@ func TestParsePacketIn(t *testing.T) {
 					{
 						Component: crdv1beta1.ComponentSpoofGuard,
 						Action:    crdv1beta1.ActionForwarded,
+						SrcPodIP:  pod1IPv4,
 					},
 					{
-						Component: crdv1beta1.ComponentEgress,
-						Action:    crdv1beta1.ActionForwardedToEgressNode,
-						Egress:    egressName,
-						EgressIP:  egressIP,
+						Component:  crdv1beta1.ComponentEgress,
+						Action:     crdv1beta1.ActionForwardedToEgressNode,
+						Egress:     egressName,
+						EgressIP:   egressIP,
+						EgressNode: egressNode,
 					},
 					{
 						Component:     crdv1beta1.ComponentForwarding,
@@ -487,7 +500,7 @@ func TestParsePacketIn(t *testing.T) {
 				PacketIn: &openflow15.PacketIn{
 					TableId: openflow.EgressRuleTable.GetID(),
 					Match: openflow15.Match{
-						Fields: []openflow15.MatchField{*matchTFEgressConjID},
+						Fields: []openflow15.MatchField{*matchTFEgressConjID, *matchCTSrc},
 					},
 					Data: util.NewBuffer(pktBytesPodToPod),
 				},
@@ -529,6 +542,7 @@ func TestParsePacketIn(t *testing.T) {
 					{
 						Component: crdv1beta1.ComponentSpoofGuard,
 						Action:    crdv1beta1.ActionForwarded,
+						SrcPodIP:  pod1IPv4,
 					},
 					{
 						Component:         crdv1beta1.ComponentNetworkPolicy,
@@ -616,7 +630,7 @@ func TestParsePacketIn(t *testing.T) {
 				PacketIn: &openflow15.PacketIn{
 					TableId: openflow.EgressMetricTable.GetID(),
 					Match: openflow15.Match{
-						Fields: []openflow15.MatchField{*matchAPConjID},
+						Fields: []openflow15.MatchField{*matchAPConjID, *matchCTSrc},
 					},
 					Data: util.NewBuffer(pktBytesPodToPod),
 				},
@@ -656,6 +670,7 @@ func TestParsePacketIn(t *testing.T) {
 					{
 						Component: crdv1beta1.ComponentSpoofGuard,
 						Action:    crdv1beta1.ActionForwarded,
+						SrcPodIP:  pod1IPv4,
 					},
 					{
 						Component:         crdv1beta1.ComponentNetworkPolicy,
@@ -715,5 +730,5 @@ func TestParsePacketInLiveDuplicates(t *testing.T) {
 	tfc.runningTraceflows[tfState.tag] = tfState
 
 	_, _, _, err := tfc.parsePacketIn(pktIn)
-	assert.ErrorIs(t, err, skipTraceflowUpdateErr)
+	assert.ErrorIs(t, err, errSkipTraceflowUpdate)
 }

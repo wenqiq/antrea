@@ -25,7 +25,6 @@ import (
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
 	clientset "k8s.io/client-go/kubernetes"
@@ -35,8 +34,10 @@ import (
 	aggregatorclientset "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	controllerruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	k8smcsv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
 
 	mcv1alpha1 "antrea.io/antrea/multicluster/apis/multicluster/v1alpha1"
@@ -113,7 +114,7 @@ func getCaConfig(isLeader bool, controllerNs string) *certificate.CAConfig {
 		MutationWebhookSelector:   getWebhookLabel(isLeader, controllerNs),
 		ValidatingWebhookSelector: getWebhookLabel(isLeader, controllerNs),
 		CertReadyTimeout:          2 * time.Minute,
-		MaxRotateDuration:         time.Hour * (24 * 365),
+		MinValidDuration:          time.Hour * 24 * 90, // Rotate the certificate 90 days in advance.
 	}
 }
 
@@ -137,6 +138,15 @@ func getWebhookLabel(isLeader bool, controllerNs string) *metav1.LabelSelector {
 func setupManagerAndCertController(isLeader bool, o *Options) (manager.Manager, error) {
 	ctrl.SetLogger(klog.NewKlogr())
 
+	podNamespace := env.GetPodNamespace()
+
+	var caConfig *certificate.CAConfig
+	if isLeader {
+		caConfig = getCaConfig(isLeader, podNamespace)
+	} else {
+		caConfig = getCaConfig(isLeader, "")
+	}
+
 	// build up cert controller to manage certificate for MC Controller
 	k8sConfig := ctrl.GetConfigOrDie()
 	k8sConfig.QPS = common.ResourceExchangeQPS
@@ -147,8 +157,7 @@ func setupManagerAndCertController(isLeader bool, o *Options) (manager.Manager, 
 	}
 
 	secureServing := genericoptions.NewSecureServingOptions().WithLoopback()
-	caCertController, err := certificate.ApplyServerCert(o.SelfSignedCert, client, aggregatorClient, apiExtensionClient,
-		secureServing, getCaConfig(isLeader, o.options.Namespace))
+	caCertController, err := certificate.ApplyServerCert(o.SelfSignedCert, client, aggregatorClient, apiExtensionClient, secureServing, caConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error applying server cert: %v", err)
 	}
@@ -156,26 +165,41 @@ func setupManagerAndCertController(isLeader bool, o *Options) (manager.Manager, 
 		return nil, err
 	}
 
+	options := o.options
 	if o.SelfSignedCert {
-		o.options.CertDir = selfSignedCertDir
+		options.Metrics.CertDir = selfSignedCertDir
+		o.WebhookConfig.CertDir = selfSignedCertDir
 	} else {
-		o.options.CertDir = certDir
+		options.Metrics.CertDir = certDir
+		o.WebhookConfig.CertDir = certDir
 	}
+	options.WebhookServer = webhook.NewServer(webhook.Options{
+		Port:    *o.WebhookConfig.Port,
+		Host:    o.WebhookConfig.Host,
+		CertDir: o.WebhookConfig.CertDir,
+	})
 
-	namespaceFieldSelector := fields.SelectorFromSet(fields.Set{"metadata.namespace": env.GetPodNamespace()})
-	o.options.NewCache = cache.BuilderWithOptions(cache.Options{
-		SelectorsByObject: cache.SelectorsByObject{
+	cacheOptions := &options.Cache
+	if isLeader {
+		// For the leader, restrict the cache to the controller's Namespace.
+		cacheOptions.DefaultNamespaces = map[string]cache.Config{
+			podNamespace: {},
+		}
+	} else {
+		// For a member, restict the cache to the controller's Namespace for the following objects.
+		cacheOptions.ByObject = map[controllerruntimeclient.Object]cache.ByObject{
 			&mcv1alpha1.Gateway{}: {
-				Field: namespaceFieldSelector,
+				Namespaces: map[string]cache.Config{
+					podNamespace: {},
+				},
 			},
 			&mcv1alpha2.ClusterSet{}: {
-				Field: namespaceFieldSelector,
+				Namespaces: map[string]cache.Config{
+					podNamespace: {},
+				},
 			},
-			&mcv1alpha1.MemberClusterAnnounce{}: {
-				Field: namespaceFieldSelector,
-			},
-		},
-	})
+		}
+	}
 
 	// EndpointSlice is enabled in AntreaProxy by default since v1.11, so Antrea MC
 	// will use EndpointSlice API by default to keep consistent with AntreaProxy.
@@ -198,9 +222,9 @@ func setupManagerAndCertController(isLeader bool, o *Options) (manager.Manager, 
 	}
 	o.ClusterCalimCRDAvailable = clusterClaimCRDAvailable
 
-	mgr, err := ctrl.NewManager(k8sConfig, o.options)
+	mgr, err := ctrl.NewManager(k8sConfig, options)
 	if err != nil {
-		return nil, fmt.Errorf("error starting manager: %v", err)
+		return nil, fmt.Errorf("error creating manager: %v", err)
 	}
 
 	//+kubebuilder:scaffold:builder

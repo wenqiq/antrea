@@ -29,6 +29,9 @@ const (
 	DefaultInactiveFlowRecordTimeout      = "90s"
 	DefaultAggregatorTransportProtocol    = "TLS"
 	DefaultRecordFormat                   = "IPFIX"
+	DefaultTemplateRefreshTimeout         = "600s"
+	MinValidIPFIXMsgSize                  = 512
+	MaxValidIPFIXMsgSize                  = 65535
 
 	DefaultClickHouseDatabase       = "default"
 	DefaultClickHouseCommitInterval = "8s"
@@ -47,6 +50,9 @@ const (
 )
 
 func SetConfigDefaults(flowAggregatorConf *FlowAggregatorConfig) {
+	if flowAggregatorConf.Mode == "" {
+		flowAggregatorConf.Mode = AggregatorModeAggregate
+	}
 	if flowAggregatorConf.ActiveFlowRecordTimeout == "" {
 		flowAggregatorConf.ActiveFlowRecordTimeout = DefaultActiveFlowRecordTimeout
 	}
@@ -61,6 +67,9 @@ func SetConfigDefaults(flowAggregatorConf *FlowAggregatorConfig) {
 	}
 	if flowAggregatorConf.FlowCollector.RecordFormat == "" {
 		flowAggregatorConf.FlowCollector.RecordFormat = DefaultRecordFormat
+	}
+	if flowAggregatorConf.FlowCollector.TemplateRefreshTimeout == "" {
+		flowAggregatorConf.FlowCollector.TemplateRefreshTimeout = DefaultTemplateRefreshTimeout
 	}
 	if flowAggregatorConf.ClickHouse.Database == "" {
 		flowAggregatorConf.ClickHouse.Database = DefaultClickHouseDatabase

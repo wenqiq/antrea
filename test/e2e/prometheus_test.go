@@ -143,7 +143,7 @@ func getMetricsFromAPIServer(t *testing.T, url string, token string) string {
 	}
 
 	var body []byte
-	err = wait.PollImmediate(defaultInterval, defaultTimeout, func() (bool, error) {
+	err = wait.PollUntilContextTimeout(context.Background(), defaultInterval, defaultTimeout, true, func(ctx context.Context) (bool, error) {
 		// Query metrics via HTTPS from Pod
 		resp, err := client.Do(req)
 		if err != nil {
@@ -281,12 +281,11 @@ func testMetricsFromPrometheusServer(t *testing.T, data *TestData, prometheusJob
 	// Target metadata API(/api/v1/targets/metadata) has been available since Prometheus v2.4.0.
 	// This API is still experimental in Prometheus v2.46.0.
 	path := url.PathEscape("match_target={job=\"" + prometheusJob + "\"}")
-	address := net.JoinHostPort(hostIP, fmt.Sprint(nodePort))
-	queryURL := fmt.Sprintf("http://%s/api/v1/targets/metadata?%s", address, path)
+	queryURL := getHTTPURLFromIPPort(hostIP, nodePort, "api/v1/targets/metadata?", path)
 
 	client := &http.Client{}
 	var output prometheusServerOutput
-	err := wait.PollImmediate(defaultInterval, defaultTimeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), defaultInterval, defaultTimeout, true, func(ctx context.Context) (bool, error) {
 		resp, err := client.Get(queryURL)
 		if err != nil {
 			// Retry when accessing prometheus failed for flexible-ipam

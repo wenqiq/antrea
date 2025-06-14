@@ -49,12 +49,16 @@ pushd $THIS_DIR/../.. > /dev/null
 mkdir -p "$1"
 OUTPUT_DIR=$(cd "$1" && pwd)
 
+# Cgo should always be disabled for release assets.
+export CGO_ENABLED=0
+
 ANTREA_BUILDS=(
     "linux amd64 linux-x86_64"
     "linux arm64 linux-arm64"
     "linux arm linux-arm"
     "windows amd64 windows-x86_64.exe"
     "darwin amd64 darwin-x86_64"
+    "darwin arm64 darwin-arm64"
 )
 
 for build in "${ANTREA_BUILDS[@]}"; do
@@ -63,8 +67,6 @@ for build in "${ANTREA_BUILDS[@]}"; do
     arch="${args[1]}"
     suffix="${args[2]}"
 
-    # all "*-release" targets disable cgo, which is appropriate when
-    # distributing release assets, for portability.
     GOOS=$os GOARCH=$arch ANTCTL_BINARY_NAME="antctl-$suffix" BINDIR="$OUTPUT_DIR" make antctl-release
 done
 
@@ -104,20 +106,19 @@ cp ./hack/externalnode/install-vm.ps1 "$OUTPUT_DIR/"
 
 export IMG_TAG=$VERSION
 
-export AGENT_IMG_NAME=projects.registry.vmware.com/antrea/antrea-agent-ubuntu
-export CONTROLLER_IMG_NAME=projects.registry.vmware.com/antrea/antrea-controller-ubuntu
+export AGENT_IMG_NAME=antrea/antrea-agent-ubuntu
+export CONTROLLER_IMG_NAME=antrea/antrea-controller-ubuntu
 ./hack/generate-standard-manifests.sh --mode release --out "$OUTPUT_DIR"
 
-export IMG_NAME=projects.registry.vmware.com/antrea/antrea-windows
+export IMG_NAME=antrea/antrea-windows
 ./hack/generate-manifest-windows.sh --mode release > "$OUTPUT_DIR"/antrea-windows.yml
-./hack/generate-manifest-windows.sh --mode release --containerd > "$OUTPUT_DIR"/antrea-windows-containerd.yml
-./hack/generate-manifest-windows.sh --mode release --containerd --include-ovs > "$OUTPUT_DIR"/antrea-windows-containerd-with-ovs.yml
+./hack/generate-manifest-windows.sh --mode release --include-ovs > "$OUTPUT_DIR"/antrea-windows-with-ovs.yml
 
-export IMG_NAME=projects.registry.vmware.com/antrea/flow-aggregator
+export IMG_NAME=antrea/flow-aggregator
 ./hack/generate-manifest-flow-aggregator.sh --mode release > "$OUTPUT_DIR"/flow-aggregator.yml
 
 # Generate multicluster manifests
-export IMG_NAME=projects.registry.vmware.com/antrea/antrea-mc-controller
+export IMG_NAME=antrea/antrea-mc-controller
 cd multicluster
 ./hack/generate-manifest.sh -g > "$OUTPUT_DIR"/antrea-multicluster-leader-global.yml
 ./hack/generate-manifest.sh -r -n antrea-multicluster > "$OUTPUT_DIR"/antrea-multicluster-leader-namespaced.yml

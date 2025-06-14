@@ -1,4 +1,4 @@
-// Copyright 2024 Antrea Authors
+// Copyright 2025 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/flowaggregator/exporter/testing/mock_exporter.go -package testing antrea.io/antrea/pkg/flowaggregator/exporter Interface
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -35,6 +36,7 @@ import (
 type MockInterface struct {
 	ctrl     *gomock.Controller
 	recorder *MockInterfaceMockRecorder
+	isgomock struct{}
 }
 
 // MockInterfaceMockRecorder is the mock recorder for MockInterface.
@@ -55,17 +57,31 @@ func (m *MockInterface) EXPECT() *MockInterfaceMockRecorder {
 }
 
 // AddRecord mocks base method.
-func (m *MockInterface) AddRecord(arg0 entities.Record, arg1 bool) error {
+func (m *MockInterface) AddRecord(record entities.Record, isRecordIPv6 bool) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddRecord", arg0, arg1)
+	ret := m.ctrl.Call(m, "AddRecord", record, isRecordIPv6)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // AddRecord indicates an expected call of AddRecord.
-func (mr *MockInterfaceMockRecorder) AddRecord(arg0, arg1 any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) AddRecord(record, isRecordIPv6 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddRecord", reflect.TypeOf((*MockInterface)(nil).AddRecord), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddRecord", reflect.TypeOf((*MockInterface)(nil).AddRecord), record, isRecordIPv6)
+}
+
+// Flush mocks base method.
+func (m *MockInterface) Flush() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Flush")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Flush indicates an expected call of Flush.
+func (mr *MockInterfaceMockRecorder) Flush() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Flush", reflect.TypeOf((*MockInterface)(nil).Flush))
 }
 
 // Start mocks base method.
@@ -93,13 +109,13 @@ func (mr *MockInterfaceMockRecorder) Stop() *gomock.Call {
 }
 
 // UpdateOptions mocks base method.
-func (m *MockInterface) UpdateOptions(arg0 *options.Options) {
+func (m *MockInterface) UpdateOptions(opt *options.Options) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "UpdateOptions", arg0)
+	m.ctrl.Call(m, "UpdateOptions", opt)
 }
 
 // UpdateOptions indicates an expected call of UpdateOptions.
-func (mr *MockInterfaceMockRecorder) UpdateOptions(arg0 any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) UpdateOptions(opt any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateOptions", reflect.TypeOf((*MockInterface)(nil).UpdateOptions), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateOptions", reflect.TypeOf((*MockInterface)(nil).UpdateOptions), opt)
 }

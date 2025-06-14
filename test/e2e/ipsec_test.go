@@ -15,6 +15,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -41,6 +42,7 @@ func TestIPSec(t *testing.T) {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
+	skipIfMulticastEnabled(t, data)
 
 	t.Logf("Redeploy Antrea with IPsec tunnel enabled")
 	data.redeployAntrea(t, deployAntreaIPsec)
@@ -113,11 +115,12 @@ func (data *TestData) readSecurityAssociationsStatus(nodeName string) (up int, c
 		return 0, 0, false, fmt.Errorf("failed to determine authentication method from 'ipsec statusall' output: %s", stdout)
 	}
 
-	if match[1] == "pre-shared" {
+	switch match[1] {
+	case "pre-shared":
 		isCertAuth = false
-	} else if match[1] == "public" {
+	case "public":
 		isCertAuth = true
-	} else {
+	default:
 		return 0, 0, false, fmt.Errorf("unknown key authentication mode %q", match[1])
 	}
 
@@ -180,9 +183,9 @@ func testIPSecDeleteStaleTunnelPorts(t *testing.T, data *TestData) {
 	}
 
 	t.Logf("Checking that tunnel port has been created")
-	if err := wait.PollImmediate(defaultInterval, defaultTimeout, func() (found bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), defaultInterval, defaultTimeout, true, func(ctx context.Context) (found bool, err error) {
 		return doesOVSPortExist(), nil
-	}); err == wait.ErrWaitTimeout {
+	}); wait.Interrupted(err) {
 		t.Fatalf("Timed out while waiting for OVS tunnel port to be created")
 	} else if err != nil {
 		t.Fatalf("Error while waiting for OVS tunnel port to be created")
@@ -192,9 +195,9 @@ func testIPSecDeleteStaleTunnelPorts(t *testing.T, data *TestData) {
 	data.redeployAntrea(t, deployAntreaDefault)
 
 	t.Logf("Checking that tunnel port has been deleted")
-	if err := wait.PollImmediate(defaultInterval, defaultTimeout, func() (found bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), defaultInterval, defaultTimeout, true, func(ctx context.Context) (found bool, err error) {
 		return !doesOVSPortExist(), nil
-	}); err == wait.ErrWaitTimeout {
+	}); wait.Interrupted(err) {
 		t.Fatalf("Timed out while waiting for OVS tunnel port to be deleted")
 	} else if err != nil {
 		t.Fatalf("Error while waiting for OVS tunnel port to be	deleted")

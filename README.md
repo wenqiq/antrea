@@ -27,7 +27,7 @@ Network Policies in a very efficient manner.
 
 ## Prerequisites
 
-Antrea has been tested with Kubernetes clusters running version 1.16 or later.
+Antrea has been tested with Kubernetes clusters running version 1.19 or later.
 
 * `NodeIPAMController` must be enabled in the Kubernetes cluster.\
   When deploying a cluster with kubeadm the `--pod-network-cidr <cidr>`
@@ -60,7 +60,7 @@ Your feedback is more than welcome!
 [#antrea](https://kubernetes.slack.com/messages/CR2J23M0X) channel.
 * Check the [Antrea Team Calendar](https://calendar.google.com/calendar/embed?src=uuillgmcb1cu3rmv7r7jrhcrco%40group.calendar.google.com)
   and join the developer and user communities!
-  + The [Antrea community meeting](https://broadcom.zoom.us/j/91668049513?pwd=WHpaYTE2eWhja0xUN21MRU1BWllYdz09),
+  + The [Antrea community meeting](https://broadcom.zoom.us/j/823654111?pwd=MEV6blNtUUtqallVSkVFSGZtQ1kwUT09),
 every two weeks on Tuesday at 5AM GMT+1 (United Kingdom time). See Antrea team calendar for localized times.
     - [Meeting minutes](https://github.com/antrea-io/antrea/wiki/Community-Meetings)
     - [Meeting recordings](https://www.youtube.com/playlist?list=PLuzde2hYeDBdw0BuQCYbYqxzoJYY1hfwv)
@@ -106,10 +106,10 @@ Also check out [@ProjectAntrea](https://twitter.com/ProjectAntrea) on Twitter!
   enable fine-grained visibility into the communication among Kubernetes
   workloads. Theia provides visualization for Antrea network flows in Grafana
   dashboards, and recommends Network Policies to secure the workloads.
-* **Network Policies for virtual machines**: Antrea native policies can be
+* **Network Policies for virtual machines**: Antrea-native policies can be
   enforced on non-Kubernetes Nodes including VMs and baremetal servers. Project
   [Nephe](https://github.com/antrea-io/nephe) implements security policies for
-  VMs across clouds, leveraging Antrea native policies.
+  VMs across clouds, leveraging Antrea-native policies.
 * **Encryption**: Encryption of inter-Node Pod traffic with IPsec or WireGuard
   tunnels.
 * **Easy deployment**: Antrea is deployed by applying a single YAML manifest

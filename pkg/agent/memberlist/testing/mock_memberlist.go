@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/agent/memberlist/testing/mock_memberlist.go -package testing antrea.io/antrea/pkg/agent/memberlist Interface
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -35,6 +36,7 @@ import (
 type MockInterface struct {
 	ctrl     *gomock.Controller
 	recorder *MockInterfaceMockRecorder
+	isgomock struct{}
 }
 
 // MockInterfaceMockRecorder is the mock recorder for MockInterface.
@@ -55,15 +57,15 @@ func (m *MockInterface) EXPECT() *MockInterfaceMockRecorder {
 }
 
 // AddClusterEventHandler mocks base method.
-func (m *MockInterface) AddClusterEventHandler(arg0 memberlist.ClusterNodeEventHandler) {
+func (m *MockInterface) AddClusterEventHandler(handler memberlist.ClusterNodeEventHandler) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "AddClusterEventHandler", arg0)
+	m.ctrl.Call(m, "AddClusterEventHandler", handler)
 }
 
 // AddClusterEventHandler indicates an expected call of AddClusterEventHandler.
-func (mr *MockInterfaceMockRecorder) AddClusterEventHandler(arg0 any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) AddClusterEventHandler(handler any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddClusterEventHandler", reflect.TypeOf((*MockInterface)(nil).AddClusterEventHandler), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddClusterEventHandler", reflect.TypeOf((*MockInterface)(nil).AddClusterEventHandler), handler)
 }
 
 // AliveNodes mocks base method.
@@ -81,10 +83,10 @@ func (mr *MockInterfaceMockRecorder) AliveNodes() *gomock.Call {
 }
 
 // SelectNodeForIP mocks base method.
-func (m *MockInterface) SelectNodeForIP(arg0, arg1 string, arg2 ...func(string) bool) (string, error) {
+func (m *MockInterface) SelectNodeForIP(ip, externalIPPool string, filters ...func(string) bool) (string, error) {
 	m.ctrl.T.Helper()
-	varargs := []any{arg0, arg1}
-	for _, a := range arg2 {
+	varargs := []any{ip, externalIPPool}
+	for _, a := range filters {
 		varargs = append(varargs, a)
 	}
 	ret := m.ctrl.Call(m, "SelectNodeForIP", varargs...)
@@ -94,17 +96,17 @@ func (m *MockInterface) SelectNodeForIP(arg0, arg1 string, arg2 ...func(string) 
 }
 
 // SelectNodeForIP indicates an expected call of SelectNodeForIP.
-func (mr *MockInterfaceMockRecorder) SelectNodeForIP(arg0, arg1 any, arg2 ...any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) SelectNodeForIP(ip, externalIPPool any, filters ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0, arg1}, arg2...)
+	varargs := append([]any{ip, externalIPPool}, filters...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SelectNodeForIP", reflect.TypeOf((*MockInterface)(nil).SelectNodeForIP), varargs...)
 }
 
 // ShouldSelectIP mocks base method.
-func (m *MockInterface) ShouldSelectIP(arg0, arg1 string, arg2 ...func(string) bool) (bool, error) {
+func (m *MockInterface) ShouldSelectIP(ip, pool string, filters ...func(string) bool) (bool, error) {
 	m.ctrl.T.Helper()
-	varargs := []any{arg0, arg1}
-	for _, a := range arg2 {
+	varargs := []any{ip, pool}
+	for _, a := range filters {
 		varargs = append(varargs, a)
 	}
 	ret := m.ctrl.Call(m, "ShouldSelectIP", varargs...)
@@ -114,8 +116,8 @@ func (m *MockInterface) ShouldSelectIP(arg0, arg1 string, arg2 ...func(string) b
 }
 
 // ShouldSelectIP indicates an expected call of ShouldSelectIP.
-func (mr *MockInterfaceMockRecorder) ShouldSelectIP(arg0, arg1 any, arg2 ...any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) ShouldSelectIP(ip, pool any, filters ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0, arg1}, arg2...)
+	varargs := append([]any{ip, pool}, filters...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ShouldSelectIP", reflect.TypeOf((*MockInterface)(nil).ShouldSelectIP), varargs...)
 }

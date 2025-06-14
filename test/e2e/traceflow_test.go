@@ -115,11 +115,19 @@ func testTraceflowIntraNodeANNP(t *testing.T, data *TestData) {
 		nodeIdx = clusterInfo.windowsNodes[0]
 	}
 	node1 := nodeName(nodeIdx)
-	node1Pods, _, node1CleanupFn := createTestAgnhostPods(t, data, 3, data.testNamespace, node1)
+	node1Pods, node1PodIPs, node1CleanupFn := createTestAgnhostPods(t, data, 3, data.testNamespace, node1)
 	defer node1CleanupFn()
 	// Give a little time for Windows containerd Nodes to setup OVS.
 	// Containerd configures port asynchronously, which could cause execution time of installing flow longer than docker.
 	time.Sleep(time.Second * 1)
+
+	var pod0IPv4Str, pod0IPv6Str string
+	if node1PodIPs[0].IPv4 != nil {
+		pod0IPv4Str = node1PodIPs[0].IPv4.String()
+	}
+	if node1PodIPs[0].IPv6 != nil {
+		pod0IPv6Str = node1PodIPs[0].IPv6.String()
+	}
 
 	var denyIngress *v1beta1.NetworkPolicy
 	denyIngressName := "test-annp-deny-ingress"
@@ -187,6 +195,7 @@ func testTraceflowIntraNodeANNP(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:         v1beta1.ComponentNetworkPolicy,
@@ -237,6 +246,7 @@ func testTraceflowIntraNodeANNP(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:         v1beta1.ComponentNetworkPolicy,
@@ -287,6 +297,7 @@ func testTraceflowIntraNodeANNP(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:         v1beta1.ComponentNetworkPolicy,
@@ -325,9 +336,12 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 	// Give a little time for Windows containerd Nodes to setup OVS.
 	// Containerd configures port asynchronously, which could cause execution time of installing flow longer than docker.
 	time.Sleep(time.Second * 1)
-	var pod0IPv4Str, pod1IPv4Str, dstPodIPv4Str, dstPodIPv6Str string
+	var pod0IPv4Str, pod0IPv6Str, pod1IPv4Str, dstPodIPv4Str, dstPodIPv6Str string
 	if node1IPs[0].IPv4 != nil {
 		pod0IPv4Str = node1IPs[0].IPv4.String()
+	}
+	if node1IPs[0].IPv6 != nil {
+		pod0IPv6Str = node1IPs[0].IPv6.String()
 	}
 	if node1IPs[1].IPv4 != nil {
 		pod1IPv4Str = node1IPs[1].IPv4.String()
@@ -423,6 +437,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -476,6 +491,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -528,6 +544,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -574,6 +591,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -638,6 +656,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -753,6 +772,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -806,6 +826,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -858,6 +879,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -904,6 +926,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -978,6 +1001,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1027,6 +1051,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1076,6 +1101,7 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  pod0IPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1118,23 +1144,29 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 	node1 := nodeName(nodeIdx0)
 	node2 := nodeName(nodeIdx1)
 
-	node1Pods, _, node1CleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, node1)
+	node1Pods, node1IPs, node1CleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, node1)
 	node2Pods, node2IPs, node2CleanupFn := createTestAgnhostPods(t, data, 3, data.testNamespace, node2)
 	gatewayIPv4, gatewayIPv6 := nodeGatewayIPs(1)
 	defer node1CleanupFn()
 	defer node2CleanupFn()
-	var dstPodIPv4Str, dstPodIPv6Str string
+	var dstPodIPv4Str, dstPodIPv6Str, srcPodIPv4Str, srcPodIPv6Str string
 	if node2IPs[0].IPv4 != nil {
 		dstPodIPv4Str = node2IPs[0].IPv4.String()
 	}
 	if node2IPs[0].IPv6 != nil {
 		dstPodIPv6Str = node2IPs[0].IPv6.String()
 	}
+	if node1IPs[0].IPv4 != nil {
+		srcPodIPv4Str = node1IPs[0].IPv4.String()
+	}
+	if node1IPs[0].IPv6 != nil {
+		srcPodIPv6Str = node1IPs[0].IPv6.String()
+	}
 
 	// Create Service backend Pod. The "hairpin" testcases require the Service to have a single backend Pod,
 	// and no more, in order to be deterministic.
 	agnhostPodName := "agnhost"
-	require.NoError(t, NewPodBuilder(agnhostPodName, data.testNamespace, agnhostImage).OnNode(node2).WithCommand([]string{"sleep", "3600"}).WithLabels(map[string]string{"app": "agnhost-server"}).Create(data))
+	require.NoError(t, NewPodBuilder(agnhostPodName, data.testNamespace, agnhostImage).OnNode(node2).WithLabels(map[string]string{"app": "agnhost-server"}).Create(data))
 	agnhostIP, err := data.podWaitForIPs(defaultTimeout, agnhostPodName, data.testNamespace)
 	require.NoError(t, err)
 
@@ -1241,6 +1273,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1307,6 +1340,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1368,6 +1402,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1439,6 +1474,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv4Str,
 						},
 						{
 							Component:       v1beta1.ComponentLB,
@@ -1516,6 +1552,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  agnhostIPv4Str,
 						},
 						{
 							Component:       v1beta1.ComponentLB,
@@ -1567,6 +1604,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv4Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1635,6 +1673,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1704,6 +1743,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1764,6 +1804,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -1832,6 +1873,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv6Str,
 						},
 						{
 							Component:       v1beta1.ComponentLB,
@@ -1906,6 +1948,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  agnhostIPv6Str,
 						},
 						{
 							Component:       v1beta1.ComponentLB,
@@ -1962,6 +2005,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 						{
 							Component: v1beta1.ComponentSpoofGuard,
 							Action:    v1beta1.ActionForwarded,
+							SrcPodIP:  srcPodIPv6Str,
 						},
 						{
 							Component:     v1beta1.ComponentNetworkPolicy,
@@ -2017,12 +2061,17 @@ func testTraceflowExternalIP(t *testing.T, data *TestData) {
 	}
 	node := nodeName(nodeIdx)
 	nodeIP := nodeIP(nodeIdx)
-	podNames, _, cleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, node)
+	podNames, podIPs, cleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, node)
 	defer cleanupFn()
 	// Give a little time for Windows containerd Nodes to setup OVS.
 	// Containerd configures port asynchronously, which could cause execution time of installing flow longer than docker.
 	time.Sleep(time.Second * 1)
-
+	var srcPodIP string
+	if podIPs[0].IPv4 != nil {
+		srcPodIP = podIPs[0].IPv4.String()
+	} else {
+		srcPodIP = podIPs[0].IPv6.String()
+	}
 	testcase := testcase{
 		name:      "nodeIPDestination",
 		ipVersion: 4,
@@ -2053,6 +2102,7 @@ func testTraceflowExternalIP(t *testing.T, data *TestData) {
 					{
 						Component: v1beta1.ComponentSpoofGuard,
 						Action:    v1beta1.ActionForwarded,
+						SrcPodIP:  srcPodIP,
 					},
 					{
 						Component:     v1beta1.ComponentForwarding,
@@ -2072,8 +2122,14 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 	egressIP := nodeIP(0)
 	externalDstIP := "1.1.1.1"
 
-	localPodNames, _, localCleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, egressNode)
+	localPodNames, localPodIPs, localCleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, egressNode)
 	defer localCleanupFn()
+	var srcPodIP string
+	if localPodIPs[0].IPv4 != nil {
+		srcPodIP = localPodIPs[0].IPv4.String()
+	} else {
+		srcPodIP = localPodIPs[0].IPv6.String()
+	}
 
 	matchExpressions := []metav1.LabelSelectorRequirement{
 		{
@@ -2084,7 +2140,7 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 	}
 
 	egress := data.createEgress(t, "egress-", matchExpressions, nil, "", egressIP, nil)
-	defer data.crdClient.CrdV1beta1().Egresses().Delete(context.TODO(), egress.Name, metav1.DeleteOptions{})
+	defer data.CRDClient.CrdV1beta1().Egresses().Delete(context.TODO(), egress.Name, metav1.DeleteOptions{})
 
 	testcaseLocalEgress := testcase{
 		name:      "egressFromLocalNode",
@@ -2116,12 +2172,14 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 					{
 						Component: v1beta1.ComponentSpoofGuard,
 						Action:    v1beta1.ActionForwarded,
+						SrcPodIP:  srcPodIP,
 					},
 					{
-						Component: v1beta1.ComponentEgress,
-						Action:    v1beta1.ActionMarkedForSNAT,
-						Egress:    egress.Name,
-						EgressIP:  egressIP,
+						Component:  v1beta1.ComponentEgress,
+						Action:     v1beta1.ActionMarkedForSNAT,
+						Egress:     egress.Name,
+						EgressIP:   egressIP,
+						EgressNode: egressNode,
 					},
 					{
 						Component:     v1beta1.ComponentForwarding,
@@ -2139,8 +2197,13 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 
 	skipIfNumNodesLessThan(t, 2)
 	remoteNode := nodeName(1)
-	remotePodNames, _, remoteCleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, remoteNode)
+	remotePodNames, remotePodIPs, remoteCleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, remoteNode)
 	defer remoteCleanupFn()
+	if remotePodIPs[0].IPv4 != nil {
+		srcPodIP = remotePodIPs[0].IPv4.String()
+	} else {
+		srcPodIP = remotePodIPs[0].IPv6.String()
+	}
 
 	toUpdate := egress.DeepCopy()
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -2149,9 +2212,9 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 				MatchLabels: map[string]string{"antrea-e2e": remotePodNames[0]},
 			},
 		}
-		_, err := data.crdClient.CrdV1beta1().Egresses().Update(context.TODO(), toUpdate, metav1.UpdateOptions{})
+		_, err := data.CRDClient.CrdV1beta1().Egresses().Update(context.TODO(), toUpdate, metav1.UpdateOptions{})
 		if err != nil && errors.IsConflict(err) {
-			toUpdate, _ = data.crdClient.CrdV1beta1().Egresses().Get(context.TODO(), egress.Name, metav1.GetOptions{})
+			toUpdate, _ = data.CRDClient.CrdV1beta1().Egresses().Get(context.TODO(), egress.Name, metav1.GetOptions{})
 		}
 		return err
 	})
@@ -2187,12 +2250,14 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 					{
 						Component: v1beta1.ComponentSpoofGuard,
 						Action:    v1beta1.ActionForwarded,
+						SrcPodIP:  srcPodIP,
 					},
 					{
-						Component: v1beta1.ComponentEgress,
-						Action:    v1beta1.ActionForwardedToEgressNode,
-						Egress:    egress.Name,
-						EgressIP:  egressIP,
+						Component:  v1beta1.ComponentEgress,
+						Action:     v1beta1.ActionForwardedToEgressNode,
+						Egress:     egress.Name,
+						EgressIP:   egressIP,
+						EgressNode: egressNode,
 					},
 					{
 						Component:     v1beta1.ComponentForwarding,
@@ -2296,11 +2361,11 @@ func testTraceflowValidation(t *testing.T, data *TestData) {
 				Spec: tc.spec,
 			}
 			tf.Name = randName("")
-			_, err := data.crdClient.CrdV1beta1().Traceflows().Create(context.TODO(), tf, metav1.CreateOptions{})
+			_, err := data.CRDClient.CrdV1beta1().Traceflows().Create(context.TODO(), tf, metav1.CreateOptions{})
 			if tc.allowed {
 				assert.Nil(t, err)
 			} else {
-				tc.deniedReason = strings.Replace(tc.deniedReason, "{{name}}", tf.Name, -1)
+				tc.deniedReason = strings.ReplaceAll(tc.deniedReason, "{{name}}", tf.Name)
 				expected := "admission webhook \"traceflowvalidator.antrea.io\" denied the request: " + tc.deniedReason
 				assert.EqualError(t, err, expected)
 			}
@@ -2313,8 +2378,8 @@ func (data *TestData) waitForTraceflow(t *testing.T, name string, phase v1beta1.
 	var tf *v1beta1.Traceflow
 	var err error
 	timeout := 15 * time.Second
-	if err = wait.PollImmediate(defaultInterval, timeout, func() (bool, error) {
-		tf, err = data.crdClient.CrdV1beta1().Traceflows().Get(context.TODO(), name, metav1.GetOptions{})
+	if err = wait.PollUntilContextTimeout(context.Background(), defaultInterval, timeout, true, func(ctx context.Context) (bool, error) {
+		tf, err = data.CRDClient.CrdV1beta1().Traceflows().Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil || tf.Status.Phase != phase {
 			return false, nil
 		}
@@ -2342,9 +2407,11 @@ func compareObservations(expected v1beta1.NodeResult, actual v1beta1.NodeResult)
 		if exObs[i].Component != acObs[i].Component ||
 			exObs[i].ComponentInfo != acObs[i].ComponentInfo ||
 			exObs[i].Pod != acObs[i].Pod ||
+			exObs[i].SrcPodIP != acObs[i].SrcPodIP ||
 			exObs[i].TranslatedDstIP != acObs[i].TranslatedDstIP ||
 			exObs[i].EgressIP != acObs[i].EgressIP ||
 			exObs[i].Egress != acObs[i].Egress ||
+			exObs[i].EgressNode != acObs[i].EgressNode ||
 			exObs[i].Action != acObs[i].Action ||
 			exObs[i].NetworkPolicy != acObs[i].NetworkPolicy ||
 			exObs[i].NetworkPolicyRule != acObs[i].NetworkPolicyRule {
@@ -2393,7 +2460,7 @@ func (data *TestData) createANNPDenyIngress(key string, value string, name strin
 			Egress: []v1beta1.Rule{},
 		},
 	}
-	annpCreated, err := k8sUtils.crdClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Create(context.TODO(), &annp, metav1.CreateOptions{})
+	annpCreated, err := k8sUtils.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Create(context.TODO(), &annp, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -2402,7 +2469,7 @@ func (data *TestData) createANNPDenyIngress(key string, value string, name strin
 
 // deleteAntreaNetworkpolicy deletes an Antrea NetworkPolicy.
 func (data *TestData) deleteAntreaNetworkpolicy(policy *v1beta1.NetworkPolicy) error {
-	if err := k8sUtils.crdClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{}); err != nil {
+	if err := k8sUtils.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("unable to cleanup policy %v: %v", policy.Name, err)
 	}
 	return nil
@@ -2439,7 +2506,7 @@ func (data *TestData) waitForNetworkpolicyRealized(pod string, node string, isWi
 	if npType == v1beta2.AntreaNetworkPolicy {
 		npOption = "ANNP"
 	}
-	if err := wait.Poll(200*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, 5*time.Second, false, func(ctx context.Context) (bool, error) {
 		var stdout, stderr string
 		var err error
 		if isWindows {
@@ -2455,7 +2522,7 @@ func (data *TestData) waitForNetworkpolicyRealized(pod string, node string, isWi
 			return false, fmt.Errorf("Error when executing antctl get NetworkPolicy, stdout: %s, stderr: %s, err: %v", stdout, stderr, err)
 		}
 		return strings.Contains(stdout, fmt.Sprintf("%s:%s/%s", npType, data.testNamespace, networkpolicy)), nil
-	}); err == wait.ErrWaitTimeout {
+	}); wait.Interrupted(err) {
 		return fmt.Errorf("NetworkPolicy %s isn't realized in time", networkpolicy)
 	} else if err != nil {
 		return err
@@ -2473,11 +2540,11 @@ func runTestTraceflow(t *testing.T, data *TestData, tc testcase) {
 	if tc.skipIfNeeded != nil {
 		tc.skipIfNeeded(t)
 	}
-	if _, err := data.crdClient.CrdV1beta1().Traceflows().Create(context.TODO(), tc.tf, metav1.CreateOptions{}); err != nil {
+	if _, err := data.CRDClient.CrdV1beta1().Traceflows().Create(context.TODO(), tc.tf, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("Error when creating traceflow: %v", err)
 	}
 	defer func() {
-		if err := data.crdClient.CrdV1beta1().Traceflows().Delete(context.TODO(), tc.tf.Name, metav1.DeleteOptions{}); err != nil {
+		if err := data.CRDClient.CrdV1beta1().Traceflows().Delete(context.TODO(), tc.tf.Name, metav1.DeleteOptions{}); err != nil {
 			t.Errorf("Error when deleting traceflow: %v", err)
 		}
 	}()

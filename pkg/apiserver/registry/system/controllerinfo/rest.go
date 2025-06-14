@@ -34,13 +34,11 @@ type REST struct {
 	controllerQuerier querier.ControllerQuerier
 }
 
-// Name of the AntreaControllerInfo resource.
-const ControllerInfoResourceName = "antrea-controller"
-
 var (
-	_ rest.Scoper = &REST{}
-	_ rest.Getter = &REST{}
-	_ rest.Lister = &REST{}
+	_ rest.Scoper               = &REST{}
+	_ rest.Getter               = &REST{}
+	_ rest.Lister               = &REST{}
+	_ rest.SingularNameProvider = &REST{}
 )
 
 // NewREST returns a REST object that will work against API services.
@@ -59,7 +57,7 @@ func (r *REST) getControllerInfo() *crdv1beta1.AntreaControllerInfo {
 	// Now AntreaControllerInfo has a single instance.
 	info := new(crdv1beta1.AntreaControllerInfo)
 	r.controllerQuerier.GetControllerInfo(info, false)
-	info.Name = ControllerInfoResourceName
+	info.Name = crdv1beta1.AntreaControllerInfoResourceName
 	return info
 }
 
@@ -95,4 +93,8 @@ func (r *REST) NamespaceScoped() bool {
 
 func (r *REST) ConvertToTable(ctx context.Context, obj runtime.Object, tableOptions runtime.Object) (*metav1.Table, error) {
 	return rest.NewDefaultTableConvertor(system.Resource("controllerinfos")).ConvertToTable(ctx, obj, tableOptions)
+}
+
+func (r *REST) GetSingularName() string {
+	return "controllerinfo"
 }

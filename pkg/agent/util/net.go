@@ -23,13 +23,15 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"strings"
 
+	"github.com/containernetworking/plugins/pkg/ip"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 
-	"antrea.io/antrea/pkg/util/ip"
+	utilip "antrea.io/antrea/pkg/util/ip"
 )
 
 const (
@@ -72,15 +74,15 @@ func generateInterfaceName(key string, name string, useHead bool) string {
 }
 
 // GenerateContainerInterfaceKey generates a unique string for a Pod's
-// interface as: container/<Container-ID>.
+// interface as: "c/<Container-ID>/<IFDev-Name>".
 // We must use ContainerID instead of PodNamespace + PodName because there could
 // be more than one container associated with the same Pod at some point.
 // For example, when deleting a StatefulSet Pod with 0 second grace period, the
 // Pod will be removed from the Kubernetes API very quickly and a new Pod will
 // be created immediately, and kubelet may process the deletion of the previous
 // Pod and the addition of the new Pod simultaneously.
-func GenerateContainerInterfaceKey(containerID string) string {
-	return fmt.Sprintf("container/%s", containerID)
+func GenerateContainerInterfaceKey(containerID, ifDev string) string {
+	return fmt.Sprintf("c/%s/%s", containerID, ifDev)
 }
 
 // GenerateNodeTunnelInterfaceKey generates a unique string for a Node's
@@ -135,13 +137,9 @@ func listenUnix(address string) (net.Listener, error) {
 	return net.Listen("unix", address)
 }
 
-func dialUnix(address string) (net.Conn, error) {
-	return net.Dial("unix", address)
-}
-
 // GetIPNetDeviceFromIP returns local IPs/masks and associated device from IP, and ignores the interfaces which have
 // names in the ignoredInterfaces.
-func GetIPNetDeviceFromIP(localIPs *ip.DualStackIPs, ignoredInterfaces sets.Set[string]) (v4IPNet *net.IPNet, v6IPNet *net.IPNet, iface *net.Interface, err error) {
+func GetIPNetDeviceFromIP(localIPs *utilip.DualStackIPs, ignoredInterfaces sets.Set[string]) (v4IPNet *net.IPNet, v6IPNet *net.IPNet, iface *net.Interface, err error) {
 	linkList, err := netInterfaces()
 	if err != nil {
 		return nil, nil, nil, err
@@ -265,25 +263,6 @@ func GetIPNetDeviceByCIDRs(cidrsList []string) (v4IPNet, v6IPNet *net.IPNet, lin
 		}
 	}
 	return nil, nil, nil, fmt.Errorf("unable to find local IP and device")
-}
-
-func GetAllIPNetsByName(ifaceName string) ([]*net.IPNet, error) {
-	ips := []*net.IPNet{}
-	adapter, err := netInterfaceByName(ifaceName)
-	if err != nil {
-		return nil, err
-	}
-	addrs, _ := netInterfaceAddrs(adapter)
-	for _, addr := range addrs {
-		if ip, ipNet, err := net.ParseCIDR(addr.String()); err != nil {
-			klog.Warningf("Unable to parse addr %+v, err=%+v", addr, err)
-		} else if !ip.IsLinkLocalUnicast() {
-			ipNet.IP = ip
-			ips = append(ips, ipNet)
-		}
-	}
-	klog.InfoS("Found IPs on interface", "IPs", ips, "interface", ifaceName)
-	return ips, nil
 }
 
 func GetIPv4Addr(ips []net.IP) net.IP {
@@ -438,14 +417,14 @@ func GenerateRandomMAC() net.HardwareAddr {
 	return buf
 }
 
-func GetIPNetsByLink(link *net.Interface) ([]*net.IPNet, error) {
+func getIPNetsByLink(link *net.Interface) ([]*net.IPNet, error) {
 	addrList, err := netInterfaceAddrs(link)
 	if err != nil {
 		return nil, err
 	}
 	var addrs []*net.IPNet
 	for _, a := range addrList {
-		if ipNet, ok := a.(*net.IPNet); ok {
+		if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLinkLocalUnicast() {
 			addrs = append(addrs, ipNet)
 		}
 	}
@@ -459,5 +438,16 @@ func GenerateOVSDatapathID(macString string) string {
 	if macString == "" {
 		macString = GenerateRandomMAC().String()
 	}
-	return "0000" + strings.Replace(macString, ":", "", -1)
+	return "0000" + strings.ReplaceAll(macString, ":", "")
+}
+
+// GetGatewayIPForPodCIDR returns the gateway IP for a given Pod CIDR.
+func GetGatewayIPForPodCIDR(cidr *net.IPNet) net.IP {
+	return ip.NextIP(cidr.IP.Mask(cidr.Mask))
+}
+
+// GetGatewayIPForPodPrefix acts like GetGatewayIPForPodCIDR but takes a netip.Prefix as a parameter
+// and returns a netip.Addr value.
+func GetGatewayIPForPodPrefix(prefix netip.Prefix) netip.Addr {
+	return prefix.Masked().Addr().Next()
 }

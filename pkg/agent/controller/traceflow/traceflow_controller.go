@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"antrea.io/libOpenflow/protocol"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -100,7 +101,7 @@ type Controller struct {
 	networkConfig          *config.NetworkConfig
 	nodeConfig             *config.NodeConfig
 	serviceCIDR            *net.IPNet // K8s Service ClusterIP CIDR
-	queue                  workqueue.RateLimitingInterface
+	queue                  workqueue.TypedRateLimitingInterface[string]
 	runningTraceflowsMutex sync.RWMutex
 	// runningTraceflows is a map for storing the running Traceflow state
 	// with dataplane tag to be the key.
@@ -136,9 +137,14 @@ func NewTraceflowController(
 		networkConfig:         networkConfig,
 		nodeConfig:            nodeConfig,
 		serviceCIDR:           serviceCIDR,
-		queue:                 workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "traceflow"),
-		runningTraceflows:     make(map[int8]*traceflowState),
-		enableAntreaProxy:     enableAntreaProxy,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "traceflow",
+			},
+		),
+		runningTraceflows: make(map[int8]*traceflowState),
+		enableAntreaProxy: enableAntreaProxy,
 	}
 
 	// Add handlers for Traceflow events.
@@ -218,7 +224,7 @@ func (c *Controller) worker() {
 // until we get notified of a new change. This function returns false if and only if the work queue
 // was shutdown (no more items will be processed).
 func (c *Controller) processTraceflowItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
@@ -226,17 +232,9 @@ func (c *Controller) processTraceflowItem() bool {
 	// must remember to call Forget if we do not want this work item being re-queued. For
 	// example, we do not call Forget if a transient error occurs, instead the item is put back
 	// on the workqueue and attempted again after a back-off period.
-	defer c.queue.Done(obj)
+	defer c.queue.Done(key)
 
-	// We expect strings (Traceflow name) to come off the workqueue.
-	if key, ok := obj.(string); !ok {
-		// As the item in the workqueue is actually invalid, we call Forget here else we'd
-		// go into a loop of attempting to process a work item that is invalid.
-		// This should not happen: enqueueTraceflow only enqueues strings.
-		c.queue.Forget(obj)
-		klog.Errorf("Expected string in work queue but got %#v", obj)
-		return true
-	} else if err := c.syncTraceflow(key); err == nil {
+	if err := c.syncTraceflow(key); err == nil {
 		// If no error occurs we Forget this item so it does not get queued again.
 		c.queue.Forget(key)
 	} else {
@@ -491,6 +489,16 @@ func (c *Controller) preparePacket(tf *crdv1beta1.Traceflow, intf *interfacestor
 		} else if packet.DestinationIP.To4() != nil {
 			return nil, errors.New("destination Service does not have an IPv6 ClusterIP")
 		}
+		if !liveTraffic {
+			switch dstSvc.Spec.Ports[0].Protocol {
+			case corev1.ProtocolTCP:
+				packet.IPProto = protocol.Type_TCP
+				packet.TCPFlags = uint8(2)
+			case corev1.ProtocolUDP:
+				packet.IPProto = protocol.Type_UDP
+			}
+			packet.DestinationPort = uint16(dstSvc.Spec.Ports[0].Port)
+		}
 	} else if !liveTraffic {
 		return nil, errors.New("destination is not specified")
 	}
@@ -507,7 +515,9 @@ func (c *Controller) preparePacket(tf *crdv1beta1.Traceflow, intf *interfacestor
 			packet.IPFlags = 0
 		}
 	} else if tf.Spec.Packet.IPHeader != nil {
-		packet.IPProto = uint8(tf.Spec.Packet.IPHeader.Protocol)
+		if tf.Spec.Packet.IPHeader.Protocol > 0 {
+			packet.IPProto = uint8(tf.Spec.Packet.IPHeader.Protocol)
+		}
 		if !liveTraffic {
 			packet.TTL = uint8(tf.Spec.Packet.IPHeader.TTL)
 			packet.IPFlags = uint16(tf.Spec.Packet.IPHeader.Flags)
@@ -534,10 +544,12 @@ func (c *Controller) preparePacket(tf *crdv1beta1.Traceflow, intf *interfacestor
 		}
 	} else if tf.Spec.Packet.TransportHeader.UDP != nil {
 		packet.IPProto = protocol.Type_UDP
+		packet.TCPFlags = uint8(0)
 		packet.SourcePort = uint16(tf.Spec.Packet.TransportHeader.UDP.SrcPort)
 		packet.DestinationPort = uint16(tf.Spec.Packet.TransportHeader.UDP.DstPort)
 	} else if tf.Spec.Packet.TransportHeader.ICMP != nil {
 		isICMP = true
+		packet.TCPFlags = uint8(0)
 		if !liveTraffic {
 			packet.ICMPEchoID = uint16(tf.Spec.Packet.TransportHeader.ICMP.ID)
 			packet.ICMPEchoSeq = uint16(tf.Spec.Packet.TransportHeader.ICMP.Sequence)

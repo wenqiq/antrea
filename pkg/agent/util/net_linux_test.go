@@ -36,6 +36,7 @@ type mockLink struct {
 	name         string
 	masterIndex  int
 	hardwareAddr net.HardwareAddr
+	altNames     []string
 }
 
 func (l mockLink) Attrs() *netlink.LinkAttrs {
@@ -44,6 +45,7 @@ func (l mockLink) Attrs() *netlink.LinkAttrs {
 		Name:         l.name,
 		MasterIndex:  l.masterIndex,
 		HardwareAddr: l.hardwareAddr,
+		AltNames:     l.altNames,
 	}
 }
 
@@ -100,23 +102,23 @@ func TestGetNSPeerDevBridge(t *testing.T) {
 		},
 		{
 			name:       "Get NS Err",
-			getNSErr:   testInvalidErr,
+			getNSErr:   errTestInvalid,
 			wantErrStr: "failed to get NS for path",
 		},
 		{
 			name:           "Get V-eth Peer Err",
-			getVethPeerErr: testInvalidErr,
+			getVethPeerErr: errTestInvalid,
 			wantErrStr:     "failed to get peer idx for dev",
 		},
 		{
 			name:                "Get Interface Err",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 			wantErrStr:          "failed to get interface for idx",
 		},
 		{
 			name: "Get Link Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByIndex(2).Return(nil, testInvalidErr)
+				mockNetlink.LinkByIndex(2).Return(nil, errTestInvalid)
 			},
 			wantErrStr: "failed to get link for idx",
 		},
@@ -130,7 +132,7 @@ func TestGetNSPeerDevBridge(t *testing.T) {
 			name: "Get Bridge Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByIndex(2).Return(mockLink{masterIndex: 1}, nil)
-				mockNetlink.LinkByIndex(1).Return(nil, testInvalidErr)
+				mockNetlink.LinkByIndex(1).Return(nil, errTestInvalid)
 			},
 			wantErrStr: "failed to get master link for dev",
 		},
@@ -177,12 +179,12 @@ func TestGetNSDevInterface(t *testing.T) {
 		},
 		{
 			name:       "Get NS Err",
-			getNSErr:   testInvalidErr,
+			getNSErr:   errTestInvalid,
 			wantErrStr: "failed to get NS for path",
 		},
 		{
 			name:                "Get Interface Err",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 			wantErrStr:          "failed to get interface",
 		},
 	}
@@ -219,7 +221,7 @@ func TestGetNSPath(t *testing.T) {
 		},
 		{
 			name:       "Get NS Err",
-			getNSErr:   testInvalidErr,
+			getNSErr:   errTestInvalid,
 			wantErrStr: "failed to open netns",
 		},
 	}
@@ -265,9 +267,9 @@ func TestSetLinkUp(t *testing.T) {
 		{
 			name: "Get Link Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByName("antrea-en0").Return(nil, testInvalidErr)
+				mockNetlink.LinkByName("antrea-en0").Return(nil, errTestInvalid)
 			},
-			wantErr:   testInvalidErr,
+			wantErr:   errTestInvalid,
 			wantIndex: 0,
 		},
 		{
@@ -284,9 +286,9 @@ func TestSetLinkUp(t *testing.T) {
 			name: "Setup Link Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByName("antrea-en0").Return(testLink, nil)
-				mockNetlink.LinkSetUp(testLink).Return(testInvalidErr)
+				mockNetlink.LinkSetUp(testLink).Return(errTestInvalid)
 			},
-			wantErr:   testInvalidErr,
+			wantErr:   errTestInvalid,
 			wantIndex: 0,
 		},
 	}
@@ -344,16 +346,16 @@ func TestConfigureLinkAddresses(t *testing.T) {
 			name:   "Net Interface Err",
 			ipNets: []*net.IPNet{},
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByIndex(0).Return(testLink, testInvalidErr)
+				mockNetlink.LinkByIndex(0).Return(testLink, errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 		{
 			name:   "Link Addr Err",
 			ipNets: []*net.IPNet{},
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByIndex(0).Return(testLink, nil)
-				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testPublicAddrList, testInvalidErr)
+				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testPublicAddrList, errTestInvalid)
 			},
 			wantErr: fmt.Errorf("failed to query address list for interface test-en0: invalid"),
 		},
@@ -371,7 +373,7 @@ func TestConfigureLinkAddresses(t *testing.T) {
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByIndex(0).Return(testLink, nil)
 				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testPublicAddrList, nil)
-				mockNetlink.AddrDel(testLink, &testPublicAddr).Return(testInvalidErr)
+				mockNetlink.AddrDel(testLink, &testPublicAddr).Return(errTestInvalid)
 			},
 			wantErr: fmt.Errorf("failed to remove address 8.8.8.8/32 from interface test-en0: invalid"),
 		},
@@ -382,7 +384,7 @@ func TestConfigureLinkAddresses(t *testing.T) {
 				mockNetlink.LinkByIndex(0).Return(testLink, nil)
 				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testPublicAddrList, nil)
 				mockNetlink.AddrDel(testLink, &testPublicAddr).Return(nil)
-				mockNetlink.AddrAdd(testLink, &testZeroAddr).Return(testInvalidErr)
+				mockNetlink.AddrAdd(testLink, &testZeroAddr).Return(errTestInvalid)
 			},
 			wantErr: fmt.Errorf("failed to add address 0.0.0.0/32 to interface test-en0: invalid"),
 		},
@@ -416,17 +418,17 @@ func TestSetAdapterMACAddress(t *testing.T) {
 		{
 			name: "Get Link Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByName("test-en0").Return(nil, testInvalidErr)
+				mockNetlink.LinkByName("test-en0").Return(nil, errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 		{
 			name: "Set Hardware Addr Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByName("test-en0").Return(testLink, nil)
-				mockNetlink.LinkSetHardwareAddr(testLink, testMACAddr).Return(testInvalidErr)
+				mockNetlink.LinkSetHardwareAddr(testLink, testMACAddr).Return(errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 	}
 
@@ -456,7 +458,7 @@ func TestHostInterfaceExists(t *testing.T) {
 		{
 			name: "Interface Fail",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByName("test-en0").Return(nil, testInvalidErr)
+				mockNetlink.LinkByName("test-en0").Return(nil, errTestInvalid)
 			},
 			wantExists: false,
 		},
@@ -510,18 +512,18 @@ func TestGetInterfaceConfig(t *testing.T) {
 		},
 		{
 			name:                "Interface Err",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 			wantErrStr:          "failed to get interface by name 0",
 		},
 		{
 			name:            "Get Address Err",
-			testNetAddrsErr: testInvalidErr,
+			testNetAddrsErr: errTestInvalid,
 			wantErrStr:      "failed to get address for interface 0",
 		},
 		{
 			name: "Net Link Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByIndex(0).Return(nil, testInvalidErr)
+				mockNetlink.LinkByIndex(0).Return(nil, errTestInvalid)
 			},
 			wantErrStr: "failed to get routes for iface.Index 0",
 		},
@@ -529,7 +531,7 @@ func TestGetInterfaceConfig(t *testing.T) {
 			name: "Route List Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByIndex(0).Return(mockLink{name: "test-en0"}, nil)
-				mockNetlink.RouteList(mockLink{name: "test-en0"}, netlink.FAMILY_ALL).Return(nil, testInvalidErr)
+				mockNetlink.RouteList(mockLink{name: "test-en0"}, netlink.FAMILY_ALL).Return(nil, errTestInvalid)
 			},
 			wantErrStr: "failed to get routes for iface.Index 0",
 		},
@@ -557,6 +559,7 @@ func TestGetInterfaceConfig(t *testing.T) {
 
 func TestRenameInterface(t *testing.T) {
 	renameFailErr := fmt.Errorf("failed to rename host interface name test1 to test2")
+	removeAltNameFailErr := fmt.Errorf("failed to remove AltName test1 on interface test2: %w", errTestInvalid)
 	tests := []struct {
 		name          string
 		expectedCalls func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
@@ -569,12 +572,24 @@ func TestRenameInterface(t *testing.T) {
 				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(nil)
 				mockNetlink.LinkSetName(mockLink{name: "test1"}, "test2").Return(nil)
 				mockNetlink.LinkSetUp(mockLink{name: "test1"}).Return(nil)
+				mockNetlink.LinkByName("test2").Return(mockLink{name: "test2", altNames: []string{}}, nil)
+			},
+		},
+		{
+			name: "Rename Interface Success with AltName",
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, nil)
+				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(nil)
+				mockNetlink.LinkSetName(mockLink{name: "test1"}, "test2").Return(nil)
+				mockNetlink.LinkSetUp(mockLink{name: "test1"}).Return(nil)
+				mockNetlink.LinkByName("test2").Return(mockLink{name: "test2", altNames: []string{"test1"}}, nil)
+				mockNetlink.LinkDelAltName(mockLink{name: "test2", altNames: []string{"test1"}}, "test1").Return(nil)
 			},
 		},
 		{
 			name: "Interface Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, testInvalidErr).AnyTimes()
+				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, errTestInvalid).AnyTimes()
 			},
 			wantErr: renameFailErr,
 		},
@@ -582,7 +597,7 @@ func TestRenameInterface(t *testing.T) {
 			name: "Set Down Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, nil).AnyTimes()
-				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(testInvalidErr).AnyTimes()
+				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(errTestInvalid).AnyTimes()
 			},
 			wantErr: renameFailErr,
 		},
@@ -591,7 +606,7 @@ func TestRenameInterface(t *testing.T) {
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, nil).AnyTimes()
 				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(nil).AnyTimes()
-				mockNetlink.LinkSetName(mockLink{name: "test1"}, "test2").Return(testInvalidErr).AnyTimes()
+				mockNetlink.LinkSetName(mockLink{name: "test1"}, "test2").Return(errTestInvalid).AnyTimes()
 			},
 			wantErr: renameFailErr,
 		},
@@ -601,9 +616,21 @@ func TestRenameInterface(t *testing.T) {
 				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, nil).AnyTimes()
 				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(nil).AnyTimes()
 				mockNetlink.LinkSetName(mockLink{name: "test1"}, "test2").Return(nil).AnyTimes()
-				mockNetlink.LinkSetUp(mockLink{name: "test1"}).Return(testInvalidErr).AnyTimes()
+				mockNetlink.LinkSetUp(mockLink{name: "test1"}).Return(errTestInvalid).AnyTimes()
 			},
 			wantErr: renameFailErr,
+		},
+		{
+			name: "Remove AltName Err",
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.LinkByName("test1").Return(mockLink{name: "test1"}, nil)
+				mockNetlink.LinkSetDown(mockLink{name: "test1"}).Return(nil)
+				mockNetlink.LinkSetName(mockLink{name: "test1"}, "test2").Return(nil)
+				mockNetlink.LinkSetUp(mockLink{name: "test1"}).Return(nil)
+				mockNetlink.LinkByName("test2").Return(mockLink{name: "test2", altNames: []string{"test1"}}, nil)
+				mockNetlink.LinkDelAltName(mockLink{name: "test2", altNames: []string{"test1"}}, "test1").Return(errTestInvalid)
+			},
+			wantErr: removeAltNameFailErr,
 		},
 	}
 
@@ -635,17 +662,17 @@ func TestRemoveLinkIPs(t *testing.T) {
 		{
 			name: "Addr List Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testAddrList, testInvalidErr)
+				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testAddrList, errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 		{
 			name: "Addr Del Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.AddrList(testLink, netlink.FAMILY_ALL).Return(testAddrList, nil)
-				mockNetlink.AddrDel(testLink, &testAddrList[0]).Return(testInvalidErr)
+				mockNetlink.AddrDel(testLink, &testAddrList[0]).Return(errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 	}
 
@@ -677,17 +704,17 @@ func TestRemoveLinkRoutes(t *testing.T) {
 		{
 			name: "Route List Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.RouteList(testLink, netlink.FAMILY_ALL).Return(nil, testInvalidErr)
+				mockNetlink.RouteList(testLink, netlink.FAMILY_ALL).Return(nil, errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 		{
 			name: "Route Del Err",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteList(testLink, netlink.FAMILY_ALL).Return([]netlink.Route{testRoute}, nil)
-				mockNetlink.RouteDel(&testRoute).Return(testInvalidErr)
+				mockNetlink.RouteDel(&testRoute).Return(errTestInvalid)
 			},
-			wantErr: testInvalidErr,
+			wantErr: errTestInvalid,
 		},
 	}
 
@@ -714,15 +741,21 @@ func TestConfigureLinkRoutes(t *testing.T) {
 		{
 			name: "Configure Link Route Success",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.RouteReplace(&routes[0]).Return(nil)
+				mockNetlink.RouteAdd(&routes[0]).Return(nil)
 			},
 		},
 		{
-			name: "Route Replace Err",
+			name: "Configure Link Route with file exists error",
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
-				mockNetlink.RouteReplace(&routes[0]).Return(testInvalidErr)
+				mockNetlink.RouteAdd(&routes[0]).Return(fmt.Errorf("RTNETLINK answers: File exists"))
 			},
-			wantErr: testInvalidErr,
+		},
+		{
+			name: "Route Add Err",
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.RouteAdd(&routes[0]).Return(errTestInvalid)
+			},
+			wantErr: errTestInvalid,
 		},
 	}
 

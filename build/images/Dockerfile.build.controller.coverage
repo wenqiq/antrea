@@ -13,8 +13,7 @@
 # limitations under the License.
 
 ARG GO_VERSION
-ARG BUILD_TAG
-FROM golang:${GO_VERSION} as antrea-build
+FROM golang:${GO_VERSION} AS antrea-build
 
 WORKDIR /antrea
 
@@ -24,22 +23,23 @@ RUN go mod download
 
 COPY . /antrea
 
-RUN make antrea-controller antrea-controller-instr-binary
-# Disable CGO for antctl in case it is copied outside of the container image. It
-# also reduces the size of the binary and aligns with how we distribute antctl
-# in release assets.
-RUN CGO_ENABLED=0 make antctl-linux antctl-instr-binary
-RUN mv bin/antctl-linux bin/antctl
+RUN make antctl-instr-binary
 
-FROM ubuntu:22.04
+RUN make antrea-controller-instr-binary
+
+FROM ubuntu:24.04
 
 LABEL maintainer="Antrea <projectantrea-dev@googlegroups.com>"
 LABEL description="The Docker image to deploy the antrea-controller with code coverage measurement enabled (used for testing)."
 
 USER root
 
-COPY --from=antrea-build /antrea/bin/antrea-controller /usr/local/bin/
-COPY --from=antrea-build /antrea/bin/antctl /usr/local/bin/
-COPY --from=antrea-build /antrea/bin/antrea-controller-coverage /usr/local/bin/
-COPY --from=antrea-build /antrea/bin/antctl-coverage /usr/local/bin/
-COPY --from=antrea-build /antrea/test/e2e/coverage/controller-arg-file /
+COPY --from=antrea-build /antrea/bin/antrea-controller-coverage /usr/local/bin/antrea-controller
+COPY --from=antrea-build /antrea/bin/antctl-coverage /usr/local/bin/antctl
+COPY --from=antrea-build /antrea/test/e2e/utils/run_cov_binary.sh /
+
+# This environment variable will persist when running the container, but can also be overwritten if needed
+ENV GOCOVERDIR=/tmp/coverage
+RUN mkdir -p $GOCOVERDIR
+
+ENTRYPOINT [ "/run_cov_binary.sh" ]

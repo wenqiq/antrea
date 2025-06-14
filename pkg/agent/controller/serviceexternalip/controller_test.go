@@ -30,10 +30,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/util/workqueue"
 
+	"antrea.io/antrea/pkg/agent/apis"
 	ipassignertest "antrea.io/antrea/pkg/agent/ipassigner/testing"
 	"antrea.io/antrea/pkg/agent/memberlist"
 	"antrea.io/antrea/pkg/agent/types"
-	"antrea.io/antrea/pkg/querier"
 )
 
 const (
@@ -108,7 +108,6 @@ func (f *fakeMemberlistCluster) ShouldSelectIP(ip string, pool string, filters .
 type fakeController struct {
 	*ServiceExternalIPController
 	mockController        *gomock.Controller
-	clientset             *fake.Clientset
 	informerFactory       informers.SharedInformerFactory
 	mockIPAssigner        *ipassignertest.MockIPAssigner
 	fakeMemberlistCluster *fakeMemberlistCluster
@@ -135,17 +134,20 @@ func newFakeController(t *testing.T, objs ...runtime.Object) *fakeController {
 		endpointsInformer:     endpointInformer.Informer(),
 		endpointsListerSynced: endpointInformer.Informer().HasSynced,
 		endpointsLister:       endpointInformer.Lister(),
-		queue:                 workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "serviceExternalIP"),
-		client:                clientset,
-		externalIPStates:      make(map[apimachinerytypes.NamespacedName]externalIPState),
-		cluster:               memberlistCluster,
-		ipAssigner:            mockIPAssigner,
-		assignedIPs:           make(map[string]sets.Set[string]),
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[apimachinerytypes.NamespacedName](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[apimachinerytypes.NamespacedName]{
+				Name: "ServiceExternalIP",
+			},
+		),
+		externalIPStates: make(map[apimachinerytypes.NamespacedName]externalIPState),
+		cluster:          memberlistCluster,
+		ipAssigner:       mockIPAssigner,
+		assignedIPs:      make(map[string]sets.Set[string]),
 	}
 	return &fakeController{
 		ServiceExternalIPController: eipController,
 		mockController:              controller,
-		clientset:                   clientset,
 		informerFactory:             informerFactory,
 		mockIPAssigner:              mockIPAssigner,
 		fakeMemberlistCluster:       memberlistCluster,
@@ -707,19 +709,19 @@ func TestServiceExternalIPController_GetServiceExternalIPStatus(t *testing.T) {
 	tests := []struct {
 		name                          string
 		externalIPStates              map[apimachinerytypes.NamespacedName]externalIPState
-		expectedServiceExternalIPInfo []querier.ServiceExternalIPInfo
+		expectedServiceExternalIPInfo []apis.ServiceExternalIPInfo
 	}{
 		{
 			name:                          "no Service available should return empty slice",
 			externalIPStates:              map[apimachinerytypes.NamespacedName]externalIPState{},
-			expectedServiceExternalIPInfo: []querier.ServiceExternalIPInfo{},
+			expectedServiceExternalIPInfo: []apis.ServiceExternalIPInfo{},
 		},
 		{
 			name: "one Service processed",
 			externalIPStates: map[apimachinerytypes.NamespacedName]externalIPState{
 				keyFor(servicePolicyCluster): {fakeServiceExternalIP1, fakeExternalIPPoolName, fakeNode1},
 			},
-			expectedServiceExternalIPInfo: []querier.ServiceExternalIPInfo{
+			expectedServiceExternalIPInfo: []apis.ServiceExternalIPInfo{
 				{
 
 					ServiceName:    servicePolicyCluster.Name,
@@ -736,7 +738,7 @@ func TestServiceExternalIPController_GetServiceExternalIPStatus(t *testing.T) {
 				keyFor(servicePolicyCluster): {fakeServiceExternalIP1, fakeExternalIPPoolName, fakeNode1},
 				keyFor(servicePolicyLocal):   {fakeServiceExternalIP2, fakeExternalIPPoolName, fakeNode2},
 			},
-			expectedServiceExternalIPInfo: []querier.ServiceExternalIPInfo{
+			expectedServiceExternalIPInfo: []apis.ServiceExternalIPInfo{
 				{
 
 					ServiceName:    servicePolicyCluster.Name,

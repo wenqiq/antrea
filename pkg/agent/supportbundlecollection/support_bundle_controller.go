@@ -17,16 +17,11 @@ package supportbundlecollection
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/url"
-	"path"
 	"reflect"
 	"sync"
 	"time"
 
-	"github.com/pkg/sftp"
 	"github.com/spf13/afero"
-	"golang.org/x/crypto/ssh"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -35,7 +30,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/exec"
 
-	"antrea.io/antrea/pkg/agent"
+	"antrea.io/antrea/pkg/agent/client"
 	agentquerier "antrea.io/antrea/pkg/agent/querier"
 	"antrea.io/antrea/pkg/apis/controlplane"
 	cpv1b2 "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
@@ -44,6 +39,7 @@ import (
 	"antrea.io/antrea/pkg/support"
 	"antrea.io/antrea/pkg/util/compress"
 	"antrea.io/antrea/pkg/util/k8s"
+	"antrea.io/antrea/pkg/util/sftp"
 )
 
 type ProtocolType string
@@ -52,9 +48,6 @@ const (
 	sftpProtocol ProtocolType = "sftp"
 
 	controllerName = "SupportBundleCollectionController"
-
-	uploadToFileServerTries      = 5
-	uploadToFileServerRetryDelay = 5 * time.Second
 )
 
 var (
@@ -69,8 +62,8 @@ type SupportBundleController struct {
 	nodeName                     string
 	supportBundleNodeType        controlplane.SupportBundleCollectionNodeType
 	namespace                    string
-	antreaClientGetter           agent.AntreaClientProvider
-	queue                        workqueue.Interface
+	antreaClientGetter           client.AntreaClientProvider
+	queue                        workqueue.TypedInterface[string]
 	supportBundleCollection      *cpv1b2.SupportBundleCollection
 	supportBundleCollectionMutex sync.RWMutex
 	ovsCtlClient                 ovsctl.OVSCtlClient
@@ -78,13 +71,13 @@ type SupportBundleController struct {
 	npq                          querier.AgentNetworkPolicyInfoQuerier
 	v4Enabled                    bool
 	v6Enabled                    bool
-	sftpUploader                 uploader
+	sftpUploader                 sftp.Uploader
 }
 
 func NewSupportBundleController(nodeName string,
 	supportBundleNodeType controlplane.SupportBundleCollectionNodeType,
 	namespace string,
-	antreaClientGetter agent.AntreaClientProvider,
+	antreaClientGetter client.AntreaClientProvider,
 	ovsCtlClient ovsctl.OVSCtlClient,
 	aq agentquerier.AgentQuerier,
 	npq querier.AgentNetworkPolicyInfoQuerier,
@@ -95,13 +88,15 @@ func NewSupportBundleController(nodeName string,
 		supportBundleNodeType: supportBundleNodeType,
 		namespace:             namespace,
 		antreaClientGetter:    antreaClientGetter,
-		queue:                 workqueue.NewNamed("supportbundle"),
-		ovsCtlClient:          ovsCtlClient,
-		aq:                    aq,
-		npq:                   npq,
-		v4Enabled:             v4Enabled,
-		v6Enabled:             v6Enabled,
-		sftpUploader:          &sftpUploader{},
+		queue: workqueue.NewTypedWithConfig(workqueue.TypedQueueConfig[string]{
+			Name: "supportbundle",
+		}),
+		ovsCtlClient: ovsCtlClient,
+		aq:           aq,
+		npq:          npq,
+		v4Enabled:    v4Enabled,
+		v6Enabled:    v6Enabled,
+		sftpUploader: sftp.NewUploader(),
 	}
 	return c
 }
@@ -140,26 +135,24 @@ func (c *SupportBundleController) watchSupportBundleCollections() {
 	}()
 
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return
-			}
-			switch event.Type {
-			case watch.Bookmark:
-				klog.V(2).Info("Received Bookmark event")
-			case watch.Added:
-				c.addSupportBundleCollection(event.Object.(*cpv1b2.SupportBundleCollection))
-				klog.InfoS("Added SupportBundleCollection", "name", event.Object.(*cpv1b2.SupportBundleCollection).Name)
-			case watch.Deleted:
-				c.deleteSupportBundleCollection(event.Object.(*cpv1b2.SupportBundleCollection))
-				klog.InfoS("Deleted SupportBundleCollection", "name", event.Object.(*cpv1b2.SupportBundleCollection).Name)
-			default:
-				klog.ErrorS(nil, "Received unknown event", "event", event.Type)
-				return
-			}
-			eventCount++
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			return
 		}
+		switch event.Type {
+		case watch.Bookmark:
+			klog.V(2).Info("Received Bookmark event")
+		case watch.Added:
+			c.addSupportBundleCollection(event.Object.(*cpv1b2.SupportBundleCollection))
+			klog.InfoS("Added SupportBundleCollection", "name", event.Object.(*cpv1b2.SupportBundleCollection).Name)
+		case watch.Deleted:
+			c.deleteSupportBundleCollection(event.Object.(*cpv1b2.SupportBundleCollection))
+			klog.InfoS("Deleted SupportBundleCollection", "name", event.Object.(*cpv1b2.SupportBundleCollection).Name)
+		default:
+			klog.ErrorS(nil, "Received unknown event", "event", event.Type)
+			return
+		}
+		eventCount++
 	}
 }
 
@@ -195,16 +188,13 @@ func (c *SupportBundleController) worker() {
 }
 
 func (c *SupportBundleController) processNextWorkItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
-	defer c.queue.Done(obj)
+	defer c.queue.Done(key)
 
-	if key, ok := obj.(string); !ok {
-		klog.Errorf("Expected string in work queue but got %#v", obj)
-		return true
-	} else if err := c.syncSupportBundleCollection(key); err == nil {
+	if err := c.syncSupportBundleCollection(key); err == nil {
 		klog.InfoS("Successfully synced support bundle", "name", key)
 	} else {
 		// Skip retrying as the time may not meet the requirements for SupportBundle.
@@ -256,6 +246,9 @@ func (c *SupportBundleController) generateSupportBundle(supportBundle *cpv1b2.Su
 	if err = agentDumper.DumpFlows(basedir); err != nil {
 		return err
 	}
+	if err = agentDumper.DumpGroups(basedir); err != nil {
+		return err
+	}
 	if err = agentDumper.DumpNetworkPolicyResources(basedir); err != nil {
 		return err
 	}
@@ -299,98 +292,27 @@ func (c *SupportBundleController) uploadSupportBundle(supportBundle *cpv1b2.Supp
 	if err != nil {
 		return fmt.Errorf("failed to upload support bundle while getting uploader: %v", err)
 	}
+
 	if _, err := outputFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("failed to upload support bundle to file server while setting offset: %v", err)
+		return fmt.Errorf("failed to upload to the file server while setting offset: %v", err)
 	}
-	// fileServer.URL should be like: 10.92.23.154:22/path or sftp://10.92.23.154:22/path
-	parsedURL, err := parseUploadUrl(supportBundle.FileServer.URL)
+	fileName := c.nodeName + "_" + supportBundle.Name + ".tar.gz"
+	cfg, err := sftp.GetSSHClientConfig(
+		supportBundle.Authentication.BasicAuthentication.Username,
+		supportBundle.Authentication.BasicAuthentication.Password,
+		supportBundle.FileServer.HostPublicKey,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to upload support bundle while parsing upload URL: %v", err)
+		return fmt.Errorf("failed to generate SSH client config: %w", err)
 	}
-	triesLeft := uploadToFileServerTries
-	var uploadErr error
-	for triesLeft > 0 {
-		if uploadErr = c.uploadToFileServer(uploader, supportBundle.Name, parsedURL, &supportBundle.Authentication, outputFile); uploadErr == nil {
-			return nil
-		}
-		triesLeft--
-		if triesLeft == 0 {
-			return fmt.Errorf("failed to upload support bundle after %d attempts", uploadToFileServerTries)
-		}
-		klog.InfoS("Failed to upload support bundle", "UploadError", uploadErr, "TriesLeft", triesLeft)
-		time.Sleep(uploadToFileServerRetryDelay)
-	}
-	return nil
+	return uploader.Upload(supportBundle.FileServer.URL, fileName, cfg, outputFile)
 }
 
-func parseUploadUrl(uploadUrl string) (*url.URL, error) {
-	parsedURL, err := url.Parse(uploadUrl)
-	if err != nil {
-		parsedURL, err = url.Parse("sftp://" + uploadUrl)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if parsedURL.Scheme != "sftp" {
-		return nil, fmt.Errorf("not sftp protocol")
-	}
-	return parsedURL, nil
-}
-
-func (c *SupportBundleController) uploadToFileServer(up uploader, bundleName string, parsedURL *url.URL, serverAuth *cpv1b2.BundleServerAuthConfiguration, tarGzFile io.Reader) error {
-	joinedPath := path.Join(parsedURL.Path, c.nodeName+"_"+bundleName+".tar.gz")
-	cfg := &ssh.ClientConfig{
-		User: serverAuth.BasicAuthentication.Username,
-		Auth: []ssh.AuthMethod{ssh.Password(serverAuth.BasicAuthentication.Password)},
-		// #nosec G106: skip host key check here and users can specify their own checks if needed
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         time.Second,
-	}
-	return up.upload(parsedURL.Host, joinedPath, cfg, tarGzFile)
-}
-
-func (c *SupportBundleController) getUploaderByProtocol(protocol ProtocolType) (uploader, error) {
+func (c *SupportBundleController) getUploaderByProtocol(protocol ProtocolType) (sftp.Uploader, error) {
 	if protocol == sftpProtocol {
 		return c.sftpUploader, nil
 	}
 	return nil, fmt.Errorf("unsupported protocol %s", protocol)
-}
-
-type uploader interface {
-	upload(addr string, path string, config *ssh.ClientConfig, tarGzFile io.Reader) error
-}
-
-type sftpUploader struct {
-}
-
-func (uploader *sftpUploader) upload(address string, path string, config *ssh.ClientConfig, tarGzFile io.Reader) error {
-	conn, err := ssh.Dial("tcp", address, config)
-	if err != nil {
-		return fmt.Errorf("error when connecting to fs server: %w", err)
-	}
-	sftpClient, err := sftp.NewClient(conn)
-	if err != nil {
-		return fmt.Errorf("error when setting up sftp client: %w", err)
-	}
-	defer func() {
-		if err := sftpClient.Close(); err != nil {
-			klog.ErrorS(err, "Error when closing sftp client")
-		}
-	}()
-	targetFile, err := sftpClient.Create(path)
-	if err != nil {
-		return fmt.Errorf("error when creating target file on remote: %v", err)
-	}
-	defer func() {
-		if err := targetFile.Close(); err != nil {
-			klog.ErrorS(err, "Error when closing target file on remote")
-		}
-	}()
-	if written, err := io.Copy(targetFile, tarGzFile); err != nil {
-		return fmt.Errorf("error when copying target file: %v, written: %d", err, written)
-	}
-	klog.InfoS("Successfully upload file to path", "filePath", path)
-	return nil
 }
 
 func (c *SupportBundleController) updateSupportBundleCollectionStatus(key string, complete bool, genErr error) error {

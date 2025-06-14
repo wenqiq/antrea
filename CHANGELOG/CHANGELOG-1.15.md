@@ -1,5 +1,37 @@
 # Changelog 1.15
 
+## 1.15.2 - 2024-06-20
+
+### Fixed
+
+- Remove unexpected `altname` after renaming interface to avoid failure when moving host interface to OVS bridge. ([#6321](https://github.com/antrea-io/antrea/pull/6321), [@gran-vmv])
+- Do not try to update type of Secret in selfSignedCertProvider to avoid self-signed certificate update failure. ([#6205](https://github.com/antrea-io/antrea/pull/6205), [@tnqn])
+- Install multicast related iptables rules only on IPv4 chains to fix the antrea-agent initialization failure occurring when the Multicast feature is enabled in dual-stack clusters. ([#6123](https://github.com/antrea-io/antrea/pull/6123), [@wenyingd])
+- Fix a single rule deletion bug for NodePortLocal on Linux and improve robustness of NPL rule cleanup. ([#6284](https://github.com/antrea-io/antrea/pull/6284), [@antoninbas])
+- Fix a bug causing AntreaProxy not to delete stale UDP conntrack entries for the virtual NodePort DNAT IP. ([#6379](https://github.com/antrea-io/antrea/pull/6379), [@hongliangl])
+- Improve stale UDP conntrack entries deletion accuracy in AntreaProxy. ([#6193](https://github.com/antrea-io/antrea/pull/6193), [@hongliangl])
+- Fix antrea-agent crash when enabling proxyAll in networkPolicyOnly mode. ([#6259](https://github.com/antrea-io/antrea/pull/6259), [@hongliangl])
+- Fix a bug preventing local traffic from being identified in networkPolicyOnly mode. ([#6251](https://github.com/antrea-io/antrea/pull/6251), [@hongliangl])
+- Avoid generating defunct process when starting Suricata, the L7 ANP engine. ([#6366](https://github.com/antrea-io/antrea/pull/6366), [@hongliangl])
+
+## 1.15.1 - 2024-03-25
+
+### Changed
+
+- Stop using `projects.registry.vmware.com` for user-facing images. ([#6073](https://github.com/antrea-io/antrea/pull/6073), [@antoninbas])
+- Persist TLS certificate and key of antrea-controller and periodically sync the CA cert to improve robustness. ([#5955](https://github.com/antrea-io/antrea/pull/5955), [@tnqn])
+- Disable cgo for all Antrea binaries. ([#5988](https://github.com/antrea-io/antrea/pull/5988), [@antoninbas])
+
+### Fixed
+
+- Disable `libcapng` to make logrotate run as root in UBI images to fix an OVS crash issue. ([#6052](https://github.com/antrea-io/antrea/pull/6052), [@xliuxu])
+- Fix nil pointer dereference when ClusterGroup/Group is used in NetworkPolicy controller. ([#6077](https://github.com/antrea-io/antrea/pull/6077), [@tnqn])
+- Fix race condition in agent Traceflow controller when a tag is associated again with a new Traceflow before the old Traceflow deletion event is processed. ([#5954](https://github.com/antrea-io/antrea/pull/5954), [@tnqn])
+- Change the maximum flags from 7 to 255 to fix the wrong TCP flags validation issue in Traceflow CRD. ([#6050](https://github.com/antrea-io/antrea/pull/6050), [@gran-vmv])
+- Update maximum number of buckets to 700 in OVS group add/insert_bucket message. ([#5942](https://github.com/antrea-io/antrea/pull/5942), [@hongliangl])
+- Use 65000 MTU upper bound for interfaces in encap mode in case of large packets being dropped unexpectedly. ([#5997](https://github.com/antrea-io/antrea/pull/5997), [@antoninbas])
+- Skip loading openvswitch kernel module if it's already built-in. ([#5979](https://github.com/antrea-io/antrea/pull/5979), [@antoninbas])
+
 ## 1.15.0 - 2024-01-26
 
 ### Added
@@ -76,4 +108,6 @@
 [@qiyueyao]: https://github.com/qiyueyao
 [@tnqn]: https://github.com/tnqn
 [@tushartathgur]: https://github.com/tushartathgur
+[@wenyingd]: https://github.com/wenyingd
+[@xliuxu]: https://github.com/xliuxu
 [@yuntanghsu]: https://github.com/yuntanghsu

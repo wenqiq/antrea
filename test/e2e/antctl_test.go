@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"path"
 	"strings"
 	"testing"
 	"time"
@@ -84,13 +83,6 @@ func antctlOutput(stdout, stderr string) string {
 	return fmt.Sprintf("antctl stdout:\n%s\nantctl stderr:\n%s", stdout, stderr)
 }
 
-func antctlName() string {
-	if testOptions.enableCoverage {
-		return "antctl-coverage"
-	}
-	return "antctl"
-}
-
 // runAntctl runs antctl commands on antrea Pods, the controller, or agents.
 func runAntctl(podName string, cmds []string, data *TestData) (string, string, error) {
 	var containerName string
@@ -116,16 +108,6 @@ func runAntctl(podName string, cmds []string, data *TestData) (string, string, e
 	return stdout, stderr, err
 }
 
-func antctlCoverageArgs(antctlPath string, covDir string) []string {
-	const timeFormat = "20060102T150405Z0700"
-	timestamp := time.Now().Format(timeFormat)
-	covFile := fmt.Sprintf("antctl-%s.out", timestamp)
-	if covDir != "" {
-		covFile = path.Join(covDir, covFile)
-	}
-	return []string{antctlPath, "-test.run=TestBincoverRunMain", fmt.Sprintf("-test.coverprofile=%s", covFile)}
-}
-
 // testAntctlAgentLocalAccess ensures antctl is accessible in an agent Pod.
 func testAntctlAgentLocalAccess(t *testing.T, data *TestData) {
 	podName, err := data.getAntreaPodOnNode(controlPlaneNodeName())
@@ -133,26 +115,14 @@ func testAntctlAgentLocalAccess(t *testing.T, data *TestData) {
 		t.Fatalf("Error when getting antrea-agent pod name: %v", err)
 	}
 	for _, c := range antctl.CommandList.GetDebugCommands(runtime.ModeAgent) {
-		args := []string{}
-		if testOptions.enableCoverage {
-			antctlCovArgs := antctlCoverageArgs("antctl-coverage", "")
-			args = append(antctlCovArgs, c...)
-		} else {
-			args = append([]string{"antctl"}, c...)
-		}
+		args := []string{"antctl"}
+		args = append(args, c...)
 		t.Logf("args: %s", args)
 
 		cmd := strings.Join(args, " ")
 		t.Run(cmd, func(t *testing.T) {
 			stdout, stderr, err := runAntctl(podName, args, data)
-			// After upgrading from Go v1.19 to Go v1.21, stderr will also include the
-			// following warning in the error case:
-			//    warning: GOCOVERDIR not set, no coverage data emitted
-			// As a result, we temporarily replace strings.HasSuffix with strings.Contains.
-			// We can revert this change when the following issue is addressed:
-			// https://github.com/antrea-io/antrea/issues/4962
-			// if err != nil && !strings.HasSuffix(stderr, "not enabled\n") {
-			if err != nil && !strings.Contains(stderr, "not enabled\n") {
+			if err != nil && (!strings.HasSuffix(stderr, "not enabled\n") && !strings.HasSuffix(stderr, "there is no effective bgp policy applied to the Node\n")) {
 				t.Fatalf("Error when running `antctl %s` from %s: %v\n%s", c, podName, err, antctlOutput(stdout, stderr))
 			}
 		})
@@ -182,8 +152,7 @@ func runAntctlCommandFromPod(data *TestData, podName string, cmd []string) (stri
 // Pod.
 func testAntctlControllerRemoteAccess(t *testing.T, data *TestData, antctlServiceAccountName string, antctlImage string) {
 	const podName = "antctl"
-	const covDir = "/coverage"
-	antctlName := antctlName()
+	const covDir = "/tmp/coverage"
 
 	runAntctlPod(t, data, podName, antctlServiceAccountName, antctlImage, covDir)
 	require.NoError(t, data.podWaitForRunning(30*time.Second, podName, data.testNamespace), "antctl Pod not in the Running state")
@@ -191,17 +160,13 @@ func testAntctlControllerRemoteAccess(t *testing.T, data *TestData, antctlServic
 	testCmds := []cmdAndReturnCode{}
 	// Add all controller commands.
 	for _, c := range antctl.CommandList.GetDebugCommands(runtime.ModeController) {
-		cmd := []string{antctlName}
-		if testOptions.enableCoverage {
-			antctlCovArgs := antctlCoverageArgs(antctlName, covDir)
-			cmd = append(antctlCovArgs, c...)
-		}
+		cmd := append([]string{"antctl"}, c...)
 		testCmds = append(testCmds, cmdAndReturnCode{args: cmd, expectedReturnCode: 0})
 	}
 	testCmds = append(testCmds,
 		// Missing Kubeconfig
 		cmdAndReturnCode{
-			args:               []string{antctlName, "version", "--kubeconfig", "/xyz"},
+			args:               []string{"antctl", "version", "--kubeconfig", "/xyz"},
 			expectedReturnCode: 1,
 		},
 	)
@@ -264,8 +229,7 @@ func runAntctProxy(
 ) {
 	// Collecting coverage is currently not supported for the proxy command (no coverage data
 	// when the process is interrupted).
-	antctlName := "antctl"
-	proxyCmd := []string{antctlName, "proxy", "--port", fmt.Sprint(proxyPort), "--address", address}
+	proxyCmd := []string{"antctl", "proxy", "--port", fmt.Sprint(proxyPort), "--address", address}
 	if agentNodeName == "" {
 		proxyCmd = append(proxyCmd, "--controller")
 	} else {
@@ -313,7 +277,7 @@ func testAntctlProxy(t *testing.T, data *TestData, antctlServiceAccountName stri
 	const proxyContainerName = "proxy"
 	const proxyPort = 8001
 
-	require.NoError(t, NewPodBuilder(testPodName, data.testNamespace, toolboxImage).WithContainerName(testContainerName).OnNode(controlPlaneNodeName()).InHostNetwork().Create(data))
+	require.NoError(t, NewPodBuilder(testPodName, data.testNamespace, ToolboxImage).WithContainerName(testContainerName).OnNode(controlPlaneNodeName()).InHostNetwork().Create(data))
 	defer data.DeletePodAndWait(defaultTimeout, testPodName, data.testNamespace)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, testPodName, data.testNamespace), "test Pod not in the Running state")
 

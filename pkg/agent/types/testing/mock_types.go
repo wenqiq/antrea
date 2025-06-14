@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/agent/types/testing/mock_types.go -package testing antrea.io/antrea/pkg/agent/types McastNetworkPolicyController
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -35,6 +36,7 @@ import (
 type MockMcastNetworkPolicyController struct {
 	ctrl     *gomock.Controller
 	recorder *MockMcastNetworkPolicyControllerMockRecorder
+	isgomock struct{}
 }
 
 // MockMcastNetworkPolicyControllerMockRecorder is the mock recorder for MockMcastNetworkPolicyController.
@@ -55,16 +57,16 @@ func (m *MockMcastNetworkPolicyController) EXPECT() *MockMcastNetworkPolicyContr
 }
 
 // GetIGMPNPRuleInfo mocks base method.
-func (m *MockMcastNetworkPolicyController) GetIGMPNPRuleInfo(arg0, arg1 string, arg2 net.IP, arg3 byte) (*types.IGMPNPRuleInfo, error) {
+func (m *MockMcastNetworkPolicyController) GetIGMPNPRuleInfo(podname, podNamespace string, groupAddress net.IP, igmpType uint8) (*types.IGMPNPRuleInfo, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetIGMPNPRuleInfo", arg0, arg1, arg2, arg3)
+	ret := m.ctrl.Call(m, "GetIGMPNPRuleInfo", podname, podNamespace, groupAddress, igmpType)
 	ret0, _ := ret[0].(*types.IGMPNPRuleInfo)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetIGMPNPRuleInfo indicates an expected call of GetIGMPNPRuleInfo.
-func (mr *MockMcastNetworkPolicyControllerMockRecorder) GetIGMPNPRuleInfo(arg0, arg1, arg2, arg3 any) *gomock.Call {
+func (mr *MockMcastNetworkPolicyControllerMockRecorder) GetIGMPNPRuleInfo(podname, podNamespace, groupAddress, igmpType any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIGMPNPRuleInfo", reflect.TypeOf((*MockMcastNetworkPolicyController)(nil).GetIGMPNPRuleInfo), arg0, arg1, arg2, arg3)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIGMPNPRuleInfo", reflect.TypeOf((*MockMcastNetworkPolicyController)(nil).GetIGMPNPRuleInfo), podname, podNamespace, groupAddress, igmpType)
 }

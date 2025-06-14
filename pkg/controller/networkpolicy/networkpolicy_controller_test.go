@@ -41,6 +41,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	fakepolicyversioned "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
 	policyv1a1informers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 
@@ -228,12 +229,32 @@ func newControllerWithoutEventHandler(k8sObjects, crdObjects []runtime.Object) (
 		appliedToGroupStore:        appliedToGroupStore,
 		internalNetworkPolicyStore: internalNetworkPolicyStore,
 		internalGroupStore:         internalGroupStore,
-		appliedToGroupQueue:        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "appliedToGroup"),
-		addressGroupQueue:          workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "addressGroup"),
-		internalNetworkPolicyQueue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "internalNetworkPolicy"),
-		internalGroupQueue:         workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "internalGroup"),
-		groupingInterface:          groupEntityIndex,
-		appliedToGroupNotifier:     newNotifier(),
+		appliedToGroupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "appliedToGroup",
+			},
+		),
+		addressGroupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "addressGroup",
+			},
+		),
+		internalNetworkPolicyQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[controlplane.NetworkPolicyReference](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[controlplane.NetworkPolicyReference]{
+				Name: "internalNetworkPolicy",
+			},
+		),
+		internalGroupQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "internalGroup",
+			},
+		),
+		groupingInterface:      groupEntityIndex,
+		appliedToGroupNotifier: newNotifier(),
 	}
 	npController.tierInformer.Informer().AddIndexers(tierIndexers)
 	npController.acnpInformer.Informer().AddIndexers(acnpIndexers)
@@ -602,6 +623,72 @@ func TestAddPod(t *testing.T) {
 							Status: corev1.ConditionTrue,
 						},
 					},
+					PodIP: "1.2.3.4",
+					PodIPs: []corev1.PodIP{
+						{IP: "1.2.3.4"},
+					},
+				},
+			},
+			appGroupMatch:        false,
+			inAddressGroupMatch:  false,
+			outAddressGroupMatch: false,
+			groupMatch:           false,
+		},
+		{
+			name: "match-all-selectors-succeeded",
+			addedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podA",
+					Namespace: "nsA",
+					Labels: map[string]string{
+						"role":         "app",
+						"group":        "appliedTo",
+						"inGroup":      "inAddress",
+						"outGroup":     "outAddress",
+						"clustergroup": "yes",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name: "container-1",
+					}},
+					NodeName: "nodeA",
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodSucceeded,
+					PodIP: "1.2.3.4",
+					PodIPs: []corev1.PodIP{
+						{IP: "1.2.3.4"},
+					},
+				},
+			},
+			appGroupMatch:        false,
+			inAddressGroupMatch:  false,
+			outAddressGroupMatch: false,
+			groupMatch:           false,
+		},
+		{
+			name: "match-all-selectors-failed",
+			addedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podA",
+					Namespace: "nsA",
+					Labels: map[string]string{
+						"role":         "app",
+						"group":        "appliedTo",
+						"inGroup":      "inAddress",
+						"outGroup":     "outAddress",
+						"clustergroup": "yes",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name: "container-1",
+					}},
+					NodeName: "nodeA",
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodFailed,
 					PodIP: "1.2.3.4",
 					PodIPs: []corev1.PodIP{
 						{IP: "1.2.3.4"},
@@ -1621,7 +1708,7 @@ func TestToAntreaIPBlock(t *testing.T) {
 			continue
 		}
 		ipNet := antreaIPBlock.CIDR
-		if bytes.Compare(ipNet.IP, table.expValue.CIDR.IP) != 0 {
+		if !bytes.Equal(ipNet.IP, table.expValue.CIDR.IP) {
 			t.Errorf("Unexpected IP in Antrea IPBlock conversion. Expected %v, got %v", table.expValue.CIDR.IP, ipNet.IP)
 		}
 		if table.expValue.CIDR.PrefixLength != ipNet.PrefixLength {
@@ -1913,7 +2000,41 @@ func TestProcessNetworkPolicy(t *testing.T) {
 					UID:       "uidC",
 				},
 				Rules: []controlplane.NetworkPolicyRule{
-					denyAllIngressRule,
+					denyAllRule(controlplane.DirectionIn, false),
+				},
+				AppliedToGroups: []string{getNormalizedUID(antreatypes.NewGroupSelector("nsA", &metav1.LabelSelector{}, nil, nil, nil).NormalizedName)},
+			},
+			expectedAppliedToGroups: 1,
+			expectedAddressGroups:   0,
+		},
+		{
+			name: "default-deny-ingress-enable-logging",
+			existingObjects: []runtime.Object{
+				&corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:        "nsA",
+						Annotations: map[string]string{"networkpolicy.antrea.io/enable-logging": "true"},
+					},
+				},
+			},
+			inputPolicy: &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "nsA", Name: "npC", UID: "uidC"},
+				Spec: networkingv1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{},
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				},
+			},
+			expectedPolicy: &antreatypes.NetworkPolicy{
+				UID:  "uidC",
+				Name: "uidC",
+				SourceRef: &controlplane.NetworkPolicyReference{
+					Type:      controlplane.K8sNetworkPolicy,
+					Namespace: "nsA",
+					Name:      "npC",
+					UID:       "uidC",
+				},
+				Rules: []controlplane.NetworkPolicyRule{
+					denyAllRule(controlplane.DirectionIn, true),
 				},
 				AppliedToGroups: []string{getNormalizedUID(antreatypes.NewGroupSelector("nsA", &metav1.LabelSelector{}, nil, nil, nil).NormalizedName)},
 			},
@@ -1938,7 +2059,9 @@ func TestProcessNetworkPolicy(t *testing.T) {
 					Name:      "npA",
 					UID:       "uidA",
 				},
-				Rules:           []controlplane.NetworkPolicyRule{denyAllEgressRule},
+				Rules: []controlplane.NetworkPolicyRule{
+					denyAllRule(controlplane.DirectionOut, false),
+				},
 				AppliedToGroups: []string{getNormalizedUID(antreatypes.NewGroupSelector("nsA", &metav1.LabelSelector{}, nil, nil, nil).NormalizedName)},
 			},
 			expectedAppliedToGroups: 1,
@@ -2376,7 +2499,7 @@ func comparePodIPs(actIPs, expIPs []controlplane.IPAddress) bool {
 
 func containsPodIP(expIPs []controlplane.IPAddress, actIP controlplane.IPAddress) bool {
 	for _, expIP := range expIPs {
-		if bytes.Compare(actIP, expIP) == 0 {
+		if bytes.Equal(actIP, expIP) {
 			return true
 		}
 	}
@@ -2467,7 +2590,7 @@ func TestIPStrToIPAddress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			actIP := ipStrToIPAddress(tt.ipStr)
-			if bytes.Compare(actIP, tt.expIP) != 0 {
+			if !bytes.Equal(actIP, tt.expIP) {
 				t.Errorf("ipStrToIPAddress() got unexpected IPAddress %v, want %v", actIP, tt.expIP)
 			}
 		})
@@ -2602,8 +2725,9 @@ func TestGetAppliedToWorkloads(t *testing.T) {
 		{
 			name: "atg-for-cg",
 			inATG: &antreatypes.AppliedToGroup{
-				Name: cgA.Name,
-				UID:  cgA.UID,
+				Name:        cgA.Name,
+				UID:         cgA.UID,
+				SourceGroup: cgA.Name,
 			},
 			expPods:  []*corev1.Pod{podA},
 			expEEs:   emptyEEs,
@@ -2612,8 +2736,9 @@ func TestGetAppliedToWorkloads(t *testing.T) {
 		{
 			name: "atg-for-cg-no-pod-match",
 			inATG: &antreatypes.AppliedToGroup{
-				Name: cgB.Name,
-				UID:  cgB.UID,
+				Name:        cgB.Name,
+				UID:         cgB.UID,
+				SourceGroup: cgB.Name,
 			},
 			expPods:  emptyPods,
 			expEEs:   emptyEEs,
@@ -2622,8 +2747,9 @@ func TestGetAppliedToWorkloads(t *testing.T) {
 		{
 			name: "atg-for-nested-cg-one-child-empty",
 			inATG: &antreatypes.AppliedToGroup{
-				Name: nestedCG1.Name,
-				UID:  nestedCG1.UID,
+				Name:        nestedCG1.Name,
+				UID:         nestedCG1.UID,
+				SourceGroup: nestedCG1.Name,
 			},
 			expPods:  []*corev1.Pod{podA},
 			expEEs:   emptyEEs,
@@ -2632,8 +2758,9 @@ func TestGetAppliedToWorkloads(t *testing.T) {
 		{
 			name: "atg-for-nested-cg-both-children-match-pod",
 			inATG: &antreatypes.AppliedToGroup{
-				Name: nestedCG2.Name,
-				UID:  nestedCG2.UID,
+				Name:        nestedCG2.Name,
+				UID:         nestedCG2.UID,
+				SourceGroup: nestedCG2.Name,
 			},
 			expPods:  []*corev1.Pod{podA, podB},
 			expEEs:   emptyEEs,
@@ -2642,8 +2769,9 @@ func TestGetAppliedToWorkloads(t *testing.T) {
 		{
 			name: "atg-for-nested-cg-children-overlap-pod",
 			inATG: &antreatypes.AppliedToGroup{
-				Name: nestedCG3.Name,
-				UID:  nestedCG3.UID,
+				Name:        nestedCG3.Name,
+				UID:         nestedCG3.UID,
+				SourceGroup: nestedCG3.Name,
 			},
 			expPods:  []*corev1.Pod{podA, podB},
 			expEEs:   emptyEEs,
@@ -2747,40 +2875,45 @@ func TestGetAddressGroupMemberSet(t *testing.T) {
 		{
 			name: "addrgrp-for-cg",
 			inAddrGrp: &antreatypes.AddressGroup{
-				Name: cgA.Name,
-				UID:  cgA.UID,
+				Name:        cgA.Name,
+				UID:         cgA.UID,
+				SourceGroup: cgA.Name,
 			},
 			expMemberSet: podAMemberSet,
 		},
 		{
 			name: "addrgrp-for-cg-no-pod-match",
 			inAddrGrp: &antreatypes.AddressGroup{
-				Name: cgB.Name,
-				UID:  cgB.UID,
+				Name:        cgB.Name,
+				UID:         cgB.UID,
+				SourceGroup: cgB.Name,
 			},
 			expMemberSet: controlplane.GroupMemberSet{},
 		},
 		{
 			name: "addrgrp-for-nested-cg-one-child-empty",
 			inAddrGrp: &antreatypes.AddressGroup{
-				Name: nestedCG1.Name,
-				UID:  nestedCG1.UID,
+				Name:        nestedCG1.Name,
+				UID:         nestedCG1.UID,
+				SourceGroup: nestedCG1.Name,
 			},
 			expMemberSet: podAMemberSet,
 		},
 		{
 			name: "addrgrp-for-nested-cg-both-children-match-pod",
 			inAddrGrp: &antreatypes.AddressGroup{
-				Name: nestedCG2.Name,
-				UID:  nestedCG2.UID,
+				Name:        nestedCG2.Name,
+				UID:         nestedCG2.UID,
+				SourceGroup: nestedCG2.Name,
 			},
 			expMemberSet: podABMemberSet,
 		},
 		{
 			name: "addrgrp-for-nested-cg-children-overlap-pod",
 			inAddrGrp: &antreatypes.AddressGroup{
-				Name: nestedCG3.Name,
-				UID:  nestedCG3.UID,
+				Name:        nestedCG3.Name,
+				UID:         nestedCG3.UID,
+				SourceGroup: nestedCG3.Name,
 			},
 			expMemberSet: podABMemberSet,
 		},
@@ -2833,10 +2966,10 @@ func TestAddressGroupWithNodeSelector(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		assert.NoError(t, wait.Poll(time.Millisecond*100, time.Second, func() (done bool, err error) {
+		assert.Eventually(t, func() bool {
 			newNode, err := c.nodeLister.Get(node.Name)
-			return reflect.DeepEqual(node, newNode), err
-		}))
+			return reflect.DeepEqual(node, newNode) && err == nil
+		}, time.Second, 100*time.Millisecond)
 		return nil
 	}
 	fakeNode0.Labels = nodeSelectorA.MatchLabels
@@ -2968,7 +3101,7 @@ func compareIPBlocks(ipb1, ipb2 *controlplane.IPBlock) bool {
 
 // compareIPNet is a util function to compare the contents of two IPNets.
 func compareIPNet(ipn1, ipn2 controlplane.IPNet) bool {
-	if bytes.Compare(ipn1.IP, ipn2.IP) != 0 {
+	if !bytes.Equal(ipn1.IP, ipn2.IP) {
 		return false
 	}
 	if ipn1.PrefixLength != ipn2.PrefixLength {
@@ -3037,7 +3170,7 @@ func TestMultipleNetworkPoliciesWithSameAppliedTo(t *testing.T) {
 		SpanMeta: antreatypes.SpanMeta{NodeNames: sets.New[string]("nodeA", "nodeB")}, // according to policyA and policyB
 		UID:      types.UID(selectorBGroupUID),
 		Name:     selectorBGroupUID,
-		Selector: *selectorBGroup,
+		Selector: selectorBGroup,
 		GroupMembers: controlplane.NewGroupMemberSet(&controlplane.GroupMember{Pod: &controlplane.PodReference{
 			Name:      podC.Name,
 			Namespace: podC.Namespace,
@@ -3166,7 +3299,6 @@ func checkAddressGroupNotExist(t *testing.T, c *networkPolicyController, address
 
 func TestSyncInternalNetworkPolicy(t *testing.T) {
 	p10 := float64(10)
-	allowAction := v1beta1.RuleActionAllow
 	inputPolicy := &v1beta1.ClusterNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "cnpA", UID: "uidA"},
 		Spec: v1beta1.ClusterNetworkPolicySpec{
@@ -3203,7 +3335,7 @@ func TestSyncInternalNetworkPolicy(t *testing.T) {
 			UID:  "uidA",
 		},
 		Priority:     &p10,
-		TierPriority: &DefaultTierPriority,
+		TierPriority: ptr.To(v1beta1.DefaultTierPriority),
 		Rules: []controlplane.NetworkPolicyRule{
 			{
 				Direction: controlplane.DirectionIn,
@@ -3490,7 +3622,6 @@ func TestSyncInternalNetworkPolicyConcurrently(t *testing.T) {
 
 func TestSyncInternalNetworkPolicyWithGroups(t *testing.T) {
 	p10 := float64(10)
-	allowAction := v1beta1.RuleActionAllow
 	podA := getPod("podA", "nsA", "nodeA", "10.0.0.1", false)
 	podA.Labels = selectorA.MatchLabels
 	podB := getPod("podB", "nsB", "nodeB", "10.0.0.2", false)
@@ -3537,7 +3668,7 @@ func TestSyncInternalNetworkPolicyWithGroups(t *testing.T) {
 					UID:       "uidA",
 				},
 				Priority:     &p10,
-				TierPriority: &DefaultTierPriority,
+				TierPriority: ptr.To(v1beta1.DefaultTierPriority),
 				Rules: []controlplane.NetworkPolicyRule{
 					{
 						Direction: controlplane.DirectionIn,
@@ -3586,7 +3717,7 @@ func TestSyncInternalNetworkPolicyWithGroups(t *testing.T) {
 					UID:       "uidA",
 				},
 				Priority:     &p10,
-				TierPriority: &DefaultTierPriority,
+				TierPriority: ptr.To(v1beta1.DefaultTierPriority),
 				Rules: []controlplane.NetworkPolicyRule{
 					{
 						Direction: controlplane.DirectionIn,
@@ -3630,7 +3761,7 @@ func TestSyncInternalNetworkPolicyWithGroups(t *testing.T) {
 					UID:       "uidA",
 				},
 				Priority:     &p10,
-				TierPriority: &DefaultTierPriority,
+				TierPriority: ptr.To(v1beta1.DefaultTierPriority),
 				Rules: []controlplane.NetworkPolicyRule{
 					{
 						Direction: controlplane.DirectionIn,
@@ -3679,7 +3810,7 @@ func TestSyncInternalNetworkPolicyWithGroups(t *testing.T) {
 					UID:       "uidA",
 				},
 				Priority:     &p10,
-				TierPriority: &DefaultTierPriority,
+				TierPriority: ptr.To(v1beta1.DefaultTierPriority),
 				Rules: []controlplane.NetworkPolicyRule{
 					{
 						Direction: controlplane.DirectionIn,
@@ -3711,7 +3842,7 @@ func TestSyncInternalNetworkPolicyWithGroups(t *testing.T) {
 			c.crdClient.CrdV1beta1().NetworkPolicies(tt.inputPolicy.Namespace).Create(context.TODO(), tt.inputPolicy, metav1.CreateOptions{})
 
 			var gotPolicy *antreatypes.NetworkPolicy
-			err := wait.PollImmediate(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+			err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, 3*time.Second, true, func(ctx context.Context) (done bool, err error) {
 				obj, exists, _ := c.internalNetworkPolicyStore.Get(tt.expectedPolicy.Name)
 				if !exists {
 					return false, nil
@@ -3888,13 +4019,158 @@ func TestSyncAppliedToGroupWithNode(t *testing.T) {
 	assert.Equal(t, expectedAppliedToGroup, gotAppliedToGroup)
 }
 
-func checkQueueItemExistence(t *testing.T, queue workqueue.RateLimitingInterface, items ...string) {
+func TestClusterNetworkPolicyWithClusterGroup(t *testing.T) {
+	ctx := context.TODO()
+	podA := getPod("podA", "nsA", "nodeA", "10.0.0.1", false)
+	podA.Labels = map[string]string{"fooA": "barA"}
+	podB := getPod("podB", "nsB", "nodeB", "10.0.0.2", false)
+	podB.Labels = map[string]string{"fooB": "barB"}
+
+	cgA := &v1beta1.ClusterGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "cgA", UID: "cgA-uid"},
+		Spec:       v1beta1.GroupSpec{PodSelector: &metav1.LabelSelector{MatchLabels: podA.Labels}},
+	}
+	cgB := &v1beta1.ClusterGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "cgB", UID: "cgB-uid"},
+		Spec:       v1beta1.GroupSpec{PodSelector: &metav1.LabelSelector{MatchLabels: podB.Labels}},
+	}
+	acnp := &v1beta1.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "acnpA", UID: "acnpA-uid"},
+		Spec: v1beta1.ClusterNetworkPolicySpec{
+			AppliedTo: []v1beta1.AppliedTo{{Group: cgA.Name}},
+			Priority:  10,
+			Ingress: []v1beta1.Rule{
+				{From: []v1beta1.NetworkPolicyPeer{{Group: cgB.Name}}, Action: &allowAction},
+			},
+		},
+	}
+
+	_, npc := newController([]runtime.Object{podA, podB}, []runtime.Object{cgA, cgB, acnp})
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	npc.informerFactory.Start(stopCh)
+	npc.informerFactory.WaitForCacheSync(stopCh)
+	npc.crdInformerFactory.Start(stopCh)
+	npc.crdInformerFactory.WaitForCacheSync(stopCh)
+	go npc.Run(stopCh)
+	go npc.groupingController.Run(stopCh)
+	go npc.groupingInterface.Run(stopCh)
+
+	expectedPolicy := &antreatypes.NetworkPolicy{
+		SpanMeta:  antreatypes.SpanMeta{NodeNames: sets.New(podA.Spec.NodeName)},
+		UID:       acnp.UID,
+		Name:      string(acnp.UID),
+		SourceRef: &controlplane.NetworkPolicyReference{Type: controlplane.AntreaClusterNetworkPolicy, Name: acnp.Name, UID: acnp.UID},
+		Priority:  ptr.To(acnp.Spec.Priority),
+		Rules: []controlplane.NetworkPolicyRule{
+			{
+				Direction: controlplane.DirectionIn,
+				From:      controlplane.NetworkPolicyPeer{AddressGroups: []string{cgB.Name}},
+				Action:    &allowAction,
+			},
+		},
+		AppliedToGroups: []string{cgA.Name},
+		TierPriority:    ptr.To(v1beta1.DefaultTierPriority),
+	}
+	expectedAppliedToGroup := &antreatypes.AppliedToGroup{
+		SpanMeta:    antreatypes.SpanMeta{NodeNames: sets.New(podA.Spec.NodeName)},
+		UID:         cgA.UID,
+		Name:        cgA.Name,
+		SourceGroup: cgA.Name,
+		GroupMemberByNode: map[string]controlplane.GroupMemberSet{
+			podA.Spec.NodeName: controlplane.NewGroupMemberSet(&controlplane.GroupMember{
+				Pod: &controlplane.PodReference{Name: podA.Name, Namespace: podA.Namespace},
+			}),
+		},
+	}
+	expectedAddressGroup := &antreatypes.AddressGroup{
+		SpanMeta:    antreatypes.SpanMeta{NodeNames: sets.New(podA.Spec.NodeName)},
+		UID:         cgB.UID,
+		Name:        cgB.Name,
+		SourceGroup: cgB.Name,
+		GroupMembers: controlplane.NewGroupMemberSet(&controlplane.GroupMember{
+			Pod: &controlplane.PodReference{Name: podB.Name, Namespace: podB.Namespace},
+			IPs: []controlplane.IPAddress{ipStrToIPAddress(podB.Status.PodIP)},
+		}),
+	}
+
+	checkResources := func(policy *antreatypes.NetworkPolicy, atg *antreatypes.AppliedToGroup, ag *antreatypes.AddressGroup) {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			policies := npc.internalNetworkPolicyStore.List()
+			if !assert.Len(c, policies, 1) {
+				return
+			}
+			assert.Equal(c, policy, policies[0].(*antreatypes.NetworkPolicy))
+
+			atgs := npc.appliedToGroupStore.List()
+			if atg != nil {
+				if !assert.Len(c, atgs, 1) {
+					return
+				}
+				assert.Equal(c, atg, atgs[0].(*antreatypes.AppliedToGroup))
+			} else {
+				assert.Empty(c, atgs)
+			}
+
+			ags := npc.addressGroupStore.List()
+			if ag != nil {
+				if !assert.Len(c, ags, 1) {
+					return
+				}
+				assert.Equal(c, ag, ags[0].(*antreatypes.AddressGroup))
+			} else {
+				assert.Empty(c, ags)
+			}
+		}, 2*time.Second, 50*time.Millisecond)
+	}
+	checkResources(expectedPolicy, expectedAppliedToGroup, expectedAddressGroup)
+
+	// Delete the ClusterGroup used by the AddressGroup, the AddressGroup should be deleted, the rule's peer should be empty.
+	npc.crdClient.CrdV1beta1().ClusterGroups().Delete(ctx, cgB.Name, metav1.DeleteOptions{})
+	expectedPolicy2 := &antreatypes.NetworkPolicy{
+		SpanMeta:  antreatypes.SpanMeta{NodeNames: sets.New(podA.Spec.NodeName)},
+		UID:       acnp.UID,
+		Name:      string(acnp.UID),
+		SourceRef: &controlplane.NetworkPolicyReference{Type: controlplane.AntreaClusterNetworkPolicy, Name: acnp.Name, UID: acnp.UID},
+		Priority:  ptr.To(acnp.Spec.Priority),
+		Rules: []controlplane.NetworkPolicyRule{
+			{Direction: controlplane.DirectionIn, Action: &allowAction},
+		},
+		AppliedToGroups: []string{cgA.Name},
+		TierPriority:    ptr.To(v1beta1.DefaultTierPriority),
+	}
+	checkResources(expectedPolicy2, expectedAppliedToGroup, nil)
+
+	// Delete the ClusterGroup used by the AppliedToGroup, the AppliedToGroup should be deleted, the policy's span and
+	// appliedToGroup should be empty.
+	npc.crdClient.CrdV1beta1().ClusterGroups().Delete(ctx, cgA.Name, metav1.DeleteOptions{})
+	expectedPolicy3 := &antreatypes.NetworkPolicy{
+		SpanMeta:  antreatypes.SpanMeta{NodeNames: sets.New[string]()},
+		UID:       acnp.UID,
+		Name:      string(acnp.UID),
+		SourceRef: &controlplane.NetworkPolicyReference{Type: controlplane.AntreaClusterNetworkPolicy, Name: acnp.Name, UID: acnp.UID},
+		Priority:  ptr.To(acnp.Spec.Priority),
+		Rules: []controlplane.NetworkPolicyRule{
+			{Direction: controlplane.DirectionIn, Action: &allowAction},
+		},
+		AppliedToGroups: []string{},
+		TierPriority:    ptr.To(v1beta1.DefaultTierPriority),
+	}
+	checkResources(expectedPolicy3, nil, nil)
+
+	// Recreate the ClusterGroups, everything should be restored.
+	npc.crdClient.CrdV1beta1().ClusterGroups().Create(ctx, cgA, metav1.CreateOptions{})
+	npc.crdClient.CrdV1beta1().ClusterGroups().Create(ctx, cgB, metav1.CreateOptions{})
+	checkResources(expectedPolicy, expectedAppliedToGroup, expectedAddressGroup)
+}
+
+func checkQueueItemExistence[T comparable](t *testing.T, queue workqueue.TypedRateLimitingInterface[T], items ...T) {
 	require.Equal(t, len(items), queue.Len())
-	expectedItems := sets.New[string](items...)
-	actualItems := sets.New[string]()
+	expectedItems := sets.New[T](items...)
+	actualItems := sets.New[T]()
 	for i := 0; i < len(expectedItems); i++ {
 		key, _ := queue.Get()
-		actualItems.Insert(key.(string))
+		actualItems.Insert(key)
 		queue.Done(key)
 	}
 	assert.Equal(t, expectedItems, actualItems)

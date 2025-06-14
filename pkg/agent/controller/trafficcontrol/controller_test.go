@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -241,28 +240,28 @@ func generateTrafficControl(name string,
 	if podSelector != nil {
 		tc.Spec.AppliedTo.PodSelector = &metav1.LabelSelector{MatchLabels: podSelector}
 	}
-	switch targetPort.(type) {
+	switch targetPort := targetPort.(type) {
 	case *v1alpha2.OVSInternalPort:
-		tc.Spec.TargetPort.OVSInternal = targetPort.(*v1alpha2.OVSInternalPort)
+		tc.Spec.TargetPort.OVSInternal = targetPort
 	case *v1alpha2.NetworkDevice:
-		tc.Spec.TargetPort.Device = targetPort.(*v1alpha2.NetworkDevice)
+		tc.Spec.TargetPort.Device = targetPort
 	case *v1alpha2.UDPTunnel:
 		if isTargetPortVXLAN {
-			tc.Spec.TargetPort.VXLAN = targetPort.(*v1alpha2.UDPTunnel)
+			tc.Spec.TargetPort.VXLAN = targetPort
 		} else {
-			tc.Spec.TargetPort.GENEVE = targetPort.(*v1alpha2.UDPTunnel)
+			tc.Spec.TargetPort.GENEVE = targetPort
 		}
 	case *v1alpha2.GRETunnel:
-		tc.Spec.TargetPort.GRE = targetPort.(*v1alpha2.GRETunnel)
+		tc.Spec.TargetPort.GRE = targetPort
 	case *v1alpha2.ERSPANTunnel:
-		tc.Spec.TargetPort.ERSPAN = targetPort.(*v1alpha2.ERSPANTunnel)
+		tc.Spec.TargetPort.ERSPAN = targetPort
 	}
 
-	switch returnPort.(type) {
+	switch returnPort := returnPort.(type) {
 	case *v1alpha2.OVSInternalPort:
-		tc.Spec.ReturnPort.OVSInternal = returnPort.(*v1alpha2.OVSInternalPort)
+		tc.Spec.ReturnPort.OVSInternal = returnPort
 	case *v1alpha2.NetworkDevice:
-		tc.Spec.ReturnPort.Device = returnPort.(*v1alpha2.NetworkDevice)
+		tc.Spec.ReturnPort.Device = returnPort
 	default:
 		tc.Spec.ReturnPort = nil
 	}
@@ -288,9 +287,9 @@ func generateTrafficControlState(direction v1alpha2.Direction,
 }
 
 func waitEvents(t *testing.T, expectedEvents int, c *fakeController) {
-	require.NoError(t, wait.Poll(10*time.Millisecond, 5*time.Second, func() (done bool, err error) {
-		return c.queue.Len() == expectedEvents, nil
-	}))
+	require.Eventually(t, func() bool {
+		return c.queue.Len() == expectedEvents
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestTrafficControlAdd(t *testing.T) {
@@ -644,7 +643,7 @@ func TestSharedTargetPort(t *testing.T) {
 	waitEvents(t, 2, c)
 	for i := 0; i < 2; i++ {
 		item, _ := c.queue.Get()
-		require.NoError(t, c.syncTrafficControl(item.(string)))
+		require.NoError(t, c.syncTrafficControl(item))
 		c.queue.Done(item)
 	}
 
@@ -661,7 +660,7 @@ func TestSharedTargetPort(t *testing.T) {
 	waitEvents(t, 1, c)
 	item, _ := c.queue.Get()
 	require.Equal(t, tc1Name, item)
-	require.NoError(t, c.syncTrafficControl(item.(string)))
+	require.NoError(t, c.syncTrafficControl(item))
 	c.queue.Done(item)
 
 	// Delete TrafficControl tc2.
@@ -670,7 +669,7 @@ func TestSharedTargetPort(t *testing.T) {
 	waitEvents(t, 1, c)
 	item, _ = c.queue.Get()
 	require.Equal(t, tc2Name, item)
-	require.NoError(t, c.syncTrafficControl(item.(string)))
+	require.NoError(t, c.syncTrafficControl(item))
 	c.queue.Done(item)
 }
 
@@ -713,7 +712,7 @@ func TestPodUpdateFromCNIServer(t *testing.T) {
 	waitEvents(t, 1, c)
 	item, _ = c.queue.Get()
 	require.Equal(t, tc1Name, item)
-	require.NoError(t, c.syncTrafficControl(item.(string)))
+	require.NoError(t, c.syncTrafficControl(item))
 	c.queue.Done(item)
 
 	// After syncing, verify the state of TrafficControl tc1.
@@ -733,7 +732,7 @@ func TestPodUpdateFromCNIServer(t *testing.T) {
 	waitEvents(t, 1, c)
 	item, _ = c.queue.Get()
 	require.Equal(t, tc1Name, item)
-	require.NoError(t, c.syncTrafficControl(item.(string)))
+	require.NoError(t, c.syncTrafficControl(item))
 	c.queue.Done(item)
 
 	// After syncing, verify the state of TrafficControl tc1.
@@ -761,7 +760,7 @@ func TestPodLabelsUpdate(t *testing.T) {
 		name                                  string
 		updatedPod                            *v1.Pod
 		eventsTriggeredByPodLabelsUpdate      int
-		eventsTriggeredByPodLabelsUpdateOrder []interface{}
+		eventsTriggeredByPodLabelsUpdateOrder []string
 		eventsTriggeredByPodEffectiveTCUpdate int
 		expectedPodBinding                    *podToTCBinding
 		expectedCalls                         func(mockOFClient *openflowtest.MockClient)
@@ -798,7 +797,7 @@ func TestPodLabelsUpdate(t *testing.T) {
 			name:                                  "Update Pod labels to match TrafficControl tc2 (effective), tc3 (alternative)",
 			updatedPod:                            newPod("ns1", "pod1", "fakeNode", labels23),
 			eventsTriggeredByPodLabelsUpdate:      2,
-			eventsTriggeredByPodLabelsUpdateOrder: []interface{}{tc1Name, tc3Name},
+			eventsTriggeredByPodLabelsUpdateOrder: []string{tc1Name, tc3Name},
 			eventsTriggeredByPodEffectiveTCUpdate: 1,
 			expectedPodBinding:                    &podToTCBinding{effectiveTC: tc2Name, alternativeTCs: sets.New[string](tc3Name)},
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
@@ -880,7 +879,7 @@ func TestPodLabelsUpdate(t *testing.T) {
 			// TrafficControl of the Pod), we need to rearrange the order of events.
 			if len(tt.eventsTriggeredByPodLabelsUpdateOrder) != 0 {
 				waitEvents(t, tt.eventsTriggeredByPodLabelsUpdate, c)
-				var events []interface{}
+				var events []string
 				for i := 0; i < tt.eventsTriggeredByPodLabelsUpdate; i++ {
 					item, _ := c.queue.Get()
 					events = append(events, item)
@@ -896,7 +895,7 @@ func TestPodLabelsUpdate(t *testing.T) {
 			waitEvents(t, tt.eventsTriggeredByPodLabelsUpdate, c)
 			for i := 0; i < tt.eventsTriggeredByPodLabelsUpdate; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncTrafficControl(item.(string)))
+				require.NoError(t, c.syncTrafficControl(item))
 				c.queue.Done(item)
 			}
 
@@ -905,7 +904,7 @@ func TestPodLabelsUpdate(t *testing.T) {
 				waitEvents(t, tt.eventsTriggeredByPodEffectiveTCUpdate, c)
 				for i := 0; i < tt.eventsTriggeredByPodEffectiveTCUpdate; i++ {
 					item, _ := c.queue.Get()
-					require.NoError(t, c.syncTrafficControl(item.(string)))
+					require.NoError(t, c.syncTrafficControl(item))
 					c.queue.Done(item)
 				}
 			}
@@ -937,7 +936,7 @@ func TestNamespaceLabelsUpdate(t *testing.T) {
 		name                                  string
 		updatedNS                             *v1.Namespace
 		eventsTriggeredByNSLabelsUpdate       int
-		eventsTriggeredByNSLabelsUpdateOrder  []interface{}
+		eventsTriggeredByNSLabelsUpdateOrder  []string
 		eventsTriggeredByPodEffectiveTCUpdate int
 		expectedPodBinding                    *podToTCBinding
 		expectedCalls                         func(mockOFClient *openflowtest.MockClient)
@@ -973,7 +972,7 @@ func TestNamespaceLabelsUpdate(t *testing.T) {
 			name:                                  "Update Pod labels to match TrafficControl tc2 (effective), tc3 (alternative)",
 			updatedNS:                             newNamespace("ns1", labels23),
 			eventsTriggeredByNSLabelsUpdate:       2,
-			eventsTriggeredByNSLabelsUpdateOrder:  []interface{}{tc1Name, tc3Name},
+			eventsTriggeredByNSLabelsUpdateOrder:  []string{tc1Name, tc3Name},
 			eventsTriggeredByPodEffectiveTCUpdate: 1,
 			expectedPodBinding:                    &podToTCBinding{effectiveTC: tc2Name, alternativeTCs: sets.New[string](tc3Name)},
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
@@ -1056,7 +1055,7 @@ func TestNamespaceLabelsUpdate(t *testing.T) {
 			// TrafficControl of the Pod in Namespace in ns1), we need to rearrange the order of events.
 			if len(tt.eventsTriggeredByNSLabelsUpdateOrder) != 0 {
 				waitEvents(t, tt.eventsTriggeredByNSLabelsUpdate, c)
-				var events []interface{}
+				var events []string
 				for i := 0; i < tt.eventsTriggeredByNSLabelsUpdate; i++ {
 					item, _ := c.queue.Get()
 					events = append(events, item)
@@ -1072,7 +1071,7 @@ func TestNamespaceLabelsUpdate(t *testing.T) {
 			waitEvents(t, tt.eventsTriggeredByNSLabelsUpdate, c)
 			for i := 0; i < tt.eventsTriggeredByNSLabelsUpdate; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncTrafficControl(item.(string)))
+				require.NoError(t, c.syncTrafficControl(item))
 				c.queue.Done(item)
 			}
 
@@ -1081,7 +1080,7 @@ func TestNamespaceLabelsUpdate(t *testing.T) {
 				waitEvents(t, tt.eventsTriggeredByPodEffectiveTCUpdate, c)
 				for i := 0; i < tt.eventsTriggeredByPodEffectiveTCUpdate; i++ {
 					item, _ := c.queue.Get()
-					require.NoError(t, c.syncTrafficControl(item.(string)))
+					require.NoError(t, c.syncTrafficControl(item))
 					c.queue.Done(item)
 				}
 			}
@@ -1169,7 +1168,7 @@ func TestPodDelete(t *testing.T) {
 	waitEvents(t, 3, c)
 	for i := 0; i < 3; i++ {
 		item, _ := c.queue.Get()
-		require.NoError(t, c.syncTrafficControl(item.(string)))
+		require.NoError(t, c.syncTrafficControl(item))
 		c.queue.Done(item)
 	}
 

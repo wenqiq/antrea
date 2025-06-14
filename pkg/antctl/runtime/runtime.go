@@ -15,6 +15,7 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -22,7 +23,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	agentapiserver "antrea.io/antrea/pkg/agent/apiserver"
+	"antrea.io/antrea/pkg/apis"
 	"antrea.io/antrea/pkg/util/runtime"
 )
 
@@ -39,18 +40,37 @@ var (
 )
 
 func ResolveKubeconfig(path string) (*rest.Config, error) {
-	var err error
-	if len(path) == 0 {
-		var hasIt bool
-		path, hasIt = os.LookupEnv("KUBECONFIG")
-		if !hasIt || len(strings.TrimSpace(path)) == 0 {
+	withExplicitPath := path != ""
+	if !withExplicitPath {
+		path = strings.TrimSpace(os.Getenv("KUBECONFIG"))
+		if path == "" {
 			path = clientcmd.RecommendedHomeFile
 		}
 	}
-	if _, err = os.Stat(path); path == clientcmd.RecommendedHomeFile && os.IsNotExist(err) {
-		return rest.InClusterConfig()
+	if _, err := os.Stat(path); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if withExplicitPath {
+			return nil, fmt.Errorf("failed to resolve kubeconfig: kubeconfig file does not exist at path '%s'", path)
+		}
+		config, inClusterErr := rest.InClusterConfig()
+		if inClusterErr == nil {
+			return config, nil
+		}
+		return nil, fmt.Errorf(
+			"failed to resolve kubeconfig: neither a valid kubeconfig file was found at '%s', nor could InClusterConfig be used: %w",
+			path, inClusterErr,
+		)
 	}
-	return clientcmd.BuildConfigFromFlags("", path)
+
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: path},
+		&clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build kubeconfig from file at path '%s': %w", path, err)
+	}
+	return config, nil
 }
 
 func init() {
@@ -59,7 +79,7 @@ func init() {
 		strings.HasPrefix(podName, "flow-aggregator"))
 
 	if runtime.IsWindowsPlatform() && !InPod {
-		if _, err := os.Stat(agentapiserver.TokenPath); err == nil {
+		if _, err := os.Stat(apis.APIServerLoopbackTokenPath); err == nil {
 			InPod = true
 			Mode = ModeAgent
 			return

@@ -89,7 +89,7 @@ func TestSyncConfigMap(t *testing.T) {
 		},
 	}
 	caConfig := &CAConfig{
-		ServiceName:     AntreaServiceName,
+		ServiceName:     "antrea",
 		PairName:        "antrea-controller",
 		CAConfigMapName: "antrea-ca",
 	}
@@ -109,7 +109,7 @@ func TestSyncConfigMap(t *testing.T) {
 			}
 			aggregatorClientset := fakeaggregatorclientset.NewSimpleClientset()
 			apiExtensionClient := fakeapiextensionclientset.NewSimpleClientset()
-			caContentProvider, _ := generateSelfSignedCertificate(secureServing, caConfig)
+			caContentProvider, _ := newSelfSignedCertProvider(clientset, secureServing, caConfig)
 			tt.prepareReactor(clientset)
 
 			controller := newCACertController(caContentProvider, clientset, aggregatorClientset, apiExtensionClient, caConfig)
@@ -174,7 +174,7 @@ func TestSyncAPIServices(t *testing.T) {
 		},
 	}
 	caConfig := &CAConfig{
-		ServiceName:     AntreaServiceName,
+		ServiceName:     "antrea",
 		PairName:        "antrea-controller",
 		CAConfigMapName: "antrea-ca",
 		APIServiceSelector: &metav1.LabelSelector{
@@ -194,7 +194,7 @@ func TestSyncAPIServices(t *testing.T) {
 			clientset := fakeclientset.NewSimpleClientset()
 			aggregatorClientset := fakeaggregatorclientset.NewSimpleClientset()
 			apiExtensionClient := fakeapiextensionclientset.NewSimpleClientset()
-			caContentProvider, _ := generateSelfSignedCertificate(secureServing, caConfig)
+			caContentProvider, _ := newSelfSignedCertProvider(clientset, secureServing, caConfig)
 
 			if tt.existingAPIService != nil {
 				aggregatorClientset = fakeaggregatorclientset.NewSimpleClientset(tt.existingAPIService)
@@ -263,7 +263,7 @@ func TestSyncValidatingWebhooks(t *testing.T) {
 		},
 	}
 	caConfig := &CAConfig{
-		ServiceName:     AntreaServiceName,
+		ServiceName:     "antrea",
 		PairName:        "antrea-controller",
 		CAConfigMapName: "antrea-ca",
 		ValidatingWebhookSelector: &metav1.LabelSelector{
@@ -283,7 +283,7 @@ func TestSyncValidatingWebhooks(t *testing.T) {
 			clientset := fakeclientset.NewSimpleClientset()
 			aggregatorClientset := fakeaggregatorclientset.NewSimpleClientset()
 			apiExtensionClient := fakeapiextensionclientset.NewSimpleClientset()
-			caContentProvider, _ := generateSelfSignedCertificate(secureServing, caConfig)
+			caContentProvider, _ := newSelfSignedCertProvider(clientset, secureServing, caConfig)
 
 			if tt.existingWebhook != nil {
 				clientset = fakeclientset.NewSimpleClientset(tt.existingWebhook)
@@ -385,7 +385,7 @@ func TestSyncMutatingWebhooks(t *testing.T) {
 		},
 	}
 	caConfig := &CAConfig{
-		ServiceName:     AntreaServiceName,
+		ServiceName:     "antrea",
 		PairName:        "antrea-controller",
 		CAConfigMapName: "antrea-ca",
 		MutationWebhookSelector: &metav1.LabelSelector{
@@ -404,14 +404,14 @@ func TestSyncMutatingWebhooks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			aggregatorClientset := fakeaggregatorclientset.NewSimpleClientset()
 			apiExtensionClient := fakeapiextensionclientset.NewSimpleClientset()
-			caContentProvider, _ := generateSelfSignedCertificate(secureServing, caConfig)
+
 			var objects []runtime.Object
 			for _, webhook := range tt.existingWebhooks {
 				objects = append(objects, webhook)
 			}
 			clientset := fakeclientset.NewSimpleClientset(objects...)
 			tt.prepareReactor(clientset)
-
+			caContentProvider, _ := newSelfSignedCertProvider(clientset, secureServing, caConfig)
 			controller := newCACertController(caContentProvider, clientset, aggregatorClientset, apiExtensionClient, caConfig)
 			caBundle := []byte("abc")
 			err = controller.syncMutatingWebhooks(caBundle)
@@ -498,7 +498,7 @@ func TestSyncConversionWebhooks(t *testing.T) {
 		},
 	}
 	caConfig := &CAConfig{
-		ServiceName:     AntreaServiceName,
+		ServiceName:     "antrea",
 		PairName:        "antrea-controller",
 		CAConfigMapName: "antrea-ca",
 		CRDConversionWebhookSelector: &metav1.LabelSelector{
@@ -518,7 +518,7 @@ func TestSyncConversionWebhooks(t *testing.T) {
 			clientset := fakeclientset.NewSimpleClientset()
 			aggregatorClientset := fakeaggregatorclientset.NewSimpleClientset()
 			apiExtensionClient := fakeapiextensionclientset.NewSimpleClientset()
-			caContentProvider, _ := generateSelfSignedCertificate(secureServing, caConfig)
+			caContentProvider, _ := newSelfSignedCertProvider(clientset, secureServing, caConfig)
 
 			if tt.existingCRD != nil {
 				apiExtensionClient = fakeapiextensionclientset.NewSimpleClientset(tt.existingCRD)

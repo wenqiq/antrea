@@ -146,7 +146,6 @@ func TestConfigureContainerLink(t *testing.T) {
 	fakeSriovNet := cniservertest.NewMockSriovNet(controller)
 	fakeNetlink := netlinktest.NewMockInterface(controller)
 
-	sriovPfName := "pf"
 	sriovVfNetdeviceName := "vfDevice"
 	vfDeviceLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, MTU: mtu, HardwareAddr: containerVethMac, Name: sriovVfNetdeviceName, Flags: net.FlagUp}}
 
@@ -161,9 +160,11 @@ func TestConfigureContainerLink(t *testing.T) {
 		podSriovVFDeviceID        string
 		renameIntefaceErr         error
 		setupVethErr              error
+		delLinkErr                error
 		ipamConfigureIfaceErr     error
 		ethtoolEthTXHWCsumOffErr  error
 		expectErr                 error
+		delLinkCalled             bool
 	}{
 		{
 			name:                      "container-vethpair-success",
@@ -178,11 +179,13 @@ func TestConfigureContainerLink(t *testing.T) {
 			ovsHardwareOffloadEnabled: false,
 			ipamConfigureIfaceErr:     fmt.Errorf("unable to configure container IPAM"),
 			expectErr:                 fmt.Errorf("failed to configure IP address for container %s: unable to configure container IPAM", podContainerID),
+			delLinkCalled:             true,
 		}, {
 			name:                      "container-hwoffload-failure",
 			ovsHardwareOffloadEnabled: true,
 			ethtoolEthTXHWCsumOffErr:  fmt.Errorf("unable to disable offloading"),
 			expectErr:                 fmt.Errorf("error when disabling TX checksum offload on container veth: unable to disable offloading"),
+			delLinkCalled:             true,
 		}, {
 			name:                      "br-sriov-offloading-disable",
 			ovsHardwareOffloadEnabled: false,
@@ -213,7 +216,9 @@ func TestConfigureContainerLink(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var delLinkCalled bool
 			defer mockSetupVethWithName(tc.setupVethErr, 1, 2)()
+			defer mockDelLinkByName(tc.delLinkErr, &delLinkCalled)()
 			defer mockRenameInterface(tc.renameIntefaceErr)()
 			defer mockIPAMConfigureIface(tc.ipamConfigureIfaceErr)()
 			defer mockEthtoolTXHWCsumOff(tc.ethtoolEthTXHWCsumOffErr)()
@@ -237,8 +242,6 @@ func TestConfigureContainerLink(t *testing.T) {
 				}
 			}
 			if tc.podSriovVFDeviceID != "" {
-				fakeSriovNet.EXPECT().GetPfName(tc.podSriovVFDeviceID).Return(sriovPfName, nil).Times(1)
-				fakeSriovNet.EXPECT().GetVfid(tc.podSriovVFDeviceID, sriovPfName).Return(sriovVfIndex, nil).Times(1)
 				fakeSriovNet.EXPECT().GetVFLinkNames(tc.podSriovVFDeviceID).Return(sriovVfNetdeviceName, nil).Times(1)
 				fakeNetlink.EXPECT().LinkByName(sriovVfNetdeviceName).Return(vfDeviceLink, nil).Times(1)
 				moveVFtoNS = true
@@ -258,6 +261,7 @@ func TestConfigureContainerLink(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+			assert.Equal(t, tc.delLinkCalled, delLinkCalled)
 		})
 	}
 }
@@ -809,6 +813,17 @@ func mockSetupVethWithName(setupVethErr error, containerIndex, hostIndex int) fu
 	}
 	return func() {
 		ipSetupVethWithName = originalIPSetupVethWithName
+	}
+}
+
+func mockDelLinkByName(err error, called *bool) func() {
+	origin := ipDelLinkByName
+	ipDelLinkByName = func(name string) error {
+		*called = true
+		return err
+	}
+	return func() {
+		ipDelLinkByName = origin
 	}
 }
 

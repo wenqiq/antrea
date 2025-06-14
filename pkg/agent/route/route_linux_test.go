@@ -23,9 +23,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vishvananda/netlink"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilnet "k8s.io/utils/net"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/openflow"
 	servicecidrtest "antrea.io/antrea/pkg/agent/servicecidr/testing"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util/ipset"
@@ -33,7 +37,7 @@ import (
 	"antrea.io/antrea/pkg/agent/util/iptables"
 	iptablestest "antrea.io/antrea/pkg/agent/util/iptables/testing"
 	netlinktest "antrea.io/antrea/pkg/agent/util/netlink/testing"
-	"antrea.io/antrea/pkg/ovs/openflow"
+	binding "antrea.io/antrea/pkg/ovs/openflow"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/pkg/util/ip"
 )
@@ -50,6 +54,13 @@ var (
 	ipv4Route2 = generateRoute(net.ParseIP(externalIPv4Addr2), 32, config.VirtualServiceIPv4, 10, netlink.SCOPE_UNIVERSE)
 	ipv6Route1 = generateRoute(net.ParseIP(externalIPv6Addr1), 128, config.VirtualServiceIPv6, 10, netlink.SCOPE_UNIVERSE)
 	ipv6Route2 = generateRoute(net.ParseIP(externalIPv6Addr2), 128, config.VirtualServiceIPv6, 10, netlink.SCOPE_UNIVERSE)
+
+	serviceIPSets = map[string]*sync.Map{
+		antreaNodePortIPSet:    {},
+		antreaNodePortIP6Set:   {},
+		antreaExternalIPIPSet:  {},
+		antreaExternalIPIP6Set: {},
+	}
 )
 
 func TestSyncRoutes(t *testing.T) {
@@ -117,11 +128,11 @@ func TestRestoreEgressRoutesAndRules(t *testing.T) {
 	rule1 := netlink.NewRule()
 	rule1.Table = 101
 	rule1.Mark = 1
-	rule1.Mask = int(types.SNATIPMarkMask)
+	rule1.Mask = ptr.To(types.SNATIPMarkMask)
 	rule2 := netlink.NewRule()
 	rule2.Table = 50
 	rule2.Mark = 10
-	rule2.Mask = int(types.SNATIPMarkMask)
+	rule2.Mask = ptr.To(types.SNATIPMarkMask)
 
 	mockNetlink.EXPECT().RouteList(nil, netlink.FAMILY_ALL).Return([]netlink.Route{*route1, *route2, *route3, *route4}, nil)
 	mockNetlink.EXPECT().RuleList(netlink.FAMILY_ALL).Return([]netlink.Rule{*rule1, *rule2}, nil)
@@ -155,8 +166,7 @@ func TestSyncIPSet(t *testing.T) {
 		nodeNetworkPolicyEnabled    bool
 		networkConfig               *config.NetworkConfig
 		nodeConfig                  *config.NodeConfig
-		nodePortsIPv4               []string
-		nodePortsIPv6               []string
+		serviceIPSets               map[string][]string
 		clusterNodeIPs              map[string]string
 		clusterNodeIP6s             map[string]string
 		nodeNetworkPolicyIPSetsIPv4 map[string]sets.Set[string]
@@ -202,8 +212,12 @@ func TestSyncIPSet(t *testing.T) {
 				PodIPv4CIDR: podCIDR,
 				PodIPv6CIDR: podCIDRv6,
 			},
-			nodePortsIPv4:               []string{"192.168.0.2,tcp:10000", "127.0.0.1,tcp:10000"},
-			nodePortsIPv6:               []string{"fe80::e643:4bff:fe44:ee,tcp:10000", "::1,tcp:10000"},
+			serviceIPSets: map[string][]string{
+				antreaNodePortIPSet:    {"192.168.0.2,tcp:10000", "127.0.0.1,tcp:10000"},
+				antreaNodePortIP6Set:   {"fe80::e643:4bff:fe44:ee,tcp:10000", "::1,tcp:10000"},
+				antreaExternalIPIPSet:  {"192.168.0.200", "192.168.0.201", "192.168.0.150", "192.168.0.151"},
+				antreaExternalIPIP6Set: {"2001::192:168:0:200", "2001::192:168:0:201", "2001::192:168:0:150", "2001::192:168:0:151"},
+			},
 			clusterNodeIPs:              map[string]string{"172.16.3.0/24": "192.168.0.3", "172.16.4.0/24": "192.168.0.4"},
 			clusterNodeIP6s:             map[string]string{"2001:ab03:cd04:5503::/64": "fe80::e643:4bff:fe03", "2001:ab03:cd04:5504::/64": "fe80::e643:4bff:fe04"},
 			nodeNetworkPolicyIPSetsIPv4: map[string]sets.Set[string]{"ANTREA-POL-RULE1-4": sets.New[string]("1.1.1.1/32", "2.2.2.2/32")},
@@ -219,6 +233,16 @@ func TestSyncIPSet(t *testing.T) {
 				mockIPSet.AddEntry(antreaNodePortIPSet, "127.0.0.1,tcp:10000")
 				mockIPSet.AddEntry(antreaNodePortIP6Set, "fe80::e643:4bff:fe44:ee,tcp:10000")
 				mockIPSet.AddEntry(antreaNodePortIP6Set, "::1,tcp:10000")
+				mockIPSet.CreateIPSet(antreaExternalIPIPSet, ipset.HashIP, false)
+				mockIPSet.CreateIPSet(antreaExternalIPIP6Set, ipset.HashIP, true)
+				mockIPSet.AddEntry(antreaExternalIPIPSet, "192.168.0.150")
+				mockIPSet.AddEntry(antreaExternalIPIPSet, "192.168.0.151")
+				mockIPSet.AddEntry(antreaExternalIPIP6Set, "2001::192:168:0:150")
+				mockIPSet.AddEntry(antreaExternalIPIP6Set, "2001::192:168:0:151")
+				mockIPSet.AddEntry(antreaExternalIPIPSet, "192.168.0.200")
+				mockIPSet.AddEntry(antreaExternalIPIPSet, "192.168.0.201")
+				mockIPSet.AddEntry(antreaExternalIPIP6Set, "2001::192:168:0:200")
+				mockIPSet.AddEntry(antreaExternalIPIP6Set, "2001::192:168:0:201")
 				mockIPSet.CreateIPSet(clusterNodeIPSet, ipset.HashIP, false)
 				mockIPSet.CreateIPSet(clusterNodeIP6Set, ipset.HashIP, true)
 				mockIPSet.AddEntry(clusterNodeIPSet, "192.168.0.3")
@@ -266,16 +290,15 @@ func TestSyncIPSet(t *testing.T) {
 				multicastEnabled:         tt.multicastEnabled,
 				connectUplinkToBridge:    tt.connectUplinkToBridge,
 				nodeNetworkPolicyEnabled: tt.nodeNetworkPolicyEnabled,
-				nodePortsIPv4:            sync.Map{},
-				nodePortsIPv6:            sync.Map{},
 				clusterNodeIPs:           sync.Map{},
 				clusterNodeIP6s:          sync.Map{},
+				serviceIPSets:            make(map[string]*sync.Map),
 			}
-			for _, nodePortIPv4 := range tt.nodePortsIPv4 {
-				c.nodePortsIPv4.Store(nodePortIPv4, struct{}{})
-			}
-			for _, nodePortIPv6 := range tt.nodePortsIPv6 {
-				c.nodePortsIPv6.Store(nodePortIPv6, struct{}{})
+			for ipsetName, ipsetEntries := range tt.serviceIPSets {
+				c.serviceIPSets[ipsetName] = &sync.Map{}
+				for _, entry := range ipsetEntries {
+					c.serviceIPSets[ipsetName].Store(entry, struct{}{})
+				}
 			}
 			for cidr, nodeIP := range tt.clusterNodeIPs {
 				c.clusterNodeIPs.Store(cidr, nodeIP)
@@ -297,29 +320,32 @@ func TestSyncIPSet(t *testing.T) {
 
 func TestSyncIPTables(t *testing.T) {
 	tests := []struct {
-		name                     string
-		isCloudEKS               bool
-		proxyAll                 bool
-		multicastEnabled         bool
-		connectUplinkToBridge    bool
-		nodeNetworkPolicyEnabled bool
-		networkConfig            *config.NetworkConfig
-		nodeConfig               *config.NodeConfig
-		nodePortsIPv4            []string
-		nodePortsIPv6            []string
-		markToSNATIP             map[uint32]string
-		expectedCalls            func(iptables *iptablestest.MockInterfaceMockRecorder)
+		name                      string
+		isCloudEKS                bool
+		proxyAll                  bool
+		multicastEnabled          bool
+		connectUplinkToBridge     bool
+		nodeNetworkPolicyEnabled  bool
+		nodeLatencyMonitorEnabled bool
+		networkConfig             *config.NetworkConfig
+		nodeConfig                *config.NodeConfig
+		nodeSNATRandomFully       bool
+		markToSNATIP              map[uint32]string
+		wireguardPort             int
+		expectedCalls             func(iptables *iptablestest.MockInterfaceMockRecorder)
 	}{
 		{
-			name:                     "encap,egress=true,multicastEnabled=true,proxyAll=true,nodeNetworkPolicy=true",
-			proxyAll:                 true,
-			multicastEnabled:         true,
-			nodeNetworkPolicyEnabled: true,
+			name:                      "encap,wireguard,egress=true,multicastEnabled=true,proxyAll=true,nodeNetworkPolicy=true,nodeLatencyMonitor=true,nodeSNATRandomFully=true",
+			proxyAll:                  true,
+			multicastEnabled:          true,
+			nodeNetworkPolicyEnabled:  true,
+			nodeLatencyMonitorEnabled: true,
 			networkConfig: &config.NetworkConfig{
-				TrafficEncapMode: config.TrafficEncapModeEncap,
-				TunnelType:       ovsconfig.GeneveTunnel,
-				IPv4Enabled:      true,
-				IPv6Enabled:      true,
+				TrafficEncapMode:      config.TrafficEncapModeEncap,
+				TrafficEncryptionMode: config.TrafficEncryptionModeWireGuard,
+				TunnelType:            ovsconfig.GeneveTunnel,
+				IPv4Enabled:           true,
+				IPv6Enabled:           true,
 			},
 			nodeConfig: &config.NodeConfig{
 				PodIPv4CIDR: ip.MustParseCIDR("172.16.10.0/24"),
@@ -328,10 +354,12 @@ func TestSyncIPTables(t *testing.T) {
 					Name: "antrea-gw0",
 				},
 			},
+			nodeSNATRandomFully: true,
 			markToSNATIP: map[uint32]string{
 				1: "1.1.1.1",
 				2: "fe80::e643:4bff:fe02",
 			},
+			wireguardPort: 51820,
 			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
 				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaPreRoutingChain)
 				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
@@ -345,10 +373,34 @@ func TestSyncIPTables(t *testing.T) {
 				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.PreRoutingChain, []string{"-j", antreaMangleChain, "-m", "comment", "--comment", "Antrea: jump to Antrea mangle rules"})
 				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaOutputChain)
 				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.ListRules(iptables.ProtocolDual, iptables.NATTable, iptables.PreRoutingChain).Return(
+					map[iptables.Protocol][]string{
+						iptables.ProtocolIPv4: {
+							"-A " + iptables.PreRoutingChain + " -j " + kubeProxyServiceChain,
+							"-A " + iptables.PreRoutingChain + " -j " + antreaPreRoutingChain,
+						},
+						iptables.ProtocolIPv6: {
+							"-A " + iptables.PreRoutingChain + " -j " + antreaPreRoutingChain,
+							"-A " + iptables.PreRoutingChain + " -j " + kubeProxyServiceChain,
+						},
+					}, nil)
+				mockIPTables.DeleteRule(iptables.ProtocolIPv4, iptables.NATTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
+				mockIPTables.ListRules(iptables.ProtocolDual, iptables.NATTable, iptables.OutputChain).Return(
+					map[iptables.Protocol][]string{
+						iptables.ProtocolIPv4: {
+							"-A " + iptables.OutputChain + " -j " + antreaOutputChain,
+							"-A " + iptables.OutputChain + " -j " + kubeProxyServiceChain,
+						},
+						iptables.ProtocolIPv6: {
+							"-A " + iptables.OutputChain + " -j " + kubeProxyServiceChain,
+							"-A " + iptables.OutputChain + " -j " + antreaOutputChain,
+						},
+					}, nil)
+				mockIPTables.DeleteRule(iptables.ProtocolIPv6, iptables.NATTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
 				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.NATTable, antreaPreRoutingChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.NATTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
+				mockIPTables.InsertRule(iptables.ProtocolDual, iptables.NATTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
 				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.NATTable, antreaOutputChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.NATTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.InsertRule(iptables.ProtocolDual, iptables.NATTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
 				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaInputChain)
 				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.FilterTable, iptables.InputChain, []string{"-j", antreaInputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea input rules"})
 				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaOutputChain)
@@ -359,6 +411,9 @@ func TestSyncIPTables(t *testing.T) {
 -A ANTREA-PREROUTING -m comment --comment "Antrea: do not track incoming encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --dst-type LOCAL -j NOTRACK
 -A ANTREA-OUTPUT -m comment --comment "Antrea: do not track outgoing encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --src-type LOCAL -j NOTRACK
 -A ANTREA-PREROUTING -m comment --comment "Antrea: drop Pod multicast traffic forwarded via underlay network" -m set --match-set CLUSTER-NODE-IP src -d 224.0.0.0/4 -j DROP
+-A ANTREA-PREROUTING -m comment --comment "Antrea: do not track request packets destined to external IPs" -m set --match-set ANTREA-EXTERNAL-IP dst -j NOTRACK
+-A ANTREA-PREROUTING -m comment --comment "Antrea: do not track reply packets sourced from external IPs" -m set --match-set ANTREA-EXTERNAL-IP src -j NOTRACK
+-A ANTREA-OUTPUT -m comment --comment "Antrea: do not track request packets destined to external IPs" -m set --match-set ANTREA-EXTERNAL-IP dst -j NOTRACK
 COMMIT
 *mangle
 :ANTREA-MANGLE - [0:0]
@@ -375,8 +430,14 @@ COMMIT
 :ANTREA-POL-PRE-INGRESS-RULES - [0:0]
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
+-A ANTREA-INPUT -i antrea-gw0 -p icmp --icmp-type 8 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-INPUT -i antrea-gw0 -p icmp --icmp-type 0 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-INPUT -m comment --comment "Antrea: allow WireGuard input packets" -p udp --dport 51820 -j ACCEPT
 -A ANTREA-INPUT -m comment --comment "Antrea: jump to static ingress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-INGRESS-RULES
 -A ANTREA-INPUT -m comment --comment "Antrea: jump to ingress NodeNetworkPolicy rules" -j ANTREA-POL-INGRESS-RULES
+-A ANTREA-OUTPUT -o antrea-gw0 -p icmp --icmp-type 8 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-OUTPUT -o antrea-gw0 -p icmp --icmp-type 0 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-OUTPUT -m comment --comment "Antrea: allow WireGuard output packets" -p udp --dport 51820 -j ACCEPT
 -A ANTREA-OUTPUT -m comment --comment "Antrea: jump to static egress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-EGRESS-RULES
 -A ANTREA-OUTPUT -m comment --comment "Antrea: jump to egress NodeNetworkPolicy rules" -j ANTREA-POL-EGRESS-RULES
 -A ANTREA-POL-INGRESS-RULES -j ACCEPT -m comment --comment "mock rule"
@@ -392,7 +453,7 @@ COMMIT
 -A ANTREA-OUTPUT -m comment --comment "Antrea: DNAT local to NodePort packets" -m set --match-set ANTREA-NODEPORT-IP dst,dst -j DNAT --to-destination 169.254.0.252
 :ANTREA-POSTROUTING - [0:0]
 -A ANTREA-POSTROUTING -m comment --comment "Antrea: SNAT Pod to external packets" ! -o antrea-gw0 -m mark --mark 0x00000001/0x000000ff -j SNAT --to 1.1.1.1
--A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 172.16.10.0/24 -m set ! --match-set ANTREA-POD-IP dst ! -o antrea-gw0 -j MASQUERADE
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 172.16.10.0/24 -m set ! --match-set ANTREA-POD-IP dst ! -o antrea-gw0 -j MASQUERADE --random-fully
 -A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade LOCAL traffic" -o antrea-gw0 -m addrtype ! --src-type LOCAL --limit-iface-out -m addrtype --src-type LOCAL -j MASQUERADE --random-fully
 -A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade OVS virtual source IP" -s 169.254.0.253 -j MASQUERADE
 COMMIT
@@ -402,7 +463,9 @@ COMMIT
 :ANTREA-OUTPUT - [0:0]
 -A ANTREA-PREROUTING -m comment --comment "Antrea: do not track incoming encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --dst-type LOCAL -j NOTRACK
 -A ANTREA-OUTPUT -m comment --comment "Antrea: do not track outgoing encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --src-type LOCAL -j NOTRACK
--A ANTREA-PREROUTING -m comment --comment "Antrea: drop Pod multicast traffic forwarded via underlay network" -m set --match-set CLUSTER-NODE-IP6 src -d 224.0.0.0/4 -j DROP
+-A ANTREA-PREROUTING -m comment --comment "Antrea: do not track request packets destined to external IPs" -m set --match-set ANTREA-EXTERNAL-IP6 dst -j NOTRACK
+-A ANTREA-PREROUTING -m comment --comment "Antrea: do not track reply packets sourced from external IPs" -m set --match-set ANTREA-EXTERNAL-IP6 src -j NOTRACK
+-A ANTREA-OUTPUT -m comment --comment "Antrea: do not track request packets destined to external IPs" -m set --match-set ANTREA-EXTERNAL-IP6 dst -j NOTRACK
 COMMIT
 *mangle
 :ANTREA-MANGLE - [0:0]
@@ -419,8 +482,14 @@ COMMIT
 :ANTREA-POL-PRE-INGRESS-RULES - [0:0]
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
+-A ANTREA-INPUT -i antrea-gw0 -p icmpv6 --icmpv6-type 128 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-INPUT -i antrea-gw0 -p icmpv6 --icmpv6-type 129 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-INPUT -m comment --comment "Antrea: allow WireGuard input packets" -p udp --dport 51820 -j ACCEPT
 -A ANTREA-INPUT -m comment --comment "Antrea: jump to static ingress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-INGRESS-RULES
 -A ANTREA-INPUT -m comment --comment "Antrea: jump to ingress NodeNetworkPolicy rules" -j ANTREA-POL-INGRESS-RULES
+-A ANTREA-OUTPUT -o antrea-gw0 -p icmpv6 --icmpv6-type 128 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-OUTPUT -o antrea-gw0 -p icmpv6 --icmpv6-type 129 -m comment --comment "Antrea: allow ICMP probes from NodeLatencyMonitor" -j ACCEPT
+-A ANTREA-OUTPUT -m comment --comment "Antrea: allow WireGuard output packets" -p udp --dport 51820 -j ACCEPT
 -A ANTREA-OUTPUT -m comment --comment "Antrea: jump to static egress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-EGRESS-RULES
 -A ANTREA-OUTPUT -m comment --comment "Antrea: jump to egress NodeNetworkPolicy rules" -j ANTREA-POL-EGRESS-RULES
 -A ANTREA-POL-INGRESS-RULES -j ACCEPT -m comment --comment "mock rule"
@@ -436,9 +505,107 @@ COMMIT
 -A ANTREA-OUTPUT -m comment --comment "Antrea: DNAT local to NodePort packets" -m set --match-set ANTREA-NODEPORT-IP6 dst,dst -j DNAT --to-destination fc01::aabb:ccdd:eefe
 :ANTREA-POSTROUTING - [0:0]
 -A ANTREA-POSTROUTING -m comment --comment "Antrea: SNAT Pod to external packets" ! -o antrea-gw0 -m mark --mark 0x00000002/0x000000ff -j SNAT --to fe80::e643:4bff:fe02
--A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 2001:ab03:cd04:55ef::/64 -m set ! --match-set ANTREA-POD-IP6 dst ! -o antrea-gw0 -j MASQUERADE
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 2001:ab03:cd04:55ef::/64 -m set ! --match-set ANTREA-POD-IP6 dst ! -o antrea-gw0 -j MASQUERADE --random-fully
 -A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade LOCAL traffic" -o antrea-gw0 -m addrtype ! --src-type LOCAL --limit-iface-out -m addrtype --src-type LOCAL -j MASQUERADE --random-fully
 -A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade OVS virtual source IP" -s fc01::aabb:ccdd:eeff -j MASQUERADE
+COMMIT
+`, false, true)
+			},
+		},
+		{
+			name:                     "encap,wireguard,egress=true,multicastEnabled=false,proxyAll=false,nodeNetworkPolicy=false,nodeSNATRandomFully=true",
+			proxyAll:                 false,
+			multicastEnabled:         false,
+			nodeNetworkPolicyEnabled: false,
+			networkConfig: &config.NetworkConfig{
+				TrafficEncapMode:      config.TrafficEncapModeEncap,
+				TrafficEncryptionMode: config.TrafficEncryptionModeWireGuard,
+				TunnelType:            ovsconfig.GeneveTunnel,
+				IPv4Enabled:           true,
+				IPv6Enabled:           true,
+			},
+			nodeConfig: &config.NodeConfig{
+				PodIPv4CIDR: ip.MustParseCIDR("172.16.10.0/24"),
+				PodIPv6CIDR: ip.MustParseCIDR("2001:ab03:cd04:55ef::/64"),
+				GatewayConfig: &config.GatewayConfig{
+					Name: "antrea-gw0",
+				},
+			},
+			nodeSNATRandomFully: true,
+			markToSNATIP: map[uint32]string{
+				1: "1.1.1.1",
+				2: "fe80::e643:4bff:fe02",
+			},
+			wireguardPort: 51820,
+			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaPreRoutingChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaForwardChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.FilterTable, iptables.ForwardChain, []string{"-j", antreaForwardChain, "-m", "comment", "--comment", "Antrea: jump to Antrea forwarding rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.NATTable, antreaPostRoutingChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.NATTable, iptables.PostRoutingChain, []string{"-j", antreaPostRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea postrouting rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaMangleChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.PreRoutingChain, []string{"-j", antreaMangleChain, "-m", "comment", "--comment", "Antrea: jump to Antrea mangle rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaInputChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.FilterTable, iptables.InputChain, []string{"-j", antreaInputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea input rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.FilterTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.Restore(`*raw
+:ANTREA-PREROUTING - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-PREROUTING -m comment --comment "Antrea: do not track incoming encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --dst-type LOCAL -j NOTRACK
+-A ANTREA-OUTPUT -m comment --comment "Antrea: do not track outgoing encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --src-type LOCAL -j NOTRACK
+COMMIT
+*mangle
+:ANTREA-MANGLE - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-OUTPUT -m comment --comment "Antrea: mark LOCAL output packets" -m addrtype --src-type LOCAL -o antrea-gw0 -j MARK --or-mark 0x80000000
+COMMIT
+*filter
+:ANTREA-FORWARD - [0:0]
+:ANTREA-INPUT - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
+-A ANTREA-INPUT -m comment --comment "Antrea: allow WireGuard input packets" -p udp --dport 51820 -j ACCEPT
+-A ANTREA-OUTPUT -m comment --comment "Antrea: allow WireGuard output packets" -p udp --dport 51820 -j ACCEPT
+COMMIT
+*nat
+:ANTREA-POSTROUTING - [0:0]
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: SNAT Pod to external packets" ! -o antrea-gw0 -m mark --mark 0x00000001/0x000000ff -j SNAT --to 1.1.1.1
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 172.16.10.0/24 -m set ! --match-set ANTREA-POD-IP dst ! -o antrea-gw0 -j MASQUERADE --random-fully
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade LOCAL traffic" -o antrea-gw0 -m addrtype ! --src-type LOCAL --limit-iface-out -m addrtype --src-type LOCAL -j MASQUERADE --random-fully
+COMMIT
+`, false, false)
+				mockIPTables.Restore(`*raw
+:ANTREA-PREROUTING - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-PREROUTING -m comment --comment "Antrea: do not track incoming encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --dst-type LOCAL -j NOTRACK
+-A ANTREA-OUTPUT -m comment --comment "Antrea: do not track outgoing encapsulation packets" -m udp -p udp --dport 6081 -m addrtype --src-type LOCAL -j NOTRACK
+COMMIT
+*mangle
+:ANTREA-MANGLE - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-OUTPUT -m comment --comment "Antrea: mark LOCAL output packets" -m addrtype --src-type LOCAL -o antrea-gw0 -j MARK --or-mark 0x80000000
+COMMIT
+*filter
+:ANTREA-FORWARD - [0:0]
+:ANTREA-INPUT - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
+-A ANTREA-INPUT -m comment --comment "Antrea: allow WireGuard input packets" -p udp --dport 51820 -j ACCEPT
+-A ANTREA-OUTPUT -m comment --comment "Antrea: allow WireGuard output packets" -p udp --dport 51820 -j ACCEPT
+COMMIT
+*nat
+:ANTREA-POSTROUTING - [0:0]
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: SNAT Pod to external packets" ! -o antrea-gw0 -m mark --mark 0x00000002/0x000000ff -j SNAT --to fe80::e643:4bff:fe02
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 2001:ab03:cd04:55ef::/64 -m set ! --match-set ANTREA-POD-IP6 dst ! -o antrea-gw0 -j MASQUERADE --random-fully
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade LOCAL traffic" -o antrea-gw0 -m addrtype ! --src-type LOCAL --limit-iface-out -m addrtype --src-type LOCAL -j MASQUERADE --random-fully
 COMMIT
 `, false, true)
 			},
@@ -539,18 +706,18 @@ COMMIT
 				},
 			},
 			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
-				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaPreRoutingChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
-				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaOutputChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
-				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaForwardChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.FilterTable, iptables.ForwardChain, []string{"-j", antreaForwardChain, "-m", "comment", "--comment", "Antrea: jump to Antrea forwarding rules"})
-				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.NATTable, antreaPostRoutingChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.NATTable, iptables.PostRoutingChain, []string{"-j", antreaPostRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea postrouting rules"})
-				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaMangleChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.PreRoutingChain, []string{"-j", antreaMangleChain, "-m", "comment", "--comment", "Antrea: jump to Antrea mangle rules"})
-				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaOutputChain)
-				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolIPv4, iptables.RawTable, antreaPreRoutingChain)
+				mockIPTables.AppendRule(iptables.ProtocolIPv4, iptables.RawTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolIPv4, iptables.RawTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolIPv4, iptables.RawTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolIPv4, iptables.FilterTable, antreaForwardChain)
+				mockIPTables.AppendRule(iptables.ProtocolIPv4, iptables.FilterTable, iptables.ForwardChain, []string{"-j", antreaForwardChain, "-m", "comment", "--comment", "Antrea: jump to Antrea forwarding rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolIPv4, iptables.NATTable, antreaPostRoutingChain)
+				mockIPTables.AppendRule(iptables.ProtocolIPv4, iptables.NATTable, iptables.PostRoutingChain, []string{"-j", antreaPostRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea postrouting rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolIPv4, iptables.MangleTable, antreaMangleChain)
+				mockIPTables.AppendRule(iptables.ProtocolIPv4, iptables.MangleTable, iptables.PreRoutingChain, []string{"-j", antreaMangleChain, "-m", "comment", "--comment", "Antrea: jump to Antrea mangle rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolIPv4, iptables.MangleTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolIPv4, iptables.MangleTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
 				mockIPTables.Restore(`*raw
 :ANTREA-PREROUTING - [0:0]
 :ANTREA-OUTPUT - [0:0]
@@ -590,7 +757,10 @@ COMMIT
 				multicastEnabled:         tt.multicastEnabled,
 				connectUplinkToBridge:    tt.connectUplinkToBridge,
 				nodeNetworkPolicyEnabled: tt.nodeNetworkPolicyEnabled,
+				nodeSNATRandomFully:      tt.nodeSNATRandomFully,
+				iptablesHasRandomFully:   true,
 				deterministic:            true,
+				wireguardPort:            tt.wireguardPort,
 			}
 			for mark, snatIP := range tt.markToSNATIP {
 				c.markToSNATIP.Store(mark, net.ParseIP(snatIP))
@@ -601,6 +771,12 @@ COMMIT
 					`-A ANTREA-POL-INGRESS-RULES -j ACCEPT -m comment --comment "mock rule"`})
 				c.nodeNetworkPolicyIPTablesIPv6.Store(config.NodeNetworkPolicyIngressRulesChain, []string{
 					`-A ANTREA-POL-INGRESS-RULES -j ACCEPT -m comment --comment "mock rule"`})
+			}
+			if tt.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeWireGuard {
+				c.initWireguard()
+			}
+			if tt.nodeLatencyMonitorEnabled {
+				c.initNodeLatencyRules()
 			}
 			tt.expectedCalls(mockIPTables.EXPECT())
 			assert.NoError(t, c.syncIPTables())
@@ -1032,8 +1208,6 @@ func TestAddRoutes(t *testing.T) {
 func TestDeleteRoutes(t *testing.T) {
 	tests := []struct {
 		name                  string
-		networkConfig         *config.NetworkConfig
-		nodeConfig            *config.NodeConfig
 		podCIDR               *net.IPNet
 		existingNodeRoutes    map[string][]*netlink.Route
 		existingNodeNeighbors map[string]*netlink.Neigh
@@ -1078,8 +1252,6 @@ func TestDeleteRoutes(t *testing.T) {
 			mockIPSet := ipsettest.NewMockInterface(ctrl)
 			c := &Client{netlink: mockNetlink,
 				ipset:         mockIPSet,
-				networkConfig: tt.networkConfig,
-				nodeConfig:    tt.nodeConfig,
 				nodeRoutes:    sync.Map{},
 				nodeNeighbors: sync.Map{},
 			}
@@ -1250,12 +1422,13 @@ func TestAddSNATRule(t *testing.T) {
 
 func TestDeleteSNATRule(t *testing.T) {
 	tests := []struct {
-		name          string
-		networkConfig *config.NetworkConfig
-		markToSNATIP  map[uint32]net.IP
-		nodeConfig    *config.NodeConfig
-		mark          uint32
-		expectedCalls func(mockIPTables *iptablestest.MockInterfaceMockRecorder)
+		name                  string
+		networkConfig         *config.NetworkConfig
+		egressSNATRandomFully bool
+		markToSNATIP          map[uint32]net.IP
+		nodeConfig            *config.NodeConfig
+		mark                  uint32
+		expectedCalls         func(mockIPTables *iptablestest.MockInterfaceMockRecorder)
 	}{
 		{
 			name: "IPv4",
@@ -1299,15 +1472,38 @@ func TestDeleteSNATRule(t *testing.T) {
 				})
 			},
 		},
+		{
+			name: "IPv4 with random ports for SNAT",
+			nodeConfig: &config.NodeConfig{
+				GatewayConfig: &config.GatewayConfig{
+					Name: "antrea-gw0",
+				},
+			},
+			egressSNATRandomFully: true,
+			markToSNATIP: map[uint32]net.IP{
+				10: net.ParseIP("1.1.1.1"),
+				11: net.ParseIP("1.1.1.2"),
+			},
+			mark: 10,
+			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
+				mockIPTables.DeleteRule(iptables.ProtocolIPv4, iptables.NATTable, antreaPostRoutingChain, []string{
+					"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
+					"!", "-o", "antrea-gw0",
+					"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", 10, types.SNATIPMarkMask),
+					"-j", iptables.SNATTarget, "--to", "1.1.1.1", "--random-fully",
+				})
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockIPTables := iptablestest.NewMockInterface(ctrl)
 			c := &Client{
-				iptables:     mockIPTables,
-				nodeConfig:   tt.nodeConfig,
-				markToSNATIP: sync.Map{},
+				iptables:              mockIPTables,
+				nodeConfig:            tt.nodeConfig,
+				egressSNATRandomFully: tt.egressSNATRandomFully,
+				markToSNATIP:          sync.Map{},
 			}
 			for mark, snatIP := range tt.markToSNATIP {
 				c.markToSNATIP.Store(mark, snatIP)
@@ -1318,12 +1514,12 @@ func TestDeleteSNATRule(t *testing.T) {
 	}
 }
 
-func TestAddNodePort(t *testing.T) {
+func TestAddNodePortConfigs(t *testing.T) {
 	tests := []struct {
 		name              string
 		nodePortAddresses []net.IP
 		port              uint16
-		protocol          openflow.Protocol
+		protocol          binding.Protocol
 		expectedCalls     func(ipset *ipsettest.MockInterfaceMockRecorder)
 	}{
 		{
@@ -1333,7 +1529,7 @@ func TestAddNodePort(t *testing.T) {
 				net.ParseIP("1.1.2.2"),
 			},
 			port:     30000,
-			protocol: openflow.ProtocolTCP,
+			protocol: binding.ProtocolTCP,
 			expectedCalls: func(ipset *ipsettest.MockInterfaceMockRecorder) {
 				ipset.AddEntry(antreaNodePortIPSet, "1.1.1.1,tcp:30000")
 				ipset.AddEntry(antreaNodePortIPSet, "1.1.2.2,tcp:30000")
@@ -1346,7 +1542,7 @@ func TestAddNodePort(t *testing.T) {
 				net.ParseIP("fd00:1234:5678:dead:beaf::2"),
 			},
 			port:     30001,
-			protocol: openflow.ProtocolUDPv6,
+			protocol: binding.ProtocolUDPv6,
 			expectedCalls: func(ipset *ipsettest.MockInterfaceMockRecorder) {
 				ipset.AddEntry(antreaNodePortIP6Set, "fd00:1234:5678:dead:beaf::1,udp:30001")
 				ipset.AddEntry(antreaNodePortIP6Set, "fd00:1234:5678:dead:beaf::2,udp:30001")
@@ -1357,19 +1553,23 @@ func TestAddNodePort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			ipset := ipsettest.NewMockInterface(ctrl)
-			c := &Client{ipset: ipset}
+			c := &Client{ipset: ipset,
+				serviceIPSets: map[string]*sync.Map{
+					antreaNodePortIPSet:  {},
+					antreaNodePortIP6Set: {},
+				}}
 			tt.expectedCalls(ipset.EXPECT())
-			assert.NoError(t, c.AddNodePort(tt.nodePortAddresses, tt.port, tt.protocol))
+			assert.NoError(t, c.AddNodePortConfigs(tt.nodePortAddresses, tt.port, tt.protocol))
 		})
 	}
 }
 
-func TestDeleteNodePort(t *testing.T) {
+func TestDeleteNodePortConfigs(t *testing.T) {
 	tests := []struct {
 		name              string
 		nodePortAddresses []net.IP
 		port              uint16
-		protocol          openflow.Protocol
+		protocol          binding.Protocol
 		expectedCalls     func(ipset *ipsettest.MockInterfaceMockRecorder)
 	}{
 		{
@@ -1379,7 +1579,7 @@ func TestDeleteNodePort(t *testing.T) {
 				net.ParseIP("1.1.2.2"),
 			},
 			port:     30000,
-			protocol: openflow.ProtocolTCP,
+			protocol: binding.ProtocolTCP,
 			expectedCalls: func(ipset *ipsettest.MockInterfaceMockRecorder) {
 				ipset.DelEntry(antreaNodePortIPSet, "1.1.1.1,tcp:30000")
 				ipset.DelEntry(antreaNodePortIPSet, "1.1.2.2,tcp:30000")
@@ -1392,7 +1592,7 @@ func TestDeleteNodePort(t *testing.T) {
 				net.ParseIP("fd00:1234:5678:dead:beaf::2"),
 			},
 			port:     30001,
-			protocol: openflow.ProtocolUDPv6,
+			protocol: binding.ProtocolUDPv6,
 			expectedCalls: func(ipset *ipsettest.MockInterfaceMockRecorder) {
 				ipset.DelEntry(antreaNodePortIP6Set, "fd00:1234:5678:dead:beaf::1,udp:30001")
 				ipset.DelEntry(antreaNodePortIP6Set, "fd00:1234:5678:dead:beaf::2,udp:30001")
@@ -1403,9 +1603,9 @@ func TestDeleteNodePort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			ipset := ipsettest.NewMockInterface(ctrl)
-			c := &Client{ipset: ipset}
+			c := &Client{ipset: ipset, serviceIPSets: serviceIPSets}
 			tt.expectedCalls(ipset.EXPECT())
-			assert.NoError(t, c.DeleteNodePort(tt.nodePortAddresses, tt.port, tt.protocol))
+			assert.NoError(t, c.DeleteNodePortConfigs(tt.nodePortAddresses, tt.port, tt.protocol))
 		})
 	}
 }
@@ -1564,35 +1764,47 @@ func TestAddServiceCIDRRoute(t *testing.T) {
 	}
 }
 
-func TestAddExternalIPRoute(t *testing.T) {
+func TestAddExternalIPConfigs(t *testing.T) {
 	tests := []struct {
-		name          string
-		externalIPs   []string
-		serviceRoutes map[string]*netlink.Route
-		expectedCalls func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
+		name                                string
+		svcToExternalIPs                    map[string][]string
+		expectedCalls                       func(mockNetlink *netlinktest.MockInterfaceMockRecorder, mockIPSet *ipsettest.MockInterfaceMockRecorder)
+		expectedServiceExternalIPReferences map[string]sets.Set[string]
 	}{
 		{
 			name: "IPv4",
-			serviceRoutes: map[string]*netlink.Route{
-				externalIPv4Addr1: ipv4Route1,
-				externalIPv4Addr2: ipv4Route2,
+			svcToExternalIPs: map[string][]string{
+				"svc1": {externalIPv4Addr1},
+				"svc2": {externalIPv4Addr2},
+				"svc3": {externalIPv4Addr1, externalIPv4Addr2},
 			},
-			externalIPs: []string{externalIPv4Addr1, externalIPv4Addr2},
-			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder, mockIPSet *ipsettest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteReplace(ipv4Route1)
 				mockNetlink.RouteReplace(ipv4Route2)
+				mockIPSet.AddEntry(antreaExternalIPIPSet, externalIPv4Addr1)
+				mockIPSet.AddEntry(antreaExternalIPIPSet, externalIPv4Addr2)
+			},
+			expectedServiceExternalIPReferences: map[string]sets.Set[string]{
+				externalIPv4Addr1: sets.New[string]("svc1", "svc3"),
+				externalIPv4Addr2: sets.New[string]("svc2", "svc3"),
 			},
 		},
 		{
 			name: "IPv6",
-			serviceRoutes: map[string]*netlink.Route{
-				externalIPv6Addr1: ipv6Route1,
-				externalIPv6Addr2: ipv6Route2,
+			svcToExternalIPs: map[string][]string{
+				"svc1": {externalIPv6Addr1},
+				"svc2": {externalIPv6Addr2},
+				"svc3": {externalIPv6Addr1, externalIPv6Addr2},
 			},
-			externalIPs: []string{externalIPv6Addr1, externalIPv6Addr2},
-			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder, mockIPSet *ipsettest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteReplace(ipv6Route1)
 				mockNetlink.RouteReplace(ipv6Route2)
+				mockIPSet.AddEntry(antreaExternalIPIP6Set, externalIPv6Addr1)
+				mockIPSet.AddEntry(antreaExternalIPIP6Set, externalIPv6Addr2)
+			},
+			expectedServiceExternalIPReferences: map[string]sets.Set[string]{
+				externalIPv6Addr1: sets.New[string]("svc1", "svc3"),
+				externalIPv6Addr2: sets.New[string]("svc2", "svc3"),
 			},
 		},
 	}
@@ -1600,48 +1812,82 @@ func TestAddExternalIPRoute(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockNetlink := netlinktest.NewMockInterface(ctrl)
+			mockIPSet := ipsettest.NewMockInterface(ctrl)
 			c := &Client{
-				netlink:    mockNetlink,
-				nodeConfig: nodeConfig,
+				ipset:                       mockIPSet,
+				netlink:                     mockNetlink,
+				nodeConfig:                  nodeConfig,
+				serviceExternalIPReferences: make(map[string]sets.Set[string]),
+				serviceIPSets: map[string]*sync.Map{
+					antreaExternalIPIPSet:  {},
+					antreaExternalIPIP6Set: {},
+				},
 			}
-			tt.expectedCalls(mockNetlink.EXPECT())
+			tt.expectedCalls(mockNetlink.EXPECT(), mockIPSet.EXPECT())
 
-			for _, externalIP := range tt.externalIPs {
-				assert.NoError(t, c.AddExternalIPRoute(net.ParseIP(externalIP)))
+			for svcInfo, externalIPs := range tt.svcToExternalIPs {
+				for _, externalIP := range externalIPs {
+					assert.NoError(t, c.AddExternalIPConfigs(svcInfo, net.ParseIP(externalIP)))
+				}
 			}
+			assert.Equal(t, tt.expectedServiceExternalIPReferences, c.serviceExternalIPReferences)
 		})
 	}
 }
 
 func TestDeleteExternalIPRoute(t *testing.T) {
 	tests := []struct {
-		name          string
-		serviceRoutes map[string]*netlink.Route
-		externalIPs   []string
-		expectedCalls func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
+		name                        string
+		svcToExternalIPs            map[string][]string
+		serviceRoutes               map[string]*netlink.Route
+		serviceExternalIPReferences map[string]sets.Set[string]
+		externalIPs                 []string
+		expectedCalls               func(mockNetlink *netlinktest.MockInterfaceMockRecorder, mockIPSet *ipsettest.MockInterfaceMockRecorder)
 	}{
 		{
 			name: "IPv4",
+			svcToExternalIPs: map[string][]string{
+				"svc1": {externalIPv4Addr1},
+				"svc2": {externalIPv4Addr2},
+				"svc3": {externalIPv4Addr1, externalIPv4Addr2},
+			},
 			serviceRoutes: map[string]*netlink.Route{
 				externalIPv4Addr1: ipv4Route1,
 				externalIPv4Addr2: ipv4Route2,
 			},
+			serviceExternalIPReferences: map[string]sets.Set[string]{
+				externalIPv4Addr1: sets.New[string]("svc1", "svc3"),
+				externalIPv4Addr2: sets.New[string]("svc2", "svc3"),
+			},
 			externalIPs: []string{externalIPv4Addr1, externalIPv4Addr2},
-			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder, mockIPSet *ipsettest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteDel(ipv4Route1)
 				mockNetlink.RouteDel(ipv4Route2)
+				mockIPSet.DelEntry(antreaExternalIPIPSet, externalIPv4Addr1)
+				mockIPSet.DelEntry(antreaExternalIPIPSet, externalIPv4Addr2)
 			},
 		},
 		{
 			name: "IPv6",
+			svcToExternalIPs: map[string][]string{
+				"svc1": {externalIPv6Addr1},
+				"svc2": {externalIPv6Addr2},
+				"svc3": {externalIPv6Addr1, externalIPv6Addr2},
+			},
 			serviceRoutes: map[string]*netlink.Route{
 				externalIPv6Addr1: ipv6Route1,
 				externalIPv6Addr2: ipv6Route2,
 			},
+			serviceExternalIPReferences: map[string]sets.Set[string]{
+				externalIPv6Addr1: sets.New[string]("svc1", "svc3"),
+				externalIPv6Addr2: sets.New[string]("svc2", "svc3"),
+			},
 			externalIPs: []string{externalIPv6Addr1, externalIPv6Addr2},
-			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder, mockIPSet *ipsettest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteDel(ipv6Route1)
 				mockNetlink.RouteDel(ipv6Route2)
+				mockIPSet.DelEntry(antreaExternalIPIP6Set, externalIPv6Addr1)
+				mockIPSet.DelEntry(antreaExternalIPIP6Set, externalIPv6Addr2)
 			},
 		},
 	}
@@ -1649,19 +1895,33 @@ func TestDeleteExternalIPRoute(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockNetlink := netlinktest.NewMockInterface(ctrl)
+			mockIPSet := ipsettest.NewMockInterface(ctrl)
 			c := &Client{
-				netlink:       mockNetlink,
-				nodeConfig:    nodeConfig,
-				serviceRoutes: sync.Map{},
+				ipset:                       mockIPSet,
+				netlink:                     mockNetlink,
+				nodeConfig:                  nodeConfig,
+				serviceExternalIPReferences: tt.serviceExternalIPReferences,
+				serviceIPSets: map[string]*sync.Map{
+					antreaExternalIPIPSet:  {},
+					antreaExternalIPIP6Set: {},
+				},
 			}
 			for ipStr, route := range tt.serviceRoutes {
 				c.serviceRoutes.Store(ipStr, route)
+				if utilnet.IsIPv6String(ipStr) {
+					c.serviceIPSets[antreaExternalIPIP6Set].Store(ipStr, struct{}{})
+				} else {
+					c.serviceIPSets[antreaExternalIPIPSet].Store(ipStr, struct{}{})
+				}
 			}
-			tt.expectedCalls(mockNetlink.EXPECT())
 
-			for _, externalIP := range tt.externalIPs {
-				assert.NoError(t, c.DeleteExternalIPRoute(net.ParseIP(externalIP)))
+			tt.expectedCalls(mockNetlink.EXPECT(), mockIPSet.EXPECT())
+			for svcInfo, externalIPs := range tt.svcToExternalIPs {
+				for _, externalIP := range externalIPs {
+					assert.NoError(t, c.DeleteExternalIPConfigs(svcInfo, net.ParseIP(externalIP)))
+				}
 			}
+			assert.Equal(t, make(map[string]sets.Set[string]), c.serviceExternalIPReferences)
 		})
 	}
 }
@@ -1901,7 +2161,7 @@ func TestEgressRule(t *testing.T) {
 				rule := netlink.NewRule()
 				rule.Table = 101
 				rule.Mark = 1
-				rule.Mask = int(types.SNATIPMarkMask)
+				rule.Mask = ptr.To(types.SNATIPMarkMask)
 				mockNetlink.RuleAdd(rule)
 				mockNetlink.RuleDel(rule)
 			},
@@ -1914,7 +2174,7 @@ func TestEgressRule(t *testing.T) {
 				rule := netlink.NewRule()
 				rule.Table = 101
 				rule.Mark = 1
-				rule.Mask = int(types.SNATIPMarkMask)
+				rule.Mask = ptr.To(types.SNATIPMarkMask)
 				mockNetlink.RuleAdd(rule)
 				mockNetlink.RuleDel(rule).Return(fmt.Errorf("no such process"))
 			},
@@ -2154,6 +2414,75 @@ COMMIT
 			}
 			assert.True(t, exists)
 			assert.EqualValues(t, []string(nil), gotRules)
+		})
+	}
+}
+
+func TestClearConntrackEntryForService(t *testing.T) {
+	testCases := []struct {
+		name          string
+		svcIP         net.IP
+		svcPort       uint16
+		endpointIP    net.IP
+		protocol      binding.Protocol
+		expectedCalls func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
+	}{
+		{
+			name:       "TCPv4 with all parameters",
+			svcIP:      net.ParseIP("192.168.1.1"),
+			svcPort:    80,
+			endpointIP: net.ParseIP("10.10.0.2"),
+			protocol:   binding.ProtocolTCP,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				filter := &netlink.ConntrackFilter{}
+				filter.AddProtocol(unix.IPPROTO_TCP)
+				filter.AddZone(openflow.CtZone)
+				filter.AddIP(netlink.ConntrackOrigDstIP, net.ParseIP("192.168.1.1"))
+				filter.AddPort(netlink.ConntrackOrigDstPort, 80)
+				filter.AddIP(netlink.ConntrackReplySrcIP, net.ParseIP("10.10.0.2"))
+				mockNetlink.ConntrackDeleteFilter(netlink.ConntrackTableType(netlink.ConntrackTable), netlink.InetFamily(unix.AF_INET), filter).Times(1)
+			},
+		},
+		{
+			name:       "UDPv4 with svcIP and svcPort",
+			svcIP:      net.ParseIP("192.168.1.1"),
+			svcPort:    53,
+			endpointIP: nil,
+			protocol:   binding.ProtocolUDP,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				filter := &netlink.ConntrackFilter{}
+				filter.AddProtocol(unix.IPPROTO_UDP)
+				filter.AddZone(openflow.CtZone)
+				filter.AddIP(netlink.ConntrackOrigDstIP, net.ParseIP("192.168.1.1"))
+				filter.AddPort(netlink.ConntrackOrigDstPort, 53)
+				mockNetlink.ConntrackDeleteFilter(netlink.ConntrackTableType(netlink.ConntrackTable), netlink.InetFamily(unix.AF_INET), filter).Times(1)
+			},
+		},
+		{
+			name:       "SCTPv6 with endpointIP",
+			svcIP:      nil,
+			svcPort:    0,
+			endpointIP: net.ParseIP("fec0::2"),
+			protocol:   binding.ProtocolSCTPv6,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				filter := &netlink.ConntrackFilter{}
+				filter.AddProtocol(unix.IPPROTO_SCTP)
+				filter.AddZone(openflow.CtZoneV6)
+				filter.AddIP(netlink.ConntrackReplySrcIP, net.ParseIP("fec0::2"))
+				mockNetlink.ConntrackDeleteFilter(netlink.ConntrackTableType(netlink.ConntrackTable), netlink.InetFamily(unix.AF_INET6), filter).Times(1)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockNetlink := netlinktest.NewMockInterface(ctrl)
+			c := &Client{
+				netlink: mockNetlink,
+			}
+			tc.expectedCalls(mockNetlink.EXPECT())
+			assert.NoError(t, c.ClearConntrackEntryForService(tc.svcIP, tc.svcPort, tc.endpointIP, tc.protocol))
 		})
 	}
 }

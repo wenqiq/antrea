@@ -15,7 +15,6 @@
 package supportbundlecollection
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -45,6 +44,7 @@ import (
 	crdinformers "antrea.io/antrea/pkg/client/informers/externalversions/crd/v1alpha1"
 	crdlisters "antrea.io/antrea/pkg/client/listers/crd/v1alpha1"
 	"antrea.io/antrea/pkg/controller/types"
+	"antrea.io/antrea/pkg/util/auth"
 	"antrea.io/antrea/pkg/util/k8s"
 )
 
@@ -58,11 +58,6 @@ const (
 	// supportBundleCollectionRetryPeriod is the duration after which to retry a SupportBundleCollection
 	// request if it conflicts with a processing request.
 	supportBundleCollectionRetryPeriod = time.Second * 10
-
-	secretKeyWithAPIKey      = "apikey"
-	secretKeyWithBearerToken = "token"
-	secretKeyWithUsername    = "username"
-	secretKeyWithPassword    = "password"
 )
 
 const (
@@ -113,7 +108,7 @@ type Controller struct {
 	externalNodeListerSynced            cache.InformerSynced
 
 	// queue maintains the ExternalNode objects that need to be synced.
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 
 	// supportBundleCollectionStore is the storage where the populated internal support bundle collections are stored.
 	supportBundleCollectionStore storage.Interface
@@ -146,8 +141,13 @@ func NewSupportBundleCollectionController(
 		nodeListerSynced:                    nodeInformer.Informer().HasSynced,
 		externalNodeLister:                  externalNodeInformer.Lister(),
 		externalNodeListerSynced:            externalNodeInformer.Informer().HasSynced,
-		queue:                               workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "supportBundleCollection"),
-		supportBundleCollectionStore:        supportBundleCollectionStore,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "supportBundleCollection",
+			},
+		),
+		supportBundleCollectionStore: supportBundleCollectionStore,
 		supportBundleCollectionAppliedToStore: cache.NewIndexer(getSupportBundleCollectionKey, cache.Indexers{
 			processingNodesIndex:         processingNodesIndexFunc,
 			processingExternalNodesIndex: processingExternalNodesIndexFunc,
@@ -278,17 +278,13 @@ func (c *Controller) worker() {
 }
 
 func (c *Controller) processNextWorkItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
-	defer c.queue.Done(obj)
+	defer c.queue.Done(key)
 
-	if key, ok := obj.(string); !ok {
-		c.queue.Forget(obj)
-		klog.Errorf("Expected string in SupportBundleCollection work queue but got %#v", obj)
-		return true
-	} else if err := c.syncSupportBundleCollection(key); err == nil {
+	if err := c.syncSupportBundleCollection(key); err == nil {
 		// If no error occurs we Forget this item, so it does not get queued again until
 		// another change happens.
 		c.queue.Forget(key)
@@ -390,12 +386,22 @@ func (c *Controller) createInternalSupportBundleCollection(bundle *v1alpha1.Supp
 	}
 	nodeSpan := nodeNames.Union(externalNodeNames)
 	// Get authentication from the Secret provided in authentication field in the CRD
-	authentication, err := c.parseBundleAuth(bundle.Spec.Authentication)
+	authentication, err := auth.GetAuthConfigurationFromSecret(context.TODO(), auth.AuthType(bundle.Spec.Authentication.AuthType), bundle.Spec.Authentication.AuthSecret, c.kubeClient)
 	if err != nil {
 		klog.ErrorS(err, "Failed to get authentication defined in the SupportBundleCollection CR", "name", bundle.Name, "authentication", bundle.Spec.Authentication)
 		return nil, err
 	}
-	internalBundleCollection := c.addInternalSupportBundleCollection(bundle, nodeSpan, authentication, metav1.NewTime(expiredAt))
+	bundleAuthConfig := &controlplane.BundleServerAuthConfiguration{
+		BearerToken: authentication.BearerToken,
+		APIKey:      authentication.APIKey,
+	}
+	if authentication.BasicAuthentication != nil {
+		bundleAuthConfig.BasicAuthentication = &controlplane.BasicAuthentication{
+			Username: authentication.BasicAuthentication.Username,
+			Password: authentication.BasicAuthentication.Password,
+		}
+	}
+	internalBundleCollection := c.addInternalSupportBundleCollection(bundle, nodeSpan, bundleAuthConfig, metav1.NewTime(expiredAt))
 	// Process the support bundle collection when time is up, this will create a CollectionFailure condition if the
 	// bundle collection is not completed in time because any Agent fails to upload the files and does not report
 	// the failure.
@@ -509,60 +515,6 @@ func (c *Controller) deleteInternalSupportBundleCollection(key string) error {
 	c.clearStatuses(key)
 	klog.InfoS("Deleted internal SupportBundleCollection", "name", key)
 	return nil
-}
-
-// parseBundleAuth returns the authentication from the Secret provided in BundleServerAuthConfiguration.
-// The authentication is stored in the Secret Data with a key decided by the AuthType, and encoded using base64.
-func (c *Controller) parseBundleAuth(authentication v1alpha1.BundleServerAuthConfiguration) (*controlplane.BundleServerAuthConfiguration, error) {
-	secretReference := authentication.AuthSecret
-	if secretReference == nil {
-		return nil, fmt.Errorf("authentication is not specified")
-	}
-	secret, err := c.kubeClient.CoreV1().Secrets(secretReference.Namespace).Get(context.TODO(), secretReference.Name, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("unable to get Secret with name %s in Namespace %s: %v", secretReference.Name, secretReference.Namespace, err)
-	}
-	parseAuthValue := func(secretData map[string][]byte, key string) (string, error) {
-		authValue, found := secret.Data[key]
-		if !found {
-			return "", fmt.Errorf("not found authentication in Secret %s/%s with key %s", secretReference.Namespace, secretReference.Name, key)
-		}
-		return bytes.NewBuffer(authValue).String(), nil
-	}
-	switch authentication.AuthType {
-	case v1alpha1.APIKey:
-		value, err := parseAuthValue(secret.Data, secretKeyWithAPIKey)
-		if err != nil {
-			return nil, err
-		}
-		return &controlplane.BundleServerAuthConfiguration{
-			APIKey: value,
-		}, nil
-	case v1alpha1.BearerToken:
-		value, err := parseAuthValue(secret.Data, secretKeyWithBearerToken)
-		if err != nil {
-			return nil, err
-		}
-		return &controlplane.BundleServerAuthConfiguration{
-			BearerToken: value,
-		}, nil
-	case v1alpha1.BasicAuthentication:
-		username, err := parseAuthValue(secret.Data, secretKeyWithUsername)
-		if err != nil {
-			return nil, err
-		}
-		password, err := parseAuthValue(secret.Data, secretKeyWithPassword)
-		if err != nil {
-			return nil, err
-		}
-		return &controlplane.BundleServerAuthConfiguration{
-			BasicAuthentication: &controlplane.BasicAuthentication{
-				Username: username,
-				Password: password,
-			},
-		}, nil
-	}
-	return nil, fmt.Errorf("unsupported authentication type %s", authentication.AuthType)
 }
 
 // addInternalSupportBundleCollection adds internalBundle into supportBundleCollectionStore, and creates a

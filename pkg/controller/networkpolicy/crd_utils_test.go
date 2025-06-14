@@ -271,7 +271,7 @@ func TestToAntreaIPBlockForCRD(t *testing.T) {
 			continue
 		}
 		ipNet := antreaIPBlock.CIDR
-		if bytes.Compare(ipNet.IP, table.expValue.CIDR.IP) != 0 {
+		if !bytes.Equal(ipNet.IP, table.expValue.CIDR.IP) {
 			t.Errorf("Unexpected IP in Antrea IPBlock conversion. Expected %v, got %v", table.expValue.CIDR.IP, ipNet.IP)
 		}
 		if table.expValue.CIDR.PrefixLength != ipNet.PrefixLength {
@@ -476,7 +476,7 @@ func TestToAntreaPeerForCRD(t *testing.T) {
 			npc.addClusterGroup(&cgA)
 			npc.cgStore.Add(&cgA)
 			if tt.clusterSetScope {
-				defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Multicluster, true)()
+				featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Multicluster, true)
 				labelIdentityA := "ns:kubernetes.io/metadata.name=testing,purpose=test&pod:foo1=bar1"
 				labelIdentityB := "ns:kubernetes.io/metadata.name=testing,purpose=test&pod:foo2=bar2"
 				npc.labelIdentityInterface.AddLabelIdentity(labelIdentityA, 1)
@@ -550,9 +550,13 @@ func TestCreateAppliedToGroupsForGroup(t *testing.T) {
 			expectedATG: nil,
 		},
 		{
-			name:        "cluster group with selectors",
-			inputGroup:  clusterGroupWithSelector.Name,
-			expectedATG: &antreatypes.AppliedToGroup{UID: clusterGroupWithSelector.UID, Name: clusterGroupWithSelector.Name},
+			name:       "cluster group with selectors",
+			inputGroup: clusterGroupWithSelector.Name,
+			expectedATG: &antreatypes.AppliedToGroup{
+				UID:         clusterGroupWithSelector.UID,
+				Name:        clusterGroupWithSelector.Name,
+				SourceGroup: clusterGroupWithSelector.Name,
+			},
 		},
 		{
 			name:           "empty group name",
@@ -576,13 +580,114 @@ func TestCreateAppliedToGroupsForGroup(t *testing.T) {
 			name:           "group with selectors",
 			inputNamespace: groupWithSelector.Namespace,
 			inputGroup:     groupWithSelector.Name,
-			expectedATG:    &antreatypes.AppliedToGroup{UID: groupWithSelector.UID, Name: fmt.Sprintf("%s/%s", groupWithSelector.Namespace, groupWithSelector.Name)},
+			expectedATG: &antreatypes.AppliedToGroup{
+				UID:         groupWithSelector.UID,
+				Name:        fmt.Sprintf("%s/%s", groupWithSelector.Namespace, groupWithSelector.Name),
+				SourceGroup: fmt.Sprintf("%s/%s", groupWithSelector.Namespace, groupWithSelector.Name),
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			actualATG := npc.createAppliedToGroupForGroup(tt.inputNamespace, tt.inputGroup)
 			assert.Equal(t, tt.expectedATG, actualATG, "appliedToGroup does not match")
+		})
+	}
+}
+
+func TestComputeEffectiveIPNetForIPBlocks(t *testing.T) {
+	tests := []struct {
+		name                   string
+		inputIPBlocks          []crdv1beta1.IPBlock
+		expectedResultingCIDRs []string
+	}{
+		{
+			name: "single-ipblock-without-except",
+			inputIPBlocks: []crdv1beta1.IPBlock{
+				{CIDR: "10.20.0.0/24"},
+			},
+			expectedResultingCIDRs: []string{"10.20.0.0/24"},
+		},
+		{
+			name: "single-ipblock-with-except",
+			inputIPBlocks: []crdv1beta1.IPBlock{
+				{
+					CIDR: "10.20.0.0/24",
+					Except: []string{
+						"10.20.0.64/26",
+					},
+				},
+			},
+			expectedResultingCIDRs: []string{
+				"10.20.0.0/26",
+				"10.20.0.128/25",
+			},
+		},
+		{
+			name: "single-ipblock-with-multiple-except",
+			inputIPBlocks: []crdv1beta1.IPBlock{
+				{
+					CIDR: "10.20.0.0/24",
+					Except: []string{
+						"10.20.0.64/26",
+						"10.20.0.192/28",
+					},
+				},
+			},
+			expectedResultingCIDRs: []string{
+				"10.20.0.0/26",
+				"10.20.0.128/26",
+				"10.20.0.208/28",
+				"10.20.0.224/27",
+			},
+		},
+		{
+			name: "single-ipblock-with-except-v6",
+			inputIPBlocks: []crdv1beta1.IPBlock{
+				{
+					CIDR: "fd00:192:168::/48",
+					Except: []string{
+						"fd00:192:168:8000::/50",
+					},
+				},
+			},
+			expectedResultingCIDRs: []string{
+				"fd00:192:168::/49",
+				"fd00:192:168:c000::/50",
+			},
+		},
+		{
+			name: "multiple-ipblocks-with-except",
+			inputIPBlocks: []crdv1beta1.IPBlock{
+				{
+					CIDR: "10.20.0.0/24",
+					Except: []string{
+						"10.20.0.64/26",
+					},
+				},
+				{
+					CIDR: "10.20.1.0/24",
+					Except: []string{
+						"10.20.1.64/26",
+					},
+				},
+			},
+			expectedResultingCIDRs: []string{
+				"10.20.0.0/26",
+				"10.20.0.128/25",
+				"10.20.1.0/26",
+				"10.20.1.128/25",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actualIPNets := computeEffectiveIPNetForIPBlocks(tt.inputIPBlocks)
+			var actualCIDRs []string
+			for _, ipNet := range actualIPNets {
+				actualCIDRs = append(actualCIDRs, ipNet.String())
+			}
+			assert.ElementsMatch(t, tt.expectedResultingCIDRs, actualCIDRs)
 		})
 	}
 }

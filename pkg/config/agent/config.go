@@ -61,6 +61,9 @@ type AgentConfig struct {
 	// the external network needs not be SNAT'd. In the networkPolicyOnly mode, antrea-agent never
 	// performs SNAT and this option will be ignored; for other modes it must be set to false.
 	NoSNAT bool `yaml:"noSNAT,omitempty"`
+	// Fully randomize source port mapping in SNAT rules used for egress traffic from Pods to
+	// the external network. Default is false.
+	SNATFullyRandomPorts bool `yaml:"snatFullyRandomPorts"`
 	// Tunnel protocols used for encapsulating traffic across Nodes. Supported values:
 	// - geneve (default)
 	// - vxlan
@@ -98,8 +101,6 @@ type AgentConfig struct {
 	// --service-cluster-ip-range. When AntreaProxy is enabled, this parameter is not needed.
 	// No default value for this field.
 	ServiceCIDRv6 string `yaml:"serviceCIDRv6,omitempty"`
-	// Deprecated. Use TrafficEncryptionMode instead.
-	EnableIPSecTunnel bool `yaml:"enableIPSecTunnel,omitempty"`
 	// Determines how tunnel traffic is encrypted.
 	// It has the following options:
 	// - none (default): Inter-node Pod traffic will not be encrypted.
@@ -119,9 +120,13 @@ type AgentConfig struct {
 	// IPv4 and Linux Nodes, and can be enabled only when `ovsDatapathType` is `system`,
 	// `trafficEncapMode` is `noEncap`, and `noSNAT` is true.
 	EnableBridgingMode bool `yaml:"enableBridgingMode,omitempty"`
-	// Disable TX checksum offloading for container network interfaces. It's supposed to be set to true when the
-	// datapath doesn't support TX checksum offloading, which causes packets to be dropped due to bad checksum.
-	// It affects Pods running on Linux Nodes only.
+	// Disable TX checksum offloading for container network interfaces and the host gateway interface (default:
+	// antrea-gw0). It's supposed to be set to true when the datapath doesn't support TX checksum offloading,
+	// which causes packets to be dropped due to bad checksum.
+	// If this option is later set to false, Antrea does nothing to the affected container network interfaces
+	// and the host gateway interface. To restore the default TX checksum state of the affected interfaces,
+	// it is recommended to delete them and recreate.
+	// This option affects Linux Nodes only.
 	DisableTXChecksumOffload bool `yaml:"disableTXChecksumOffload,omitempty"`
 	// APIPort is the port for the antrea-agent APIServer to serve on.
 	// Defaults to 10350.
@@ -141,8 +146,6 @@ type AgentConfig struct {
 	ActiveFlowExportTimeout string `yaml:"activeFlowExportTimeout,omitempty"`
 	// Deprecated. Use the FlowExporter config options instead.
 	IdleFlowExportTimeout string `yaml:"idleFlowExportTimeout,omitempty"`
-	// Deprecated. Use the NodePortLocal config options instead.
-	NPLPortRange string `yaml:"nplPortRange,omitempty"`
 	// NodePortLocal (NPL) configuration options.
 	NodePortLocal NodePortLocalConfig `yaml:"nodePortLocal,omitempty"`
 	// FlowExporter configuration options.
@@ -156,6 +159,10 @@ type AgentConfig struct {
 	// Defaults to "". It must be a host string or a host:port pair of the DNS server (e.g. 10.96.0.10,
 	// 10.96.0.10:53, [fd00:10:96::a]:53).
 	DNSServerOverride string `yaml:"dnsServerOverride,omitempty"`
+	// The FQDNCacheMinTTL setting helps address the problem of applications caching DNS response IPs indefinitely.
+	// The Cluster administrators should configure this value, ideally setting it to be equal to or greater than the maximum TTL
+	// value of the application's DNS cache.
+	FQDNCacheMinTTL int `yaml:"fqdnCacheMinTTL,omitempty"`
 	// Cipher suites to use.
 	TLSCipherSuites string `yaml:"tlsCipherSuites,omitempty"`
 	// TLS min version.
@@ -176,10 +183,6 @@ type AgentConfig struct {
 	// 2. TransportInterfaceCIDRs
 	// 3. The Node IP
 	TransportInterfaceCIDRs []string `yaml:"transportInterfaceCIDRs,omitempty"`
-	// The names of the interfaces on Nodes that are used to forward multicast traffic.
-	// Defaults to transport interface if not set.
-	// Deprecated: use Multicast.MulticastInterfaces instead.
-	MulticastInterfaces []string `yaml:"multicastInterfaces,omitempty"`
 	// Multicast configuration options.
 	Multicast MulticastConfig `yaml:"multicast,omitempty"`
 	// AntreaProxy contains AntreaProxy related configuration options.
@@ -239,6 +242,11 @@ type AntreaProxyConfig struct {
 	//                  can reply to clients directly, bypassing the ingress Node.
 	// A Service's load balancer mode can be overridden by annotating it with `service.antrea.io/load-balancer-mode`.
 	DefaultLoadBalancerMode string `yaml:"defaultLoadBalancerMode,omitempty"`
+	// Disables the health check server run by Antrea Proxy, which provides health information about Services of
+	// type LoadBalancer with externalTrafficPolicy set to Local, when proxyAll is enabled. This avoids race
+	// conditions between kube-proxy and Antrea proxy, with both trying to bind to the same addresses, when proxyAll
+	// is enabled while kube-proxy has not been removed.
+	DisableServiceHealthCheckServer bool `yaml:"disableServiceHealthCheckServer,omitempty"`
 }
 
 type WireGuardConfig struct {
@@ -298,6 +306,12 @@ type FlowExporterConfig struct {
 	// Defaults to "15s". Valid time units are "ns", "us" (or "µs"), "ms", "s",
 	// "m", "h".
 	IdleFlowExportTimeout string `yaml:"idleFlowExportTimeout,omitempty"`
+	// Provide the set of protocols to filter specific flows that will be
+	// exported. Invalid protocols do not error and instead warnings are
+	// logged on the antrea agent. By default the full set of supported
+	// protocols are exported which are:
+	// "tcp", "udp", "sctp"
+	ProtocolFilter []string `yaml:"protocols,omitempty"`
 }
 
 type MulticastConfig struct {
@@ -321,6 +335,11 @@ type EgressConfig struct {
 	// the number of secondary IPs a Node can have, e.g. EKS. It must not be greater than 255.
 	// Defaults to 255.
 	MaxEgressIPsPerNode int `yaml:"maxEgressIPsPerNode,omitempty"`
+	// Fully randomize source port mapping in Egress SNAT rules. This has no impact on the
+	// default SNAT rules enforced by each Node for local Pod traffic. By default, we use the
+	// same value as for the top-level snatFullyRandomPorts configuration, but this field can be
+	// used as an override.
+	SNATFullyRandomPorts *bool `yaml:"snatFullyRandomPorts,omitempty"`
 }
 
 type IPsecConfig struct {
@@ -331,9 +350,6 @@ type IPsecConfig struct {
 }
 
 type MulticlusterConfig struct {
-	// Deprecated and replaced by "enableGateway". Keep the field in MulticlusterConfig to be
-	// compatible with earlier version (<= v1.10) Antrea deployment manifests.
-	Enable bool `yaml:"enable,omitempty"`
 	// Enable Multi-cluster Gateway.
 	EnableGateway bool `yaml:"enableGateway,omitempty"`
 	// The Namespace where Antrea Multi-cluster Controller is running.
@@ -400,7 +416,11 @@ type SecondaryNetworkConfig struct {
 
 type OVSBridgeConfig struct {
 	BridgeName string `yaml:"bridgeName"`
-	// Names of physical interfaces to be connected to the bridge. At the moment,
-	// only a single physical interface is supported.
+	// Names of physical interfaces to be connected to the bridge.
 	PhysicalInterfaces []string `yaml:"physicalInterfaces,omitempty"`
+	// Enable multicast snooping on the bridge, allowing the bridge to learn about multicast group memberships and
+	// forward multicast traffic only to ports that have interested receivers. When disabled, multicast traffic is
+	// flooded to all ports in the bridge.
+	// Defaults to false.
+	EnableMulticastSnooping bool `yaml:"enableMulticastSnooping,omitempty"`
 }

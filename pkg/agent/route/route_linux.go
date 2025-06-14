@@ -21,18 +21,24 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/servicecidr"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util/ipset"
@@ -65,9 +71,11 @@ const (
 	// clusterNodeIP6Set contains all other Node IP6s in the cluster.
 	clusterNodeIP6Set = "CLUSTER-NODE-IP6"
 
-	// Antrea proxy NodePort IP
-	antreaNodePortIPSet  = "ANTREA-NODEPORT-IP"
-	antreaNodePortIP6Set = "ANTREA-NODEPORT-IP6"
+	// Antrea managed ipsets for different types of Service IP addresses and ports.
+	antreaNodePortIPSet    = "ANTREA-NODEPORT-IP"
+	antreaNodePortIP6Set   = "ANTREA-NODEPORT-IP6"
+	antreaExternalIPIPSet  = "ANTREA-EXTERNAL-IP"
+	antreaExternalIPIP6Set = "ANTREA-EXTERNAL-IP6"
 
 	// Antrea managed iptables chains.
 	antreaForwardChain     = "ANTREA-FORWARD"
@@ -76,6 +84,8 @@ const (
 	antreaInputChain       = "ANTREA-INPUT"
 	antreaOutputChain      = "ANTREA-OUTPUT"
 	antreaMangleChain      = "ANTREA-MANGLE"
+
+	kubeProxyServiceChain = "KUBE-SERVICES"
 
 	serviceIPv4CIDRKey = "serviceIPv4CIDRKey"
 	serviceIPv6CIDRKey = "serviceIPv6CIDRKey"
@@ -99,12 +109,15 @@ var (
 
 // Client takes care of routing container packets in host network, coordinating ip route, ip rule, iptables and ipset.
 type Client struct {
-	nodeConfig    *config.NodeConfig
-	networkConfig *config.NetworkConfig
-	noSNAT        bool
-	iptables      iptables.Interface
-	ipset         ipset.Interface
-	netlink       utilnetlink.Interface
+	nodeConfig             *config.NodeConfig
+	networkConfig          *config.NetworkConfig
+	noSNAT                 bool
+	nodeSNATRandomFully    bool
+	egressSNATRandomFully  bool
+	iptablesHasRandomFully bool
+	iptables               iptables.Interface
+	ipset                  ipset.Interface
+	netlink                utilnetlink.Interface
 	// nodeRoutes caches ip routes to remote Pods. It's a map of podCIDR to routes.
 	nodeRoutes sync.Map
 	// nodeNeighbors caches IPv6 Neighbors to remote host gateway
@@ -112,23 +125,30 @@ type Client struct {
 	// markToSNATIP caches marks to SNAT IPs. It's used in Egress feature.
 	markToSNATIP sync.Map
 	// iptablesInitialized is used to notify when iptables initialization is done.
-	iptablesInitialized      chan struct{}
-	proxyAll                 bool
-	connectUplinkToBridge    bool
-	multicastEnabled         bool
-	isCloudEKS               bool
-	nodeNetworkPolicyEnabled bool
+	iptablesInitialized       chan struct{}
+	proxyAll                  bool
+	connectUplinkToBridge     bool
+	multicastEnabled          bool
+	isCloudEKS                bool
+	nodeNetworkPolicyEnabled  bool
+	nodeLatencyMonitorEnabled bool
 	// serviceRoutes caches ip routes about Services.
 	serviceRoutes sync.Map
+	// serviceExternalIPReferences tracks the references of Service IP. The key is the Service IP and the value is
+	// the set of ServiceInfo strings. Because a Service could have multiple ports and each port will generate a
+	// ServicePort (which is the unit of the processing), a Service IP route may be required by several ServicePorts.
+	// With the references, we install the configurations for a Service IP exactly once as long as it's used by any
+	// ServicePorts and uninstall it exactly once when it's no longer used by any ServicePorts.
+	// It applies to externalIP and LoadBalancerIP.
+	serviceExternalIPReferences map[string]sets.Set[string]
 	// serviceNeighbors caches neighbors.
 	serviceNeighbors sync.Map
-	// nodePortsIPv4 caches all existing IPv4 NodePorts.
-	nodePortsIPv4 sync.Map
-	// nodePortsIPv6 caches all existing IPv6 NodePorts.
-	nodePortsIPv6 sync.Map
+	// serviceIPSets caches ipsets about Services.
+	serviceIPSets map[string]*sync.Map
 	// clusterNodeIPs stores the IPv4 of all other Nodes in the cluster
 	clusterNodeIPs sync.Map
-	// clusterNodeIP6s stores the IPv6 of all other Nodes in the cluster
+	// clusterNodeIP6s stores the IPv6 address of all other Nodes in the cluster. It is maintained but not consumed
+	// until Multicast supports IPv6.
 	clusterNodeIP6s sync.Map
 	// egressRoutes caches ip routes about Egresses.
 	egressRoutes sync.Map
@@ -142,10 +162,21 @@ type Client struct {
 	nodeNetworkPolicyIPTablesIPv4 sync.Map
 	// nodeNetworkPolicyIPTablesIPv6 caches all existing IPv6 iptables chains and rules for NodeNetworkPolicy.
 	nodeNetworkPolicyIPTablesIPv6 sync.Map
+	// wireguardIPTablesIPv4 caches all existing IPv4 iptables chains and rules for WireGuard.
+	wireguardIPTablesIPv4 sync.Map
+	// wireguardIPTablesIPv6 caches all existing IPv6 iptables chains and rules for WireGuard.
+	wireguardIPTablesIPv6 sync.Map
+	// nodeLatencyMonitorIPTablesIPv4 caches all existing IPv4 iptables chains and rules for NodeLatencyMonitor.
+	nodeLatencyMonitorIPTablesIPv4 sync.Map
+	// nodeLatencyMonitorIPTablesIPv6 caches all existing IPv6 iptables chains and rules for NodeLatencyMonitor.
+	nodeLatencyMonitorIPTablesIPv6 sync.Map
 	// deterministic represents whether to write iptables chains and rules for NodeNetworkPolicy deterministically when
 	// syncIPTables is called. Enabling it may carry a performance impact. It's disabled by default and should only be
 	// used in testing.
 	deterministic bool
+	// wireguardPort is the port used for the WireGuard UDP tunnels. When WireGuard is enabled (used as the encryption
+	// mode), we add iptables rules to the filter table to accept input and output UDP traffic destined to this port.
+	wireguardPort int
 }
 
 // NewClient returns a route client.
@@ -154,19 +185,34 @@ func NewClient(networkConfig *config.NetworkConfig,
 	proxyAll bool,
 	connectUplinkToBridge bool,
 	nodeNetworkPolicyEnabled bool,
+	nodeLatencyMonitorEnabled bool,
 	multicastEnabled bool,
-	serviceCIDRProvider servicecidr.Interface) (*Client, error) {
+	nodeSNATRandomFully bool,
+	egressSNATRandomFully bool,
+	serviceCIDRProvider servicecidr.Interface,
+	wireguardPort int) (*Client, error) {
 	return &Client{
-		networkConfig:            networkConfig,
-		noSNAT:                   noSNAT,
-		proxyAll:                 proxyAll,
-		multicastEnabled:         multicastEnabled,
-		connectUplinkToBridge:    connectUplinkToBridge,
-		nodeNetworkPolicyEnabled: nodeNetworkPolicyEnabled,
-		ipset:                    ipset.NewClient(),
-		netlink:                  &netlink.Handle{},
-		isCloudEKS:               env.IsCloudEKS(),
-		serviceCIDRProvider:      serviceCIDRProvider,
+		networkConfig:               networkConfig,
+		noSNAT:                      noSNAT,
+		nodeSNATRandomFully:         nodeSNATRandomFully,
+		egressSNATRandomFully:       egressSNATRandomFully,
+		proxyAll:                    proxyAll,
+		multicastEnabled:            multicastEnabled,
+		connectUplinkToBridge:       connectUplinkToBridge,
+		nodeNetworkPolicyEnabled:    nodeNetworkPolicyEnabled,
+		nodeLatencyMonitorEnabled:   nodeLatencyMonitorEnabled,
+		ipset:                       ipset.NewClient(),
+		netlink:                     &netlink.Handle{},
+		isCloudEKS:                  env.IsCloudEKS(),
+		serviceCIDRProvider:         serviceCIDRProvider,
+		serviceExternalIPReferences: make(map[string]sets.Set[string]),
+		serviceIPSets: map[string]*sync.Map{
+			antreaNodePortIPSet:    {},
+			antreaNodePortIP6Set:   {},
+			antreaExternalIPIPSet:  {},
+			antreaExternalIPIP6Set: {},
+		},
+		wireguardPort: wireguardPort,
 	}, nil
 }
 
@@ -186,6 +232,11 @@ func (c *Client) Initialize(nodeConfig *config.NodeConfig, done func()) error {
 	if err != nil {
 		return fmt.Errorf("error creating IPTables instance: %v", err)
 	}
+	c.iptablesHasRandomFully = c.iptables.HasRandomFully()
+	if (c.nodeSNATRandomFully || c.egressSNATRandomFully) && !c.iptablesHasRandomFully {
+		return fmt.Errorf("iptables does not support --random-fully for SNAT / MASQUERADE rules")
+	}
+
 	// Sets up the iptables infrastructure required to route packets in host network.
 	// It's called in a goroutine because xtables lock may not be acquired immediately.
 	go func() {
@@ -233,6 +284,12 @@ func (c *Client) Initialize(nodeConfig *config.NodeConfig, done func()) error {
 	if c.nodeNetworkPolicyEnabled {
 		c.initNodeNetworkPolicy()
 	}
+	if c.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeWireGuard {
+		c.initWireguard()
+	}
+	if c.nodeLatencyMonitorEnabled {
+		c.initNodeLatencyRules()
+	}
 
 	return nil
 }
@@ -277,7 +334,7 @@ func (c *Client) syncRoute() error {
 	routeKeys := sets.New[routeKey]()
 	for i := range routeList {
 		r := &routeList[i]
-		if r.Dst == nil {
+		if r.Dst == nil || r.Dst.IP.IsUnspecified() {
 			continue
 		}
 		routeKeys.Insert(routeKey{
@@ -360,54 +417,57 @@ func (c *Client) syncRoute() error {
 	return nil
 }
 
-// syncIPSet ensures that the required ipset exists and it has the initial members.
+// syncIPSet ensures that the required ipset exists, and it has the initial members.
 func (c *Client) syncIPSet() error {
-	// In policy-only mode, Node Pod CIDR is undefined.
-	if c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
-		return nil
-	}
-	if err := c.ipset.CreateIPSet(antreaPodIPSet, ipset.HashNet, false); err != nil {
-		return err
-	}
-	if err := c.ipset.CreateIPSet(antreaPodIP6Set, ipset.HashNet, true); err != nil {
-		return err
+	// Create the ipsets to store all Pod CIDRs for constructing full-mesh routing in encap/noEncap/hybrid modes. In
+	// networkPolicyOnly mode, Antrea is not responsible for IPAM, so CIDRs are not available and the ipsets should not
+	// be created.
+	if !c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
+		if err := c.ipset.CreateIPSet(antreaPodIPSet, ipset.HashNet, false); err != nil {
+			return err
+		}
+		if err := c.ipset.CreateIPSet(antreaPodIP6Set, ipset.HashNet, true); err != nil {
+			return err
+		}
+		// Loop all valid Pod CIDRs and add them into the corresponding ipset.
+		for _, podCIDR := range []*net.IPNet{c.nodeConfig.PodIPv4CIDR, c.nodeConfig.PodIPv6CIDR} {
+			if podCIDR != nil {
+				ipsetName := getIPSetName(podCIDR.IP)
+				if err := c.ipset.AddEntry(ipsetName, podCIDR.String()); err != nil {
+					return err
+				}
+			}
+		}
 	}
 
-	// Loop all valid PodCIDR and add into the corresponding ipset.
-	for _, podCIDR := range []*net.IPNet{c.nodeConfig.PodIPv4CIDR, c.nodeConfig.PodIPv6CIDR} {
-		if podCIDR != nil {
-			ipsetName := getIPSetName(podCIDR.IP)
-			if err := c.ipset.AddEntry(ipsetName, podCIDR.String()); err != nil {
+	// AntreaProxy proxyAll is available in all traffic modes. If proxyAll is enabled, create the ipsets to store the
+	// pairs of Node IP and NodePort.
+	if c.proxyAll {
+		for ipsetName, ipsetEntries := range c.serviceIPSets {
+			isIPv6 := ipsetName == antreaNodePortIP6Set || ipsetName == antreaExternalIPIP6Set
+
+			var ipsetType ipset.SetType
+			if ipsetName == antreaNodePortIP6Set || ipsetName == antreaNodePortIPSet {
+				ipsetType = ipset.HashIPPort
+			} else {
+				ipsetType = ipset.HashIP
+			}
+
+			if err := c.ipset.CreateIPSet(ipsetName, ipsetType, isIPv6); err != nil {
 				return err
 			}
+			ipsetEntries.Range(func(k, _ interface{}) bool {
+				ipsetEntry := k.(string)
+				if err := c.ipset.AddEntry(ipsetName, ipsetEntry); err != nil {
+					return false
+				}
+				return true
+			})
 		}
 	}
 
-	// If proxy full is enabled, create NodePort ipset.
-	if c.proxyAll {
-		if err := c.ipset.CreateIPSet(antreaNodePortIPSet, ipset.HashIPPort, false); err != nil {
-			return err
-		}
-		if err := c.ipset.CreateIPSet(antreaNodePortIP6Set, ipset.HashIPPort, true); err != nil {
-			return err
-		}
-
-		c.nodePortsIPv4.Range(func(k, _ interface{}) bool {
-			ipSetEntry := k.(string)
-			if err := c.ipset.AddEntry(antreaNodePortIPSet, ipSetEntry); err != nil {
-				return false
-			}
-			return true
-		})
-		c.nodePortsIPv6.Range(func(k, _ interface{}) bool {
-			ipSetEntry := k.(string)
-			if err := c.ipset.AddEntry(antreaNodePortIP6Set, ipSetEntry); err != nil {
-				return false
-			}
-			return true
-		})
-	}
-
+	// AntreaIPAM is available in noEncap mode. There is a validation in Antrea configuration about this traffic mode
+	// when AntreaIPAM is enabled.
 	if c.connectUplinkToBridge {
 		if err := c.ipset.CreateIPSet(localAntreaFlexibleIPAMPodIPSet, ipset.HashIP, false); err != nil {
 			return err
@@ -417,6 +477,7 @@ func (c *Client) syncIPSet() error {
 		}
 	}
 
+	// Multicast is available in encap/noEncap/hybrid mode, and the ipsets are consumed in encap mode.
 	if c.multicastEnabled && c.networkConfig.TrafficEncapMode.SupportsEncap() {
 		if err := c.ipset.CreateIPSet(clusterNodeIPSet, ipset.HashIP, false); err != nil {
 			return err
@@ -440,6 +501,7 @@ func (c *Client) syncIPSet() error {
 		})
 	}
 
+	// NodeNetworkPolicy is available in all traffic modes.
 	if c.nodeNetworkPolicyEnabled {
 		c.nodeNetworkPolicyIPSetsIPv4.Range(func(key, value any) bool {
 			ipsetName := key.(string)
@@ -484,6 +546,14 @@ func getNodePortIPSetName(isIPv6 bool) string {
 		return antreaNodePortIP6Set
 	} else {
 		return antreaNodePortIPSet
+	}
+}
+
+func getExternalIPIPSetName(isIPv6 bool) string {
+	if isIPv6 {
+		return antreaExternalIPIP6Set
+	} else {
+		return antreaExternalIPIPSet
 	}
 }
 
@@ -555,43 +625,101 @@ func (c *Client) writeEKSNATRules(iptablesData *bytes.Buffer) {
 	}...)
 }
 
+func (c *Client) getIPProtocol() iptables.Protocol {
+	switch {
+	case c.networkConfig.IPv4Enabled && c.networkConfig.IPv6Enabled:
+		return iptables.ProtocolDual
+	case c.networkConfig.IPv6Enabled:
+		return iptables.ProtocolIPv6
+	default:
+		return iptables.ProtocolIPv4
+	}
+}
+
+// Create the antrea managed chains and link them to built-in chains.
+// We cannot use iptables-restore for these jump rules because there
+// are non antrea managed rules in built-in chains.
+type jumpRule struct {
+	table    string
+	srcChain string
+	dstChain string
+	comment  string
+	insert   bool
+}
+
+func (c *Client) removeUnexpectedAntreaJumpRule(protocol iptables.Protocol, jumpRule jumpRule) error {
+	// List all the existing rules of the table and the chain where the Antrea jump rule will be added.
+	allExistingRules, err := c.iptables.ListRules(protocol, jumpRule.table, jumpRule.srcChain)
+	if err != nil {
+		return err
+	}
+
+	// Construct keywords to identify Antrea and kube-proxy jump rules.
+	antreaJumpRuleKeyword := fmt.Sprintf("-j %s", jumpRule.dstChain)
+	kubeProxyJumpRuleKeyword := fmt.Sprintf("-j %s", kubeProxyServiceChain)
+
+	for ipProtocol, rules := range allExistingRules {
+		var antreaJumpRuleIndex, kubeProxyJumpRuleIndex = -1, -1
+
+		for index, rule := range rules {
+			// Check if the current rule is the Antrea jump rule to be added.
+			if strings.Contains(rule, antreaJumpRuleKeyword) {
+				antreaJumpRuleIndex = index
+				// Check if the current rule is the kube-proxy jump rule.
+			} else if strings.Contains(rule, kubeProxyJumpRuleKeyword) {
+				kubeProxyJumpRuleIndex = index
+			}
+		}
+		// If the Antrea jump rule is installed after the kube-proxy jump rule, which is not expected, delete the
+		// existing Antrea jump rule to ensure that a new one will be installed before the kube-proxy one when syncing iptables.
+		if antreaJumpRuleIndex != -1 && kubeProxyJumpRuleIndex != -1 && antreaJumpRuleIndex > kubeProxyJumpRuleIndex {
+			ruleSpec := []string{"-j", jumpRule.dstChain, "-m", "comment", "--comment", jumpRule.comment}
+			if err := c.iptables.DeleteRule(ipProtocol, jumpRule.table, jumpRule.srcChain, ruleSpec); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // syncIPTables ensure that the iptables infrastructure we use is set up.
 // It's idempotent and can safely be called on every startup.
 func (c *Client) syncIPTables() error {
-	// Create the antrea managed chains and link them to built-in chains.
-	// We cannot use iptables-restore for these jump rules because there
-	// are non antrea managed rules in built-in chains.
-	type jumpRule struct {
-		table    string
-		srcChain string
-		dstChain string
-		comment  string
-	}
+	ipProtocol := c.getIPProtocol()
 	jumpRules := []jumpRule{
-		{iptables.RawTable, iptables.PreRoutingChain, antreaPreRoutingChain, "Antrea: jump to Antrea prerouting rules"},
-		{iptables.RawTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"},
-		{iptables.FilterTable, iptables.ForwardChain, antreaForwardChain, "Antrea: jump to Antrea forwarding rules"},
-		{iptables.NATTable, iptables.PostRoutingChain, antreaPostRoutingChain, "Antrea: jump to Antrea postrouting rules"},
-		{iptables.MangleTable, iptables.PreRoutingChain, antreaMangleChain, "Antrea: jump to Antrea mangle rules"}, // TODO: unify the chain naming style
-		{iptables.MangleTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"},
+		{iptables.RawTable, iptables.PreRoutingChain, antreaPreRoutingChain, "Antrea: jump to Antrea prerouting rules", false},
+		{iptables.RawTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules", false},
+		{iptables.FilterTable, iptables.ForwardChain, antreaForwardChain, "Antrea: jump to Antrea forwarding rules", false},
+		{iptables.NATTable, iptables.PostRoutingChain, antreaPostRoutingChain, "Antrea: jump to Antrea postrouting rules", false},
+		{iptables.MangleTable, iptables.PreRoutingChain, antreaMangleChain, "Antrea: jump to Antrea mangle rules", false}, // TODO: unify the chain naming style
+		{iptables.MangleTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules", false},
 	}
 	if c.proxyAll || c.isCloudEKS {
-		jumpRules = append(jumpRules, jumpRule{iptables.NATTable, iptables.PreRoutingChain, antreaPreRoutingChain, "Antrea: jump to Antrea prerouting rules"})
+		jumpRules = append(jumpRules, jumpRule{iptables.NATTable, iptables.PreRoutingChain, antreaPreRoutingChain, "Antrea: jump to Antrea prerouting rules", c.proxyAll})
 	}
 	if c.proxyAll {
-		jumpRules = append(jumpRules, jumpRule{iptables.NATTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"})
+		jumpRules = append(jumpRules, jumpRule{iptables.NATTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules", true})
 	}
-	if c.nodeNetworkPolicyEnabled {
-		jumpRules = append(jumpRules, jumpRule{iptables.FilterTable, iptables.InputChain, antreaInputChain, "Antrea: jump to Antrea input rules"})
-		jumpRules = append(jumpRules, jumpRule{iptables.FilterTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"})
+	if c.nodeNetworkPolicyEnabled || c.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeWireGuard {
+		jumpRules = append(jumpRules, jumpRule{iptables.FilterTable, iptables.InputChain, antreaInputChain, "Antrea: jump to Antrea input rules", false})
+		jumpRules = append(jumpRules, jumpRule{iptables.FilterTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules", false})
 	}
 	for _, rule := range jumpRules {
-		if err := c.iptables.EnsureChain(iptables.ProtocolDual, rule.table, rule.dstChain); err != nil {
+		if err := c.iptables.EnsureChain(ipProtocol, rule.table, rule.dstChain); err != nil {
 			return err
 		}
 		ruleSpec := []string{"-j", rule.dstChain, "-m", "comment", "--comment", rule.comment}
-		if err := c.iptables.AppendRule(iptables.ProtocolDual, rule.table, rule.srcChain, ruleSpec); err != nil {
-			return err
+		if rule.insert {
+			if err := c.removeUnexpectedAntreaJumpRule(ipProtocol, rule); err != nil {
+				return err
+			}
+			if err := c.iptables.InsertRule(ipProtocol, rule.table, rule.srcChain, ruleSpec); err != nil {
+				return err
+			}
+		} else {
+			if err := c.iptables.AppendRule(ipProtocol, rule.table, rule.srcChain, ruleSpec); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -608,20 +736,26 @@ func (c *Client) syncIPTables() error {
 		return true
 	})
 
-	nodeNetworkPolicyIPTablesIPv4 := map[string][]string{}
-	nodeNetworkPolicyIPTablesIPv6 := map[string][]string{}
-	c.nodeNetworkPolicyIPTablesIPv4.Range(func(key, value interface{}) bool {
-		chain := key.(string)
-		rules := value.([]string)
-		nodeNetworkPolicyIPTablesIPv4[chain] = rules
-		return true
-	})
-	c.nodeNetworkPolicyIPTablesIPv6.Range(func(key, value interface{}) bool {
-		chain := key.(string)
-		rules := value.([]string)
-		nodeNetworkPolicyIPTablesIPv6[chain] = rules
-		return true
-	})
+	addFilterRulesToChain := func(iptablesRulesByChain map[string][]string, m *sync.Map) {
+		m.Range(func(key, value interface{}) bool {
+			chain := key.(string)
+			rules := value.([]string)
+			iptablesRulesByChain[chain] = append(iptablesRulesByChain[chain], rules...)
+			return true
+		})
+	}
+
+	iptablesFilterRulesByChainV4 := make(map[string][]string)
+	// Install the static rules (WireGuard + NodeLatencyMonitor) before the dynamic rules (e.g., NodeNetworkPolicy)
+	// for performance reasons.
+	addFilterRulesToChain(iptablesFilterRulesByChainV4, &c.nodeLatencyMonitorIPTablesIPv4)
+	addFilterRulesToChain(iptablesFilterRulesByChainV4, &c.wireguardIPTablesIPv4)
+	addFilterRulesToChain(iptablesFilterRulesByChainV4, &c.nodeNetworkPolicyIPTablesIPv4)
+
+	iptablesFilterRulesByChainV6 := make(map[string][]string)
+	addFilterRulesToChain(iptablesFilterRulesByChainV6, &c.nodeLatencyMonitorIPTablesIPv6)
+	addFilterRulesToChain(iptablesFilterRulesByChainV6, &c.wireguardIPTablesIPv6)
+	addFilterRulesToChain(iptablesFilterRulesByChainV6, &c.nodeNetworkPolicyIPTablesIPv6)
 
 	// Use iptables-restore to configure IPv4 settings.
 	if c.networkConfig.IPv4Enabled {
@@ -629,11 +763,12 @@ func (c *Client) syncIPTables() error {
 			antreaPodIPSet,
 			localAntreaFlexibleIPAMPodIPSet,
 			antreaNodePortIPSet,
+			antreaExternalIPIPSet,
 			clusterNodeIPSet,
 			config.VirtualNodePortDNATIPv4,
 			config.VirtualServiceIPv4,
 			snatMarkToIPv4,
-			nodeNetworkPolicyIPTablesIPv4,
+			iptablesFilterRulesByChainV4,
 			false)
 
 		// Setting --noflush to keep the previous contents (i.e. non antrea managed chains) of the tables.
@@ -648,11 +783,12 @@ func (c *Client) syncIPTables() error {
 			antreaPodIP6Set,
 			localAntreaFlexibleIPAMPodIP6Set,
 			antreaNodePortIP6Set,
+			antreaExternalIPIP6Set,
 			clusterNodeIP6Set,
 			config.VirtualNodePortDNATIPv6,
 			config.VirtualServiceIPv6,
 			snatMarkToIPv6,
-			nodeNetworkPolicyIPTablesIPv6,
+			iptablesFilterRulesByChainV6,
 			true)
 		// Setting --noflush to keep the previous contents (i.e. non antrea managed chains) of the tables.
 		if err := c.iptables.Restore(iptablesData.String(), false, true); err != nil {
@@ -667,11 +803,12 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	podIPSet,
 	localAntreaFlexibleIPAMPodIPSet,
 	nodePortIPSet,
+	externalIPSet,
 	clusterNodeIPSet string,
 	nodePortDNATVirtualIP,
 	serviceVirtualIP net.IP,
 	snatMarkToIP map[uint32]net.IP,
-	nodeNetWorkPolicyIPTables map[string][]string,
+	iptablesFiltersRuleByChain map[string][]string,
 	isIPv6 bool) *bytes.Buffer {
 	// Create required rules in the antrea chains.
 	// Use iptables-restore as it flushes the involved chains and creates the desired rules
@@ -687,9 +824,10 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 		// of iptables rules in nat table. The first encapsulation packets of connections would have to go through all
 		// of the rules which wastes CPU and increases packet latency.
 		udpPort := 0
-		if c.networkConfig.TunnelType == ovsconfig.GeneveTunnel {
+		switch c.networkConfig.TunnelType {
+		case ovsconfig.GeneveTunnel:
 			udpPort = genevePort
-		} else if c.networkConfig.TunnelType == ovsconfig.VXLANTunnel {
+		case ovsconfig.VXLANTunnel:
 			udpPort = vxlanPort
 		}
 		if udpPort > 0 {
@@ -709,7 +847,9 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 			}...)
 		}
 
-		if c.multicastEnabled && c.networkConfig.TrafficEncapMode.SupportsEncap() {
+		// Note: Multicast can only work with IPv4 for now. Remove condition "!isIPv6" in the future after
+		// IPv6 is supported.
+		if c.multicastEnabled && !isIPv6 && c.networkConfig.TrafficEncapMode.SupportsEncap() {
 			// Drop the multicast packets forwarded from other Nodes in the cluster. This is because
 			// the packet sent out from the sender Pod is already received via tunnel port with encap mode,
 			// and the one forwarded via the underlay network is to send to external receivers
@@ -721,6 +861,33 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 				"-j", iptables.DropTarget,
 			}...)
 		}
+	}
+
+	if c.proxyAll {
+		// This rule is to bypass conntrack for packets sourced from external and destined to externalIPs, which also
+		// results in bypassing the chains managed by Antrea Proxy and kube-proxy in nat table.
+		writeLine(iptablesData, []string{
+			"-A", antreaPreRoutingChain,
+			"-m", "comment", "--comment", `"Antrea: do not track request packets destined to external IPs"`,
+			"-m", "set", "--match-set", externalIPSet, "dst",
+			"-j", iptables.NotrackTarget,
+		}...)
+		// This rule is to bypass conntrack for packets sourced from externalIPs, which also results in bypassing the
+		// chains managed by Antrea Proxy and kube-proxy in nat table.
+		writeLine(iptablesData, []string{
+			"-A", antreaPreRoutingChain,
+			"-m", "comment", "--comment", `"Antrea: do not track reply packets sourced from external IPs"`,
+			"-m", "set", "--match-set", externalIPSet, "src",
+			"-j", iptables.NotrackTarget,
+		}...)
+		// This rule is to bypass conntrack for packets sourced from local and destined to externalIPs, which also
+		// results in bypassing the chains managed by Antrea Proxy and kube-proxy in nat table.
+		writeLine(iptablesData, []string{
+			"-A", antreaOutputChain,
+			"-m", "comment", "--comment", `"Antrea: do not track request packets destined to external IPs"`,
+			"-m", "set", "--match-set", externalIPSet, "dst",
+			"-j", iptables.NotrackTarget,
+		}...)
 	}
 	writeLine(iptablesData, "COMMIT")
 
@@ -762,11 +929,11 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	writeLine(iptablesData, iptables.MakeChainLine(antreaForwardChain))
 
 	var nodeNetworkPolicyIPTablesChains []string
-	for chain := range nodeNetWorkPolicyIPTables {
+	for chain := range iptablesFiltersRuleByChain {
 		nodeNetworkPolicyIPTablesChains = append(nodeNetworkPolicyIPTablesChains, chain)
 	}
 	if c.deterministic {
-		sort.Sort(sort.StringSlice(nodeNetworkPolicyIPTablesChains))
+		sort.Strings(nodeNetworkPolicyIPTablesChains)
 	}
 	for _, chain := range nodeNetworkPolicyIPTablesChains {
 		writeLine(iptablesData, iptables.MakeChainLine(chain))
@@ -802,7 +969,7 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 		}...)
 	}
 	for _, chain := range nodeNetworkPolicyIPTablesChains {
-		for _, rule := range nodeNetWorkPolicyIPTables[chain] {
+		for _, rule := range iptablesFiltersRuleByChain[chain] {
 			writeLine(iptablesData, rule)
 		}
 	}
@@ -832,7 +999,9 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	writeLine(iptablesData, iptables.MakeChainLine(antreaPostRoutingChain))
 	// The masqueraded multicast traffic will become unicast so we
 	// stop traversing this antreaPostRoutingChain for multicast traffic.
-	if c.multicastEnabled && c.networkConfig.TrafficEncapMode.SupportsNoEncap() {
+	// Note: Multicast can only work with IPv4 for now. Remove condition "!isIPv6" in the future after
+	// IPv6 is supported.
+	if c.multicastEnabled && !isIPv6 && c.networkConfig.TrafficEncapMode.SupportsNoEncap() {
 		writeLine(iptablesData, []string{
 			"-A", antreaPostRoutingChain,
 			"-m", "comment", "--comment", `"Antrea: skip masquerade for multicast traffic"`,
@@ -844,22 +1013,30 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	// Egress rules must be inserted before the default masquerade rule.
 	for snatMark, snatIP := range snatMarkToIP {
 		// Cannot reuse snatRuleSpec to generate the rule as it doesn't have "`" in the comment.
-		writeLine(iptablesData, []string{
+		rule := []string{
 			"-A", antreaPostRoutingChain,
 			"-m", "comment", "--comment", `"Antrea: SNAT Pod to external packets"`,
 			"!", "-o", c.nodeConfig.GatewayConfig.Name,
 			"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", snatMark, types.SNATIPMarkMask),
 			"-j", iptables.SNATTarget, "--to", snatIP.String(),
-		}...)
+		}
+		if c.egressSNATRandomFully {
+			rule = append(rule, "--random-fully")
+		}
+		writeLine(iptablesData, rule...)
 	}
 	if !c.noSNAT {
-		writeLine(iptablesData, []string{
+		rule := []string{
 			"-A", antreaPostRoutingChain,
 			"-m", "comment", "--comment", `"Antrea: masquerade Pod to external packets"`,
 			"-s", podCIDR.String(), "-m", "set", "!", "--match-set", podIPSet, "dst",
 			"!", "-o", c.nodeConfig.GatewayConfig.Name,
 			"-j", iptables.MasqueradeTarget,
-		}...)
+		}
+		if c.nodeSNATRandomFully {
+			rule = append(rule, "--random-fully")
+		}
+		writeLine(iptablesData, rule...)
 	}
 
 	// For local traffic going out of the gateway interface, if the source IP does not match any
@@ -867,14 +1044,18 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	// that ARP requests may advertise a different source IP address, in which case they will be
 	// dropped by the SpoofGuard table in the OVS pipeline. See description for the arp_announce
 	// sysctl parameter.
-	writeLine(iptablesData, []string{
+	rule := []string{
 		"-A", antreaPostRoutingChain,
 		"-m", "comment", "--comment", `"Antrea: masquerade LOCAL traffic"`,
 		"-o", c.nodeConfig.GatewayConfig.Name,
 		"-m", "addrtype", "!", "--src-type", "LOCAL", "--limit-iface-out",
 		"-m", "addrtype", "--src-type", "LOCAL",
-		"-j", iptables.MasqueradeTarget, "--random-fully",
-	}...)
+		"-j", iptables.MasqueradeTarget,
+	}
+	if c.iptablesHasRandomFully {
+		rule = append(rule, "--random-fully")
+	}
+	writeLine(iptablesData, rule...)
 
 	// If AntreaProxy full support is enabled, it SNATs the packets whose source IP is VirtualServiceIPv4/VirtualServiceIPv6
 	// so the packets can be routed back to this Node.
@@ -906,6 +1087,8 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	//   01. AntreaIPAM VLAN Pod      -- hostPort [request]              --> AntreaIPAM VLAN Pod (same subnet)
 	//   02. Regular Pod (local)      -- hostPort [request]              --> AntreaIPAM VLAN Pod
 	if c.connectUplinkToBridge {
+		// We do not use --random-fully for this rule for consistency with the portmap CNI plugin.
+		// https://github.com/containernetworking/plugins/blob/c29dc79f96cd50452a247a4591443d2aac033429/plugins/meta/portmap/portmap.go#L321-L345
 		writeLine(iptablesData, []string{
 			"-A", antreaPostRoutingChain,
 			"-m", "comment", "--comment", `"Antrea: masquerade traffic to local AntreaIPAM hostPort Pod"`,
@@ -1044,6 +1227,86 @@ func (c *Client) initNodeNetworkPolicy() {
 		c.nodeNetworkPolicyIPTablesIPv4.Store(preNodeNetworkPolicyEgressRulesChain, preEgressChainRules)
 		c.nodeNetworkPolicyIPTablesIPv4.Store(config.NodeNetworkPolicyIngressRulesChain, []string{})
 		c.nodeNetworkPolicyIPTablesIPv4.Store(config.NodeNetworkPolicyEgressRulesChain, []string{})
+	}
+}
+
+func (c *Client) initWireguard() {
+	wireguardPort := intstr.FromInt(c.wireguardPort)
+	antreaInputChainRules := []string{
+		iptables.NewRuleBuilder(antreaInputChain).
+			SetComment("Antrea: allow WireGuard input packets").
+			MatchTransProtocol(iptables.ProtocolUDP).
+			MatchPortDst(&wireguardPort, nil).
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule(),
+	}
+	antreaOutputChainRules := []string{
+		iptables.NewRuleBuilder(antreaOutputChain).
+			SetComment("Antrea: allow WireGuard output packets").
+			MatchTransProtocol(iptables.ProtocolUDP).
+			MatchPortDst(&wireguardPort, nil).
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule(),
+	}
+
+	if c.networkConfig.IPv6Enabled {
+		c.wireguardIPTablesIPv6.Store(antreaInputChain, antreaInputChainRules)
+		c.wireguardIPTablesIPv6.Store(antreaOutputChain, antreaOutputChainRules)
+	}
+	if c.networkConfig.IPv4Enabled {
+		c.wireguardIPTablesIPv4.Store(antreaInputChain, antreaInputChainRules)
+		c.wireguardIPTablesIPv4.Store(antreaOutputChain, antreaOutputChainRules)
+	}
+}
+
+func (c *Client) initNodeLatencyRules() {
+	// the interface on which ICMP probes are sent / received is the Antrea gateway interface, except
+	// in networkPolicyOnly mode, for which it is the Node's transport interface.
+	iface := c.nodeConfig.GatewayConfig.Name
+	if c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
+		iface = c.networkConfig.TransportIface
+	}
+
+	buildInputRule := func(ipProtocol iptables.Protocol, icmpType int32) string {
+		return iptables.NewRuleBuilder(antreaInputChain).
+			MatchInputInterface(iface).
+			MatchICMP(&icmpType, nil, ipProtocol).
+			SetComment("Antrea: allow ICMP probes from NodeLatencyMonitor").
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule()
+	}
+	buildOutputRule := func(ipProtocol iptables.Protocol, icmpType int32) string {
+		return iptables.NewRuleBuilder(antreaOutputChain).
+			MatchOutputInterface(iface).
+			MatchICMP(&icmpType, nil, ipProtocol).
+			SetComment("Antrea: allow ICMP probes from NodeLatencyMonitor").
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule()
+	}
+
+	if c.networkConfig.IPv6Enabled {
+		c.nodeLatencyMonitorIPTablesIPv6.Store(antreaInputChain, []string{
+			buildInputRule(iptables.ProtocolIPv6, int32(ipv6.ICMPTypeEchoRequest)),
+			buildInputRule(iptables.ProtocolIPv6, int32(ipv6.ICMPTypeEchoReply)),
+		})
+		c.nodeLatencyMonitorIPTablesIPv6.Store(antreaOutputChain, []string{
+			buildOutputRule(iptables.ProtocolIPv6, int32(ipv6.ICMPTypeEchoRequest)),
+			buildOutputRule(iptables.ProtocolIPv6, int32(ipv6.ICMPTypeEchoReply)),
+		})
+	}
+	if c.networkConfig.IPv4Enabled {
+		c.nodeLatencyMonitorIPTablesIPv4.Store(antreaInputChain, []string{
+			buildInputRule(iptables.ProtocolIPv4, int32(ipv4.ICMPTypeEcho)),
+			buildInputRule(iptables.ProtocolIPv4, int32(ipv4.ICMPTypeEchoReply)),
+		})
+		c.nodeLatencyMonitorIPTablesIPv4.Store(antreaOutputChain, []string{
+			buildOutputRule(iptables.ProtocolIPv4, int32(ipv4.ICMPTypeEcho)),
+			buildOutputRule(iptables.ProtocolIPv4, int32(ipv4.ICMPTypeEchoReply)),
+		})
 	}
 }
 
@@ -1460,7 +1723,7 @@ func (c *Client) UnMigrateRoutesFromGw(route *net.IPNet, linkName string) error 
 }
 
 func (c *Client) snatRuleSpec(snatIP net.IP, snatMark uint32) []string {
-	return []string{
+	rule := []string{
 		"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
 		// The condition is needed to prevent the rule from being applied to local out packets destined for Pods, which
 		// have "0x1/0x1" mark.
@@ -1468,6 +1731,10 @@ func (c *Client) snatRuleSpec(snatIP net.IP, snatMark uint32) []string {
 		"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", snatMark, types.SNATIPMarkMask),
 		"-j", iptables.SNATTarget, "--to", snatIP.String(),
 	}
+	if c.egressSNATRandomFully {
+		rule = append(rule, "--random-fully")
+	}
+	return rule
 }
 
 func (c *Client) AddSNATRule(snatIP net.IP, mark uint32) error {
@@ -1555,8 +1822,8 @@ func (c *Client) DeleteEgressRoutes(tableID uint32) error {
 func (c *Client) AddEgressRule(tableID uint32, mark uint32) error {
 	rule := netlink.NewRule()
 	rule.Table = int(tableID)
-	rule.Mark = int(mark)
-	rule.Mask = int(types.SNATIPMarkMask)
+	rule.Mark = mark
+	rule.Mask = ptr.To(types.SNATIPMarkMask)
 	if err := c.netlink.RuleAdd(rule); err != nil {
 		return fmt.Errorf("error adding ip rule %v: %w", rule, err)
 	}
@@ -1566,8 +1833,8 @@ func (c *Client) AddEgressRule(tableID uint32, mark uint32) error {
 func (c *Client) DeleteEgressRule(tableID uint32, mark uint32) error {
 	rule := netlink.NewRule()
 	rule.Table = int(tableID)
-	rule.Mark = int(mark)
-	rule.Mask = int(types.SNATIPMarkMask)
+	rule.Mark = mark
+	rule.Mask = ptr.To(types.SNATIPMarkMask)
 	if err := c.netlink.RuleDel(rule); err != nil {
 		if err.Error() != "no such process" {
 			return fmt.Errorf("error deleting ip rule %v: %w", rule, err)
@@ -1603,9 +1870,9 @@ func (c *Client) addVirtualServiceIPRoute(isIPv6 bool) error {
 	return nil
 }
 
-// AddNodePort is used to add IP,port:protocol entries to target ip set when a NodePort Service is added. An entry is added
-// for every NodePort IP.
-func (c *Client) AddNodePort(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error {
+// AddNodePortConfigs is used to add IP,protocol:port entries to target ipset when a NodePort Service is added. An
+// entry is added for every NodePort IP.
+func (c *Client) AddNodePortConfigs(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error {
 	isIPv6 := isIPv6Protocol(protocol)
 	transProtocol := getTransProtocolStr(protocol)
 	ipSetName := getNodePortIPSetName(isIPv6)
@@ -1615,19 +1882,15 @@ func (c *Client) AddNodePort(nodePortAddresses []net.IP, port uint16, protocol b
 		if err := c.ipset.AddEntry(ipSetName, ipSetEntry); err != nil {
 			return err
 		}
-		if isIPv6 {
-			c.nodePortsIPv6.Store(ipSetEntry, struct{}{})
-		} else {
-			c.nodePortsIPv4.Store(ipSetEntry, struct{}{})
-		}
+		c.serviceIPSets[ipSetName].Store(ipSetEntry, struct{}{})
 		klog.V(4).InfoS("Added ipset for NodePort", "IP", nodePortAddresses[i], "Port", port, "Protocol", protocol)
 	}
 
 	return nil
 }
 
-// DeleteNodePort is used to delete related IP set entries when a NodePort Service is deleted.
-func (c *Client) DeleteNodePort(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error {
+// DeleteNodePortConfigs is used to delete corresponding ipset entries when a NodePort Service is deleted.
+func (c *Client) DeleteNodePortConfigs(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error {
 	isIPv6 := isIPv6Protocol(protocol)
 	transProtocol := getTransProtocolStr(protocol)
 	ipSetName := getNodePortIPSetName(isIPv6)
@@ -1637,11 +1900,8 @@ func (c *Client) DeleteNodePort(nodePortAddresses []net.IP, port uint16, protoco
 		if err := c.ipset.DelEntry(ipSetName, ipSetEntry); err != nil {
 			return err
 		}
-		if isIPv6 {
-			c.nodePortsIPv6.Delete(ipSetEntry)
-		} else {
-			c.nodePortsIPv4.Delete(ipSetEntry)
-		}
+		c.serviceIPSets[ipSetName].Delete(ipSetEntry)
+		klog.V(4).InfoS("Deleted ipset entry for NodePort IP", "IP", nodePortAddresses[i], "Port", port, "Protocol", protocol)
 	}
 
 	return nil
@@ -1741,11 +2001,19 @@ func (c *Client) addVirtualNodePortDNATIPRoute(isIPv6 bool) error {
 	return nil
 }
 
-// AddExternalIPRoute adds a route entry that forwards traffic destined for the external IP to the Antrea gateway interface.
-func (c *Client) AddExternalIPRoute(externalIP net.IP) error {
+// AddExternalIPConfigs adds a route entry to forward traffic destined for the external Service IP to the Antrea
+// gateway interface. Additionally, it adds the IP to the ipset ANTREA-EXTERNAL-IP or ANTREA-EXTERNAL-IP6, which is
+// used by iptables rules to bypass kube-proxy.
+func (c *Client) AddExternalIPConfigs(svcInfoStr string, externalIP net.IP) error {
 	externalIPStr := externalIP.String()
-	linkIndex := c.nodeConfig.GatewayConfig.LinkIndex
 	isIPv6 := utilnet.IsIPv6(externalIP)
+	references, exists := c.serviceExternalIPReferences[externalIPStr]
+	if exists {
+		references.Insert(svcInfoStr)
+		return nil
+	}
+
+	linkIndex := c.nodeConfig.GatewayConfig.LinkIndex
 	var gw net.IP
 	var mask int
 	if !isIPv6 {
@@ -1755,19 +2023,40 @@ func (c *Client) AddExternalIPRoute(externalIP net.IP) error {
 		gw = config.VirtualServiceIPv6
 		mask = net.IPv6len * 8
 	}
-
 	route := generateRoute(externalIP, mask, gw, linkIndex, netlink.SCOPE_UNIVERSE)
 	if err := c.netlink.RouteReplace(route); err != nil {
-		return fmt.Errorf("failed to install route for external IP %s: %w", externalIPStr, err)
+		return fmt.Errorf("failed to add route for external IP %s: %w", externalIPStr, err)
 	}
-	c.serviceRoutes.Store(externalIPStr, route)
 	klog.V(4).InfoS("Added route for external IP", "IP", externalIPStr)
+
+	ipsetName := getExternalIPIPSetName(isIPv6)
+	if err := c.ipset.AddEntry(ipsetName, externalIPStr); err != nil {
+		return fmt.Errorf("failed to add %s to ipset %s", externalIPStr, ipsetName)
+	}
+	klog.V(4).InfoS("Added external IP to ipset", "IPSet", ipsetName, "IP", externalIPStr)
+
+	references = sets.New[string](svcInfoStr)
+	c.serviceExternalIPReferences[externalIPStr] = references
+	c.serviceRoutes.Store(externalIPStr, route)
+	c.serviceIPSets[ipsetName].Store(externalIPStr, struct{}{})
 	return nil
 }
 
-// DeleteExternalIPRoute deletes the route entry for the external IP.
-func (c *Client) DeleteExternalIPRoute(externalIP net.IP) error {
+// DeleteExternalIPConfigs deletes the route entry to forward traffic destined for the external Service IP to the Antrea
+// gateway interface. Additionally, it removes the IP to the ipset ANTREA-EXTERNAL-IP or ANTREA-EXTERNAL-IP6, which is
+// used by iptables rules to bypass kube-proxy.
+func (c *Client) DeleteExternalIPConfigs(svcInfoStr string, externalIP net.IP) error {
 	externalIPStr := externalIP.String()
+	isIPv6 := utilnet.IsIPv6(externalIP)
+	references, exists := c.serviceExternalIPReferences[externalIPStr]
+	if !exists || !references.Has(svcInfoStr) {
+		return nil
+	}
+	if references.Len() > 1 {
+		references.Delete(svcInfoStr)
+		return nil
+	}
+
 	route, found := c.serviceRoutes.Load(externalIPStr)
 	if !found {
 		klog.V(2).InfoS("Didn't find route for external IP", "IP", externalIPStr)
@@ -1780,8 +2069,17 @@ func (c *Client) DeleteExternalIPRoute(externalIP net.IP) error {
 			return fmt.Errorf("failed to delete route for external IP %s: %w", externalIPStr, err)
 		}
 	}
-	c.serviceRoutes.Delete(externalIPStr)
 	klog.V(4).InfoS("Deleted route for external IP", "IP", externalIPStr)
+
+	ipsetName := getExternalIPIPSetName(isIPv6)
+	if err := c.ipset.DelEntry(ipsetName, externalIPStr); err != nil {
+		return err
+	}
+	klog.V(4).InfoS("Deleted external IP from ipset", "IPSet", ipsetName, "IP", externalIPStr)
+
+	delete(c.serviceExternalIPReferences, externalIPStr)
+	c.serviceRoutes.Delete(externalIPStr)
+	c.serviceIPSets[ipsetName].Delete(externalIPStr)
 	return nil
 }
 
@@ -1812,7 +2110,7 @@ func (c *Client) AddLocalAntreaFlexibleIPAMPodRule(podAddresses []net.IP) error 
 	return nil
 }
 
-// DeletLocaleAntreaFlexibleIPAMPodRule is used to delete related IP set entries when an AntreaFlexibleIPAM Pod is deleted.
+// DeleteLocalAntreaFlexibleIPAMPodRule is used to delete related IP set entries when an AntreaFlexibleIPAM Pod is deleted.
 func (c *Client) DeleteLocalAntreaFlexibleIPAMPodRule(podAddresses []net.IP) error {
 	if !c.connectUplinkToBridge {
 		return nil
@@ -1913,29 +2211,37 @@ func (c *Client) DeleteRouteForLink(cidr *net.IPNet, linkIndex int) error {
 
 func (c *Client) ClearConntrackEntryForService(svcIP net.IP, svcPort uint16, endpointIP net.IP, protocol binding.Protocol) error {
 	var protoVar uint8
-	var ipFamily netlink.InetFamily
+	var ipFamilyVar uint8
+	var zone uint16
 	switch protocol {
 	case binding.ProtocolTCP:
-		ipFamily = unix.AF_INET
+		ipFamilyVar = unix.AF_INET
 		protoVar = unix.IPPROTO_TCP
+		zone = openflow.CtZone
 	case binding.ProtocolTCPv6:
-		ipFamily = unix.AF_INET6
+		ipFamilyVar = unix.AF_INET6
 		protoVar = unix.IPPROTO_TCP
+		zone = openflow.CtZoneV6
 	case binding.ProtocolUDP:
-		ipFamily = unix.AF_INET
+		ipFamilyVar = unix.AF_INET
 		protoVar = unix.IPPROTO_UDP
+		zone = openflow.CtZone
 	case binding.ProtocolUDPv6:
-		ipFamily = unix.AF_INET6
+		ipFamilyVar = unix.AF_INET6
 		protoVar = unix.IPPROTO_UDP
+		zone = openflow.CtZoneV6
 	case binding.ProtocolSCTP:
-		ipFamily = unix.AF_INET
+		ipFamilyVar = unix.AF_INET
 		protoVar = unix.IPPROTO_SCTP
+		zone = openflow.CtZone
 	case binding.ProtocolSCTPv6:
-		ipFamily = unix.AF_INET6
+		ipFamilyVar = unix.AF_INET6
 		protoVar = unix.IPPROTO_SCTP
+		zone = openflow.CtZoneV6
 	}
 	filter := &netlink.ConntrackFilter{}
 	filter.AddProtocol(protoVar)
+	filter.AddZone(zone)
 	if svcIP != nil {
 		filter.AddIP(netlink.ConntrackOrigDstIP, svcIP)
 	}
@@ -1945,16 +2251,17 @@ func (c *Client) ClearConntrackEntryForService(svcIP net.IP, svcPort uint16, end
 	if endpointIP != nil {
 		filter.AddIP(netlink.ConntrackReplySrcIP, endpointIP)
 	}
-	_, err := c.netlink.ConntrackDeleteFilter(netlink.ConntrackTable, ipFamily, filter)
+	_, err := c.netlink.ConntrackDeleteFilter(netlink.ConntrackTableType(netlink.ConntrackTable), netlink.InetFamily(ipFamilyVar), filter)
 	return err
 }
 
 func getTransProtocolStr(protocol binding.Protocol) string {
-	if protocol == binding.ProtocolTCP || protocol == binding.ProtocolTCPv6 {
+	switch protocol {
+	case binding.ProtocolTCP, binding.ProtocolTCPv6:
 		return "tcp"
-	} else if protocol == binding.ProtocolUDP || protocol == binding.ProtocolUDPv6 {
+	case binding.ProtocolUDP, binding.ProtocolUDPv6:
 		return "udp"
-	} else if protocol == binding.ProtocolSCTP || protocol == binding.ProtocolSCTPv6 {
+	case binding.ProtocolSCTP, binding.ProtocolSCTPv6:
 		return "sctp"
 	}
 	return ""

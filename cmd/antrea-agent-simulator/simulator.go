@@ -29,7 +29,7 @@ import (
 	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent"
+	"antrea.io/antrea/pkg/agent/client"
 	"antrea.io/antrea/pkg/signals"
 	"antrea.io/antrea/pkg/util/env"
 	"antrea.io/antrea/pkg/util/k8s"
@@ -49,7 +49,10 @@ func run() error {
 	}
 
 	// Create Antrea Clientset for the given config.
-	antreaClientProvider := agent.NewAntreaClientProvider(componentbaseconfig.ClientConnectionConfiguration{}, k8sClient)
+	antreaClientProvider, err := client.NewAntreaClientProvider(componentbaseconfig.ClientConnectionConfiguration{}, k8sClient)
+	if err != nil {
+		return err
+	}
 
 	if err = antreaClientProvider.RunOnce(); err != nil {
 		return err
@@ -67,7 +70,7 @@ func run() error {
 
 	// Add loop to check whether client is ready
 	attempts := 0
-	if err := wait.PollImmediateUntil(200*time.Millisecond, func() (bool, error) {
+	if err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), 200*time.Millisecond, true, func(ctx context.Context) (bool, error) {
 		if attempts%10 == 0 {
 			klog.Info("Waiting for Antrea client to be ready")
 		}
@@ -76,7 +79,7 @@ func run() error {
 			return false, nil
 		}
 		return true, nil
-	}, stopCh); err != nil {
+	}); err != nil {
 		klog.Info("Stopped waiting for Antrea client")
 		return err
 	}
@@ -156,19 +159,17 @@ func (w *watchWrapper) watch() {
 	// Watch the init events from chan, and log the events
 loop:
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				klog.Warningf("Result channel for %s was closed", w.name)
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				klog.V(2).Infof("Added %s (%#v)", w.name, event.Object)
-				initCount++
-			case watch.Bookmark:
-				break loop
-			}
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			klog.Warningf("Result channel for %s was closed", w.name)
+			return
+		}
+		switch event.Type {
+		case watch.Added:
+			klog.V(2).Infof("Added %s (%#v)", w.name, event.Object)
+			initCount++
+		case watch.Bookmark:
+			break loop
 		}
 	}
 	klog.Infof("Received %d init events for %s", initCount, w.name)
@@ -176,23 +177,21 @@ loop:
 
 	// Watch the events from chan, and log the events
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				klog.V(2).Infof("Added %s (%#v)", w.name, event.Object)
-			case watch.Modified:
-				klog.V(2).Infof("Updated %s (%#v)", w.name, event.Object)
-			case watch.Deleted:
-				klog.V(2).Infof("Removed %s (%#v)", w.name, event.Object)
-			default:
-				klog.Errorf("Unknown event: %v", event)
-				return
-			}
-			eventCount++
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			return
 		}
+		switch event.Type {
+		case watch.Added:
+			klog.V(2).Infof("Added %s (%#v)", w.name, event.Object)
+		case watch.Modified:
+			klog.V(2).Infof("Updated %s (%#v)", w.name, event.Object)
+		case watch.Deleted:
+			klog.V(2).Infof("Removed %s (%#v)", w.name, event.Object)
+		default:
+			klog.Errorf("Unknown event: %v", event)
+			return
+		}
+		eventCount++
 	}
 }

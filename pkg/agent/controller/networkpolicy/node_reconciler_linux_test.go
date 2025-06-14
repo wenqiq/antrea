@@ -76,7 +76,7 @@ var (
 	ingressRule1   = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID1,
-			Name:           "rule-01",
+			Name:           "ingress-rule-01",
 			PolicyName:     "ingress-policy",
 			From:           ipBlocks,
 			Direction:      v1beta2.DirectionIn,
@@ -86,6 +86,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority1,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "",
 		},
 		FromAddresses: dualAddressGroup1,
 		ToAddresses:   nil,
@@ -93,7 +95,7 @@ var (
 	ingressRule2 = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID2,
-			Name:           "rule-02",
+			Name:           "ingress-rule-02",
 			PolicyName:     "ingress-policy",
 			Direction:      v1beta2.DirectionIn,
 			Services:       []v1beta2.Service{serviceTCP443},
@@ -102,6 +104,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  false,
+			LogLabel:       "ingress2",
 		},
 		FromAddresses: dualAddressGroup1,
 		ToAddresses:   nil,
@@ -109,7 +113,7 @@ var (
 	ingressRule3 = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
-			Name:           "rule-03",
+			Name:           "ingress-rule-03",
 			PolicyName:     "ingress-policy",
 			From:           ipBlocksToMatchAny,
 			Direction:      v1beta2.DirectionIn,
@@ -119,6 +123,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "ingress3",
 		},
 		FromAddresses: nil,
 		ToAddresses:   nil,
@@ -127,7 +133,7 @@ var (
 	updatedIngressRule3WithOneFromAddress = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
-			Name:           "rule-03",
+			Name:           "ingress-rule-03",
 			PolicyName:     "ingress-policy",
 			Direction:      v1beta2.DirectionIn,
 			Services:       []v1beta2.Service{serviceTCP8080},
@@ -136,6 +142,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "ingress3",
 		},
 		FromAddresses: addressGroup1,
 		ToAddresses:   nil,
@@ -143,7 +151,7 @@ var (
 	updatedIngressRule3WithAnotherFromAddress = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
-			Name:           "rule-03",
+			Name:           "ingress-rule-03",
 			PolicyName:     "ingress-policy",
 			Direction:      v1beta2.DirectionIn,
 			Services:       []v1beta2.Service{serviceTCP8080},
@@ -152,6 +160,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "ingress3",
 		},
 		FromAddresses: addressGroup2,
 		ToAddresses:   nil,
@@ -159,7 +169,7 @@ var (
 	updatedIngressRule3WithMultipleFromAddresses = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
-			Name:           "rule-03",
+			Name:           "ingress-rule-03",
 			PolicyName:     "ingress-policy",
 			Direction:      v1beta2.DirectionIn,
 			Services:       []v1beta2.Service{serviceTCP8080},
@@ -168,6 +178,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "ingress3",
 		},
 		FromAddresses: addressGroup2.Union(addressGroup1),
 		ToAddresses:   nil,
@@ -175,7 +187,7 @@ var (
 	updatedIngressRule3WithOtherMultipleFromAddresses = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
-			Name:           "rule-03",
+			Name:           "ingress-rule-03",
 			PolicyName:     "ingress-policy",
 			Direction:      v1beta2.DirectionIn,
 			Services:       []v1beta2.Service{serviceTCP8080},
@@ -184,6 +196,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "ingress3",
 		},
 		FromAddresses: addressGroup2.Union(v1beta2.NewGroupMemberSet(newAddressGroupMember("1.1.1.3"))),
 		ToAddresses:   nil,
@@ -191,7 +205,7 @@ var (
 	updatedIngressRule3WithFromNoAddress = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
-			Name:           "rule-03",
+			Name:           "ingress-rule-03",
 			PolicyName:     "ingress-policy",
 			Direction:      v1beta2.DirectionIn,
 			Services:       []v1beta2.Service{serviceTCP8080},
@@ -200,6 +214,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "ingress3",
 		},
 		FromAddresses: nil,
 		ToAddresses:   nil,
@@ -207,7 +223,7 @@ var (
 	egressRule1 = &CompletedRule{
 		rule: &rule{
 			ID:             egressRuleID1,
-			Name:           "rule-01",
+			Name:           "egress-rule-01",
 			PolicyName:     "egress-policy",
 			Direction:      v1beta2.DirectionOut,
 			Services:       []v1beta2.Service{serviceTCP80, serviceTCP443},
@@ -216,6 +232,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority1,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "egress1",
 		},
 		ToAddresses:   dualAddressGroup1,
 		FromAddresses: nil,
@@ -223,7 +241,7 @@ var (
 	egressRule2 = &CompletedRule{
 		rule: &rule{
 			ID:             egressRuleID2,
-			Name:           "rule-02",
+			Name:           "egress-rule-02",
 			PolicyName:     "egress-policy",
 			Direction:      v1beta2.DirectionOut,
 			Services:       []v1beta2.Service{serviceTCP443},
@@ -232,6 +250,8 @@ var (
 			PolicyPriority: &policyPriority1,
 			TierPriority:   &tierPriority2,
 			SourceRef:      &cnp1,
+			EnableLogging:  true,
+			LogLabel:       "egress2:test_log_label",
 		},
 		ToAddresses:   dualAddressGroup1,
 		FromAddresses: nil,
@@ -252,27 +272,31 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 		expectedCalls func(mockRouteClient *routetest.MockInterfaceMockRecorder)
 	}{
 		{
-			name:        "IPv4, add an ingress rule, then forget it",
+			name:        "IPv4, add an ingress rule, update it, then forget it",
 			ipv4Enabled: true,
 			ipv6Enabled: false,
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				serviceRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				coreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+				)
 			},
 			rulesToAdd: []*CompletedRule{
 				ingressRule1,
@@ -288,19 +312,23 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				serviceRules := [][]string{
 					{
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				coreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, serviceRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESS-RULES"}, coreRules, true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESS-RULES"}, [][]string{nil}, true).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, serviceRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESS-RULES"}, coreRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESS-RULES"}, [][]string{nil}, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, true),
+				)
 			},
 			rulesToAdd: []*CompletedRule{
 				egressRule1,
@@ -316,32 +344,38 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				serviceRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				coreRulesIPv4 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesIPv6 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesIPv4, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesIPv6, true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", true)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, true).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesIPv4, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+				)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesIPv6, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", true),
+				)
 			},
 			rulesToAdd: []*CompletedRule{
 				ingressRule1,
@@ -357,47 +391,52 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				serviceRules1 := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				coreRules1 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules2 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules3 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesDeleted3 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesDelete2 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDeleted3, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete2, false),
+				)
 
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules1, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDeleted3, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete2, false).Times(1)
 			},
 			rulesToAdd: []*CompletedRule{
 				ingressRule1,
@@ -416,48 +455,55 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				coreRules3 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules2 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				serviceRules1 := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				coreRules1 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesDelete3 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesDelete1 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules1, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete3, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete1, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete3, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete1, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+				)
 			},
 			rulesToAdd: []*CompletedRule{
 				ingressRule3,
@@ -476,49 +522,55 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				coreRules2 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				serviceRules1 := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				coreRules1 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules3 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesDelete2 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRulesDelete1 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules1, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete2, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete1, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, serviceRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete2, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRulesDelete1, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+				)
 			},
 			rulesToAdd: []*CompletedRule{
 				ingressRule2,
@@ -537,22 +589,26 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 			expectedCalls: func(mockRouteClient *routetest.MockInterfaceMockRecorder) {
 				coreRules1 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules2 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules3 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.2/32 -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.2/32 -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.2/32 -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules4 := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE3-4 src -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE3-4 src -p tcp --dport 8080 -j LOG --log-prefix "Antrea:I:Allow:ingress3:"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE3-4 src -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-03, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				coreRules6 := coreRules2
@@ -563,46 +619,28 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 				coreRules11 := coreRules4
 				coreRules12 := coreRules10
 				coreRules13 := coreRules1
-
-				s1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false).Times(1)
-				s2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false).Times(1)
-				s3 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false).Times(1)
-				s4p1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
-				s4p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules4, false).Times(1)
-				s5 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.2/32", "1.1.1.3/32"), false).Times(1)
-				s6p1 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
-				s6p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules6, false).Times(1)
-				s7 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules7, false).Times(1)
-				s8p1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
-				s8p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules8, false).Times(1)
-				s9p1 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
-				s9p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules9, false).Times(1)
-				s10 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules10, false).Times(1)
-				s11p1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
-				s11p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules11, false).Times(1)
-				s12p1 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
-				s12p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules12, false).Times(1)
-				s13 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules13, false).Times(1)
-				s2.After(s1)
-				s3.After(s2)
-				s4p1.After(s3)
-				s4p2.After(s3)
-				s5.After(s4p2)
-				s5.After(s4p2)
-				s6p1.After(s5)
-				s6p2.After(s5)
-				s7.After(s6p2)
-				s8p1.After(s7)
-				s8p2.After(s7)
-				s9p1.After(s8p2)
-				s9p2.After(s8p2)
-				s10.After(s9p2)
-				s11p1.After(s10)
-				s11p2.After(s10)
-				s12p1.After(s11p2)
-				s12p2.After(s11p2)
-				s13.After(s12p2)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules4, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.2/32", "1.1.1.3/32"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules6, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules7, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules8, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules9, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules10, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules11, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules12, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules13, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false),
+				)
 			},
 			rulesToAdd: []*CompletedRule{
 				ingressRule3WithFromAnyAddress,
@@ -666,8 +704,8 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				coreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				svcChains := []string{
@@ -675,23 +713,25 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				svcRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				updatedCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, false).Times(1)
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, false).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+				)
 			},
 		},
 		{
@@ -710,8 +750,8 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				coreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				svcChains := []string{
@@ -719,21 +759,23 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				svcRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				updatedCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, true).Times(1)
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, true).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, true),
+				)
 			},
 		},
 		{
@@ -753,14 +795,14 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				ipv4CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				ipv6CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				svcChains := []string{
@@ -768,35 +810,40 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				ipv4SvcRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				ipv6SvcRules := ipv4SvcRules
 				updatedIPv4CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				updatedIPv6CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv4SvcRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv4CoreRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv6SvcRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv6CoreRules, true).Times(1)
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv4CoreRules, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv6CoreRules, true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, true).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv4SvcRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv4CoreRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv4CoreRules, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+				)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv6SvcRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv6CoreRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv6CoreRules, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", true),
+				)
 			},
 		},
 		{
@@ -815,8 +862,9 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				coreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				svcChains := []string{
@@ -824,21 +872,24 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				svcRules := [][]string{
 					{
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				updatedCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, false).Times(1)
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, false).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, false),
+				)
 			},
 		},
 		{
@@ -857,8 +908,9 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				coreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				svcChains := []string{
@@ -866,21 +918,24 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				svcRules := [][]string{
 					{
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				updatedCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, true).Times(1)
-
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, true).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, coreRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedCoreRules, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, true),
+				)
 			},
 		},
 		{
@@ -900,14 +955,16 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				ipv4CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				ipv6CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				svcChains := []string{
@@ -915,30 +972,36 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				ipv4SvcRules := [][]string{
 					{
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				ipv6SvcRules := ipv4SvcRules
 				updatedIPv4CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				updatedIPv6CoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv4SvcRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv4CoreRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv6SvcRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv6CoreRules, true).Times(1)
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv4SvcRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv4CoreRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, ipv6SvcRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, ipv6CoreRules, true),
 
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv4CoreRules, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv6CoreRules, true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, true).Times(1)
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv4CoreRules, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(coreChains, updatedIPv6CoreRules, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables(svcChains, true),
+				)
 			},
 		},
 		{
@@ -961,49 +1024,56 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				svcRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 					{
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				ingressCoreChains := []string{"ANTREA-POL-INGRESS-RULES"}
 				egressCoreChains := []string{"ANTREA-POL-EGRESS-RULES"}
 				ingressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-4 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				egressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				updatedIngressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				updatedEgressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 1.1.1.1/32 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, ingressCoreRules, false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, egressCoreRules, false),
 
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", sets.New[string]("1.1.1.1/32", "192.168.1.0/25"), false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, ingressCoreRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, egressCoreRules, false).Times(1)
-
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, updatedIngressCoreRules, false).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, updatedEgressCoreRules, false).Times(1)
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, updatedIngressCoreRules, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-4", false),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, updatedEgressCoreRules, false),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, false),
+				)
 			},
 		},
 		{
@@ -1026,49 +1096,56 @@ func TestNodeReconcilerBatchReconcileAndForget(t *testing.T) {
 				}
 				svcRules := [][]string{
 					{
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:I:Allow:"`,
+						`-A ANTREA-POL-INGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 					{
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT",
-						"-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT",
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 80 -j ACCEPT`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress1:"`,
+						`-A ANTREA-POL-EGRESSRULE1 -p tcp --dport 443 -j ACCEPT`,
 					},
 				}
 				ingressCoreChains := []string{"ANTREA-POL-INGRESS-RULES"}
 				egressCoreChains := []string{"ANTREA-POL-EGRESS-RULES"}
 				ingressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-INGRESSRULE1-6 src -j ANTREA-POL-INGRESSRULE1 -m comment --comment "Antrea: for rule ingress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				egressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egressRule1, policy AntreaClusterNetworkPolicy:name1"`,
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -j ANTREA-POL-EGRESSRULE1 -m comment --comment "Antrea: for rule egress-rule-01, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				updatedIngressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-INGRESS-RULES -s 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule ingress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
 				updatedEgressCoreRules := [][]string{
 					{
-						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egressRule2, policy AntreaClusterNetworkPolicy:name1"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j LOG --log-prefix "Antrea:O:Allow:egress2:test:"`,
+						`-A ANTREA-POL-EGRESS-RULES -d 2002:1a23:fb44::1/128 -p tcp --dport 443 -j ACCEPT -m comment --comment "Antrea: for rule egress-rule-02, policy AntreaClusterNetworkPolicy:name1"`,
 					},
 				}
+				gomock.InOrder(
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, ingressCoreRules, true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, egressCoreRules, true),
 
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", sets.New[string]("2002:1a23:fb44::1/128", "fec0::192:168:1:8/125"), true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(svcChains, svcRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, ingressCoreRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, egressCoreRules, true).Times(1)
-
-				mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, true).Times(1)
-				mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, updatedIngressCoreRules, true).Times(1)
-				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, updatedEgressCoreRules, true).Times(1)
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(ingressCoreChains, updatedIngressCoreRules, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESSRULE1"}, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE1-6", true),
+					mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables(egressCoreChains, updatedEgressCoreRules, true),
+					mockRouteClient.DeleteNodeNetworkPolicyIPTables([]string{"ANTREA-POL-EGRESSRULE1"}, true),
+				)
 			},
 		},
 	}

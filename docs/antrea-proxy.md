@@ -1,10 +1,10 @@
-# AntreaProxy
+# Antrea Proxy
 
 ## Table of Contents
 
 <!-- toc -->
 - [Introduction](#introduction)
-- [AntreaProxy with proxyAll](#antreaproxy-with-proxyall)
+- [Antrea Proxy with proxyAll](#antrea-proxy-with-proxyall)
   - [Removing kube-proxy](#removing-kube-proxy)
     - [Windows Nodes](#windows-nodes)
   - [Configuring load balancer mode for external traffic](#configuring-load-balancer-mode-for-external-traffic)
@@ -16,39 +16,74 @@
 
 ## Introduction
 
-AntreaProxy was first introduced in Antrea v0.8 and has been enabled by default
-on all platforms since v0.11. AntreaProxy enables some or all of the cluster's
+Antrea Proxy was first introduced in Antrea v0.8 and has been enabled by default
+on all platforms since v0.11. Antrea Proxy enables some or all of the cluster's
 Service traffic to be load-balanced as part of the OVS pipeline, instead of
 depending on kube-proxy. We typically observe latency improvements for Service
-traffic when AntreaProxy is used.
+traffic when Antrea Proxy is used.
 
-While AntreaProxy can be disabled on Linux Nodes by setting the `AntreaProxy`
+While Antrea Proxy can be disabled on Linux Nodes by setting the `AntreaProxy`
 Feature Gate to `false`, it should remain enabled on all Windows Nodes, as it is
 needed for correct NetworkPolicy implementation for Pod-to-Service traffic.
 
-By default, AntreaProxy will only handle Service traffic originating from Pods
+By default, Antrea Proxy will only handle Service traffic originating from Pods
 in the cluster, with no support for NodePort. However, starting with Antrea
-v1.4, a new operating mode was introduced in which AntreaProxy can handle all
+v1.4, a new operating mode was introduced in which Antrea Proxy can handle all
 Service traffic, including NodePort. See the following
-[section](#antreaproxy-with-proxyall) for more information.
+[section](#antrea-proxy-with-proxyall) for more information.
 
-## AntreaProxy with proxyAll
+## Antrea Proxy with proxyAll
 
 The `proxyAll` configuration parameter can be enabled in the Antrea
-configuration if you want AntreaProxy to handle all Service traffic, with the
+configuration if you want Antrea Proxy to handle all Service traffic, with the
 possibility to remove kube-proxy altogether and have one less DaemonSet running
 in the cluster. This is particularly interesting on Windows Nodes, since until
 the introduction of `proxyAll`, Antrea relied on userspace kube-proxy, which is
 no longer actively maintained by the K8s community and is slower than other
 kube-proxy backends.
 
-Note that on Linux, even when `proxyAll` is enabled, kube-proxy will usually
-take priority and will keep handling NodePort Service traffic (unless the source
-is a Pod, which is pretty unusual as Pods typically access Services by
-ClusterIP). This is because kube-proxy rules typically come before the rules
-installed by AntreaProxy to redirect traffic to OVS. When kube-proxy is not
-deployed or is removed from the cluster, AntreaProxy will then handle all
-Service traffic.
+Note that on Linux, before Antrea v2.1, when `proxyAll` is enabled, kube-proxy
+will usually take priority over Antrea Proxy and will keep handling all kinds of
+Service traffic (unless the source is a Pod, which is pretty unusual as Pods
+typically access Services by ClusterIP). This is because kube-proxy rules typically
+come before the rules installed by Antrea Proxy to redirect traffic to OVS. When
+kube-proxy is not deployed or is removed from the cluster, Antrea Proxy will then
+handle all Service traffic.
+
+Starting with Antrea v2.1, when `proxyAll` is enabled, Antrea Proxy will handle
+Service traffic destined to NodePort, LoadBalancerIP and ExternalIP, even if
+kube-proxy is present. This benefits users who want to take advantage of
+Antrea Proxy's advanced features, such as Direct Server Return (DSR) mode, but
+lack control over kube-proxy's installation. This is accomplished by
+prioritizing the rules installed by Antrea Proxy over those installed by
+kube-proxy, thus it works only with kube-proxy iptables mode. Support for other
+kube-proxy modes may be added in the future.
+
+Note that running both kube-proxy and Antrea Proxy with `proxyAll` can trigger
+some error logs for Services of type LoadBalancer with `externalTrafficPolicy`
+set to `Local`. For such Services, the proxy is in charge of running a health
+check server on each Node, in order to report the number of local Endpoints
+which implement the Service. The server port is determined by the value of
+[`.spec.healthCheckNodePort`](https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip).
+Because both kube-proxy and Antrea Proxy (with `proxyAll`) will try to run the
+health check servers on the same ports, one of them will fail to bind to the
+desired address. In practice, we typically observe that Antrea Proxy tries to
+bind to the address first (and succeeds), while kube-proxy fails and logs the
+following error message:
+
+```text
+E0117 19:38:17.586328       1 service_health.go:145] "Failed to start healthcheck" err="listen tcp 0.0.0.0:31653: bind: address already in use" node="kind-worker" service="default/nginx" port=31653
+```
+
+These log messages will keep repeating periodically, as kube-proxy handles
+Service updates. While the messages are harmless, they can create a lot of
+unnecessary noise. You may want to set `antreaProxy.disableServiceHealthCheckServer: true`
+in the `antrea-config` ConfigMap to avoid such logs. It will instruct Antrea Proxy
+to stop running health check servers and shift this responsibility to
+kube-proxy. This is not a perfect solution as ideally the component responsible
+for the proxy implementation (Antrea Proxy) should also be responsible for
+providing health check information. We still recommend removing kube-proxy
+whenever possible.
 
 ### Removing kube-proxy
 
@@ -132,7 +167,7 @@ kube-proxy:
 
 Starting with Antrea v1.13, the `defaultLoadBalancerMode` configuration
 parameter and the `service.antrea.io/load-balancer-mode` Service annotation
-can be used to specify how you want AntreaProxy to handle external traffic
+can be used to specify how you want Antrea Proxy to handle external traffic
 destined to LoadBalancerIPs and ExternalIPs of Services. Specifically, the mode
 determines how external traffic is processed when it's load balanced across
 Nodes. Currently, it has two options: `nat` (default) and `dsr`.
@@ -200,8 +235,8 @@ configured to bind to that address and can therefore intercept queries. In case
 of a cache miss, queries can be sent to the cluster CoreDNS Pods thanks to a
 "shadow" Service which will expose CoreDNS Pods via a new ClusterIP.
 
-When AntreaProxy is enabled (default), Pod DNS queries to the kube-dns ClusterIP
-will be load-balanced directly by AntreaProxy to a CoreDNS Pod endpoint. This
+When Antrea Proxy is enabled (default), Pod DNS queries to the kube-dns ClusterIP
+will be load-balanced directly by Antrea Proxy to a CoreDNS Pod endpoint. This
 means that NodeLocal DNSCache is completely bypassed, which is probably not
 acceptable for users who want to leverage this feature to improve DNS
 performance in their clusters. While these users can update the Pod
@@ -210,8 +245,8 @@ interface, this is not always ideal in the context of CaaS, as it can require
 everyone running Pods in the cluster to be aware of the situation.
 
 This is the reason why we initially introduced the `skipServices` configuration
-option for AntreaProxy in Antrea v1.4. By adding the kube-dns Service (which
-exposes CoreDNS) to the list, you can ensure that AntreaProxy will "ignore" Pod
+option for Antrea Proxy in Antrea v1.4. By adding the kube-dns Service (which
+exposes CoreDNS) to the list, you can ensure that Antrea Proxy will "ignore" Pod
 DNS queries, and that they will be forwarded to NodeLocal DNSCache. You can edit
 the `antrea-config` ConfigMap as follows:
 
@@ -232,11 +267,11 @@ data:
 In some cases, the external LoadBalancer for a cluster provides additional
 capabilities (e.g., TLS termination) and it is desirable for Pods to access
 in-cluster Services through the external LoadBalancer. By default, this is not
-the case as both kube-proxy and AntreaProxy will install rules to load-balance
+the case as both kube-proxy and Antrea Proxy will install rules to load-balance
 this traffic directly at the source Node (even when the destination IP is set to
 the external `loadBalancerIP`). To circumvent this behavior, we introduced the
-`proxyLoadBalancerIPs` configuration option for AntreaProxy in Antrea v1.5. This
-option defaults to `true`, but when setting it to `false`, AntreaProxy will no
+`proxyLoadBalancerIPs` configuration option for Antrea Proxy in Antrea v1.5. This
+option defaults to `true`, but when setting it to `false`, Antrea Proxy will no
 longer load-balance traffic destined to external `loadBalancerIP`s, hence
 ensuring that this traffic can go to the external LoadBalancer. You can set it
 to `false` by editing the `antrea-config` ConfigMap as follows:
@@ -252,6 +287,26 @@ data:
     antreaProxy:
       proxyLoadBalancerIPs: false
 ```
+
+With the above configuration, Antrea Proxy will ignore all external `loadBalancerIP`s.
+Starting with K8s v1.29, feature [LoadBalancerIPMode](https://kubernetes.io/docs/concepts/services-networking/service/#load-balancer-ip-mode)
+was introduced, providing users with a more fine-grained mechanism to control how
+every external `loadBalancerIP` behaves in a LoadBalancer Service.
+
+- If the value of `LoadBalancerIPMode` is `LoadBalancerIPModeVIP` or nil, the
+  traffic destined for the corresponding external `loadBalancerIP` should follow
+  the default behavior and get load-balanced at the source Node.
+- If the value of `LoadBalancerIPMode` is `LoadBalancerIPModeProxy`, the traffic
+  destined for the corresponding external `loadBalancerIP` should be sent to the
+  external LoadBalancer.
+
+Starting with Antrea v2.0, Antrea Proxy will respect `LoadBalancerIPMode` in LoadBalancer
+Services when the configuration option `proxyLoadBalancerIPs` is set to `true`
+(default). In this case, Antrea Proxy will serve only the external `loadBalancerIP`s
+configured with `LoadBalancerIPModeVIP`, and those configured with
+`LoadBalancerIPModeProxy` will bypass Antrea Proxy. If the configuration option
+`proxyLoadBalancerIPs` is set to `false`, Antrea Proxy will ignore the external
+`loadBalancerIP`s even if configured with `LoadBalancerIPModeVIP`.
 
 There are two important prerequisites for this feature:
 

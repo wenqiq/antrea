@@ -15,19 +15,15 @@
 package antctl
 
 import (
-	"fmt"
 	"reflect"
 
-	"antrea.io/antrea/pkg/agent/apiserver/handlers/agentinfo"
-	"antrea.io/antrea/pkg/agent/apiserver/handlers/memberlist"
-	"antrea.io/antrea/pkg/agent/apiserver/handlers/multicast"
-	"antrea.io/antrea/pkg/agent/apiserver/handlers/ovsflows"
-	"antrea.io/antrea/pkg/agent/apiserver/handlers/podinterface"
-	"antrea.io/antrea/pkg/agent/apiserver/handlers/serviceexternalip"
-	"antrea.io/antrea/pkg/agent/openflow"
+	agentapis "antrea.io/antrea/pkg/agent/apis"
 	fallbackversion "antrea.io/antrea/pkg/antctl/fallback/version"
+	checkcluster "antrea.io/antrea/pkg/antctl/raw/check/cluster"
+	checkinstallation "antrea.io/antrea/pkg/antctl/raw/check/installation"
 	"antrea.io/antrea/pkg/antctl/raw/featuregates"
 	"antrea.io/antrea/pkg/antctl/raw/multicluster"
+	"antrea.io/antrea/pkg/antctl/raw/packetcapture"
 	"antrea.io/antrea/pkg/antctl/raw/proxy"
 	"antrea.io/antrea/pkg/antctl/raw/set"
 	"antrea.io/antrea/pkg/antctl/raw/supportbundle"
@@ -40,12 +36,11 @@ import (
 	"antrea.io/antrea/pkg/antctl/transform/ovstracing"
 	"antrea.io/antrea/pkg/antctl/transform/version"
 	cpv1beta "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
+	crdv1b1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	systemv1beta1 "antrea.io/antrea/pkg/apis/system/v1beta1"
-	controllerinforest "antrea.io/antrea/pkg/apiserver/registry/system/controllerinfo"
+	controllerapis "antrea.io/antrea/pkg/apiserver/apis"
 	"antrea.io/antrea/pkg/client/clientset/versioned/scheme"
-	controllernetworkpolicy "antrea.io/antrea/pkg/controller/networkpolicy"
-	"antrea.io/antrea/pkg/flowaggregator/apiserver/handlers/flowrecords"
-	"antrea.io/antrea/pkg/flowaggregator/apiserver/handlers/recordmetrics"
+	aggregatorapis "antrea.io/antrea/pkg/flowaggregator/apis"
 )
 
 // CommandList defines all commands that could be used in the antctl for agents，
@@ -60,7 +55,7 @@ var CommandList = &commandList{
 			commandGroup: flat,
 			controllerEndpoint: &endpoint{
 				resourceEndpoint: &resourceEndpoint{
-					resourceName:         controllerinforest.ControllerInfoResourceName,
+					resourceName:         crdv1b1.AntreaControllerInfoResourceName,
 					groupVersionResource: &systemv1beta1.ControllerInfoVersionResource,
 				},
 				addonTransform: version.ControllerTransform,
@@ -113,7 +108,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 				},
 			},
 
-			transformedResponse: reflect.TypeOf(multicast.Response{}),
+			transformedResponse: reflect.TypeOf(agentapis.MulticastResponse{}),
 		},
 		{
 			use:   "log-level",
@@ -221,9 +216,10 @@ $ antctl get podmulticaststats pod -n namespace`,
 							shorthand: "p",
 						},
 						{
-							name:      "type",
-							usage:     "Get NetworkPolicies with specific type. Type means the type of its source network policy: K8sNP, ACNP, ANNP",
-							shorthand: "T",
+							name:            "type",
+							usage:           "Get NetworkPolicies with specific type. Type refers to the type of its source NetworkPolicy: K8sNP, ACNP, ANNP, BANP or ANP",
+							shorthand:       "T",
+							supportedValues: []string{"K8sNP", "ACNP", "ANNP", "BANP", "ANP"},
 						},
 					}, getSortByFlag()),
 					outputType: multiple,
@@ -307,7 +303,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 			long:    "Print Antrea controller's basic information including version, deployment, NetworkPolicy controller, ControllerConditions, etc.",
 			controllerEndpoint: &endpoint{
 				resourceEndpoint: &resourceEndpoint{
-					resourceName:         controllerinforest.ControllerInfoResourceName,
+					resourceName:         crdv1b1.AntreaControllerInfoResourceName,
 					groupVersionResource: &systemv1beta1.ControllerInfoVersionResource,
 				},
 				addonTransform: controllerinfo.Transform,
@@ -327,7 +323,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 				},
 			},
 			commandGroup:        get,
-			transformedResponse: reflect.TypeOf(agentinfo.AntreaAgentInfoResponse{}),
+			transformedResponse: reflect.TypeOf(agentapis.AntreaAgentInfoResponse{}),
 		},
 		{
 			use:     "podinterface",
@@ -361,7 +357,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 				},
 			},
 			commandGroup:        get,
-			transformedResponse: reflect.TypeOf(podinterface.Response{}),
+			transformedResponse: reflect.TypeOf(agentapis.PodInterfaceResponse{}),
 		},
 		{
 			use:     "ovsflows",
@@ -370,20 +366,20 @@ $ antctl get podmulticaststats pod -n namespace`,
 			long:    "Dump all the OVS flows or the flows installed for the specified entity.",
 			example: `  Dump all OVS flows
   $ antctl get ovsflows
+  Dump OVS table names only
+  $ antctl get ovsflows --table-names-only
   Dump OVS flows of a local Pod
   $ antctl get ovsflows -p pod1 -n ns1
   Dump OVS flows of a Service
   $ antctl get ovsflows -S svc1 -n ns1
   Dump OVS flows of a NetworkPolicy
-  $ antctl get ovsflows -N np1 -n ns1
+  $ antctl get ovsflows -N np1 -n ns1 --type K8sNP
   Dump OVS flows of a flow Table
   $ antctl get ovsflows -T IngressRule
   Dump OVS groups
   $ antctl get ovsflows -G 10,20
   Dump all OVS groups
-  $ antctl get ovsflows -G all
-
-  Antrea OVS Flow Tables:` + generateFlowTableHelpMsg(),
+  $ antctl get ovsflows -G all`,
 			agentEndpoint: &endpoint{
 				nonResourceEndpoint: &nonResourceEndpoint{
 					path: "/ovsflows",
@@ -405,13 +401,23 @@ $ antctl get podmulticaststats pod -n namespace`,
 						},
 						{
 							name:      "networkpolicy",
-							usage:     "NetworkPolicy name. If present, Namespace must be provided.",
+							usage:     "NetworkPolicy name. Namespace must be provided for non-cluster-scoped policy types if a type is specified.",
 							shorthand: "N",
+						},
+						{
+							name:            "type",
+							usage:           "NetworkPolicy type. Valid types are K8sNP, ACNP, ANNP, BANP or ANP.",
+							supportedValues: []string{"K8sNP", "ACNP", "ANNP", "BANP", "ANP"},
 						},
 						{
 							name:      "table",
 							usage:     "Comma separated Antrea OVS flow table names or numbers",
 							shorthand: "T",
+						},
+						{
+							name:   "table-names-only",
+							usage:  "Print all Antrea OVS flow table names only, and nothing else",
+							isBool: true,
 						},
 						{
 							name:      "groups",
@@ -423,7 +429,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 				},
 			},
 			commandGroup:        get,
-			transformedResponse: reflect.TypeOf(ovsflows.Response{}),
+			transformedResponse: reflect.TypeOf(agentapis.OVSFlowResponse{}),
 		},
 		{
 			use:   "trace-packet",
@@ -507,7 +513,38 @@ $ antctl get podmulticaststats pod -n namespace`,
 					outputType: single,
 				},
 			},
-			transformedResponse: reflect.TypeOf(controllernetworkpolicy.EndpointQueryResponse{}),
+			transformedResponse: reflect.TypeOf(controllerapis.EndpointQueryResponse{}),
+		},
+		{
+			use:     "networkpolicyevaluation",
+			aliases: []string{"networkpoliciesevaluation", "networkpolicyeval", "networkpolicieseval", "netpoleval"},
+			short:   "Analyze effective NetworkPolicy rules.",
+			long:    "Analyze network policies in the cluster and return the rule expected to be effective on the source and destination endpoints provided.",
+			example: `  Query effective NetworkPolicy rule between two Pods
+  $ antctl query networkpolicyevaluation -S ns1/pod1 -D ns2/pod2
+`,
+			commandGroup: query,
+			controllerEndpoint: &endpoint{
+				resourceEndpoint: &resourceEndpoint{
+					groupVersionResource: &cpv1beta.NetworkPolicyEvaluationVersionResource,
+					params: []flagInfo{
+						{
+							name:      "source",
+							usage:     "Source endpoint, specified by <Namespace>/<name>.",
+							shorthand: "S",
+						},
+						{
+							name:      "destination",
+							usage:     "Destination endpoint, specified by <Namespace>/<name>.",
+							shorthand: "D",
+						},
+					},
+					parameterTransform: networkpolicy.NewNetworkPolicyEvaluation,
+					restMethod:         restPost,
+				},
+				addonTransform: networkpolicy.EvaluationTransform,
+			},
+			transformedResponse: reflect.TypeOf(networkpolicy.EvaluationResponse{}),
 		},
 		{
 			use:   "flowrecords",
@@ -548,7 +585,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 					outputType: multiple,
 				},
 			},
-			transformedResponse: reflect.TypeOf(flowrecords.Response{}),
+			transformedResponse: reflect.TypeOf(aggregatorapis.FlowRecordsResponse{}),
 		},
 		{
 			use:          "recordmetrics",
@@ -561,7 +598,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 					outputType: single,
 				},
 			},
-			transformedResponse: reflect.TypeOf(recordmetrics.Response{}),
+			transformedResponse: reflect.TypeOf(aggregatorapis.RecordMetricsResponse{}),
 		},
 		{
 			use:          "serviceexternalip",
@@ -587,7 +624,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 					outputType: multiple,
 				},
 			},
-			transformedResponse: reflect.TypeOf(serviceexternalip.Response{}),
+			transformedResponse: reflect.TypeOf(agentapis.ServiceExternalIPInfo{}),
 		},
 		{
 			use:          "memberlist",
@@ -601,10 +638,135 @@ $ antctl get podmulticaststats pod -n namespace`,
 					outputType: multiple,
 				},
 			},
-			transformedResponse: reflect.TypeOf(memberlist.Response{}),
+			transformedResponse: reflect.TypeOf(agentapis.MemberlistResponse{}),
+		},
+		{
+			use:   "bgppolicy",
+			short: "Print effective bgppolicy information",
+			long:  "Print effective bgppolicy information including name, local ASN, router ID and listen port",
+			agentEndpoint: &endpoint{
+				nonResourceEndpoint: &nonResourceEndpoint{
+					path:       "/bgppolicy",
+					outputType: single,
+				},
+			},
+			commandGroup:        get,
+			transformedResponse: reflect.TypeOf(agentapis.BGPPolicyResponse{}),
+		},
+		{
+			use:     "bgppeers",
+			aliases: []string{"bgppeer"},
+			short:   "Print the current status of bgp peers of effective bgppolicy",
+			long:    "Print the current status of bgp peers of effective bgppolicy which includes peer IP address with port, asn and state",
+			example: `  Get the list of all bgp peers with their current status
+  $ antctl get bgppeers
+  Get the list of IPv4 bgp peers with their current status
+  $ antctl get bgppeers --ipv4-only
+  Get the list of IPv6 bgp peers with their current status
+  $ antctl get bgppeers --ipv6-only
+`,
+			agentEndpoint: &endpoint{
+				nonResourceEndpoint: &nonResourceEndpoint{
+					path: "/bgppeers",
+					params: []flagInfo{
+						{
+							name:   "ipv4-only",
+							usage:  "Get IPv4 bgp peers only",
+							isBool: true,
+						},
+						{
+							name:   "ipv6-only",
+							usage:  "Get IPv6 bgp peers only",
+							isBool: true,
+						},
+					},
+					outputType: multiple,
+				},
+			},
+			commandGroup:        get,
+			transformedResponse: reflect.TypeOf(agentapis.BGPPeerResponse{}),
+		},
+		{
+			use:     "bgproutes",
+			aliases: []string{"bgproute"},
+			short:   "Print the advertised bgp routes.",
+			long:    "Print the advertised bgp routes.",
+			example: `  Get the list of all advertised bgp routes
+  $ antctl get bgproutes
+  Get the list of advertised IPv4 bgp routes
+  $ antctl get bgproutes --ipv4-only
+  Get the list of advertised IPv6 bgp routes
+  $ antctl get bgproutes --ipv6-only
+  Get the list of all advertised routes of a specific type
+  $ antctl get bgproutes -T EgressIP
+`,
+			agentEndpoint: &endpoint{
+				nonResourceEndpoint: &nonResourceEndpoint{
+					path: "/bgproutes",
+					params: []flagInfo{
+						{
+							name:   "ipv4-only",
+							usage:  "Get advertised IPv4 bgp routes only",
+							isBool: true,
+						},
+						{
+							name:   "ipv6-only",
+							usage:  "Get advertised IPv6 bgp routes only",
+							isBool: true,
+						},
+						{
+							name:            "type",
+							shorthand:       "T",
+							usage:           "Get advertised bgp routes of a specific type. Valid types are EgressIP, ServiceLoadBalancerIP, ServiceExternalIP, ServiceClusterIP or NodeIPAMPodCIDR.",
+							supportedValues: []string{"EgressIP", "ServiceLoadBalancerIP", "ServiceExternalIP", "ServiceClusterIP", "NodeIPAMPodCIDR"},
+						},
+					},
+					outputType: multiple,
+				},
+			},
+			commandGroup:        get,
+			transformedResponse: reflect.TypeOf(agentapis.BGPRouteResponse{}),
+		},
+		{
+			use:   "fqdncache",
+			short: "Print fqdn cache",
+			long:  "Print effective fqdn cache information including fqdn name, IP addresses, and expiration time",
+			example: `	Get the list of all fqdn rules currently applied
+			$ antctl get fqdncache
+			Get the list of all fqdn rules currently applied for a given domain name (wildcard supported)
+			$ antctl get fqdncache --domain example.com
+			$ antctl get fqdncache --domain *.antrea.io
+			`,
+			agentEndpoint: &endpoint{
+				nonResourceEndpoint: &nonResourceEndpoint{
+					path: "/fqdncache",
+					params: []flagInfo{
+						{
+							name:      "domain",
+							usage:     "Get fqdn cache for only a specific domain",
+							shorthand: "d",
+						},
+					},
+					outputType: multiple,
+				},
+			},
+			commandGroup:        get,
+			transformedResponse: reflect.TypeOf(agentapis.FQDNCacheResponse{}),
 		},
 	},
 	rawCommands: []rawCommand{
+		{
+			cobraCommand:      checkinstallation.Command(),
+			supportAgent:      false,
+			supportController: false,
+			commandGroup:      check,
+		},
+		{
+			cobraCommand:      checkcluster.Command(),
+			supportAgent:      false,
+			supportController: false,
+			commandGroup:      check,
+		},
 		{
 			cobraCommand:      supportbundle.Command,
 			supportAgent:      true,
@@ -612,6 +774,11 @@ $ antctl get podmulticaststats pod -n namespace`,
 		},
 		{
 			cobraCommand:      traceflow.Command,
+			supportAgent:      true,
+			supportController: true,
+		},
+		{
+			cobraCommand:      packetcapture.Command,
 			supportAgent:      true,
 			supportController: true,
 		},
@@ -688,12 +855,4 @@ $ antctl get podmulticaststats pod -n namespace`,
 		},
 	},
 	codec: scheme.Codecs,
-}
-
-func generateFlowTableHelpMsg() string {
-	msg := ""
-	for _, t := range openflow.GetTableList() {
-		msg += fmt.Sprintf("\n  %d\t%s", uint32(t.GetID()), t.GetName())
-	}
-	return msg
 }

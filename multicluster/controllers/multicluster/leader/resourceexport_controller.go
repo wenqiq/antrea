@@ -19,6 +19,7 @@ package leader
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,7 +102,7 @@ func (r *ResourceExportReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// clean up any replicated resources like ResourceImport.
 	// For more details about using Finalizers, please refer to https://book.kubebuilder.io/reference/using-finalizers.html.
 	if !resExport.DeletionTimestamp.IsZero() {
-		if common.StringExistsInSlice(resExport.Finalizers, constants.ResourceExportFinalizer) {
+		if slices.Contains(resExport.Finalizers, constants.LegacyResourceExportFinalizer) || slices.Contains(resExport.Finalizers, constants.ResourceExportFinalizer) {
 			err := r.handleDeleteEvent(ctx, &resExport)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -352,7 +353,7 @@ func (r *ResourceExportReconciler) refreshEndpointsResourceImport(
 		svcResExport := &mcsv1alpha1.ResourceExport{}
 		err := r.Client.Get(context.Background(), svcResExportName, svcResExport)
 		if err != nil && apierrors.IsNotFound(err) {
-			return newResImport, false, fmt.Errorf("failed to get corresponding Service type of ResourceExport: " + svcResExportName.String())
+			return newResImport, false, fmt.Errorf("failed to get ResourceExport %s: %w", svcResExportName.String(), err)
 		}
 		if len(svcResExport.Status.Conditions) > 0 {
 			if svcResExport.Status.Conditions[0].Status != corev1.ConditionTrue {
@@ -461,7 +462,10 @@ func (r *ResourceExportReconciler) updateResourceExportStatus(resExport *mcsv1al
 
 // deleteResourceExport removes ResourceExport finalizer string and updates it, so Kubernetes can complete deletion.
 func (r *ResourceExportReconciler) deleteResourceExport(resExport *mcsv1alpha1.ResourceExport) (ctrl.Result, error) {
-	resExport.SetFinalizers(common.RemoveStringFromSlice(resExport.Finalizers, constants.ResourceExportFinalizer))
+	finalizers := slices.DeleteFunc(slices.Clone(resExport.Finalizers), func(s string) bool {
+		return s == constants.LegacyResourceExportFinalizer || s == constants.ResourceExportFinalizer
+	})
+	resExport.SetFinalizers(finalizers)
 	if err := r.Client.Update(context.Background(), resExport, &client.UpdateOptions{}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -483,6 +487,7 @@ func (r *ResourceExportReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	instance := predicate.And(generationPredicate, labelIdentityResExportPredicate)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcsv1alpha1.ResourceExport{}).
+		Named("resourceexport").
 		WithEventFilter(instance).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: common.DefaultWorkerCount,

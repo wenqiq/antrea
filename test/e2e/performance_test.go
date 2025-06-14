@@ -18,7 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"strings"
 	"testing"
@@ -95,7 +95,7 @@ func BenchmarkCustomizeRealizeNetworkPolicy(b *testing.B) {
 
 func randCidr(rnd *rand.Rand) string {
 	getByte := func() int {
-		return rnd.Intn(255) + 1
+		return rnd.IntN(255) + 1
 	}
 	return fmt.Sprintf("%d.%d.%d.%d/32", getByte(), getByte(), getByte(), getByte())
 }
@@ -150,7 +150,7 @@ func setupTestPodsConnection(data *TestData) error {
 func generateWorkloadNetworkPolicy(policyRules int) *networkv1.NetworkPolicy {
 	ingressRules := make([]networkv1.NetworkPolicyPeer, policyRules)
 	// #nosec G404: random number generator not used for security purposes
-	rnd := rand.New(rand.NewSource(seed))
+	rnd := rand.New(rand.NewPCG(seed, 0))
 	existingCIDRs := make(map[string]struct{}) // ensure no duplicated cidrs
 	for i := 0; i < policyRules; i++ {
 		cidr := randCidr(rnd)
@@ -190,7 +190,7 @@ func setupTestPods(data *TestData, b *testing.B) (nginxPodIP, perfPodIP *PodIPs)
 	}
 
 	b.Logf("Creating a toolbox test Pod")
-	perfPod := createPerfTestPodDefinition(toolboxPodName, toolboxContainerName, toolboxImage)
+	perfPod := createPerfTestPodDefinition(toolboxPodName, toolboxContainerName, ToolboxImage)
 	_, err = data.clientset.CoreV1().Pods(data.testNamespace).Create(context.TODO(), perfPod, metav1.CreateOptions{})
 	if err != nil {
 		b.Fatalf("Error when creating toolbox test Pod: %v", err)
@@ -278,7 +278,7 @@ func networkPolicyRealize(policyRules int, data *TestData, b *testing.B) {
 }
 
 func WaitNetworkPolicyRealize(nodeName string, table *openflow.Table, policyRules int, data *TestData) error {
-	return wait.PollImmediate(50*time.Millisecond, *realizeTimeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), 50*time.Millisecond, *realizeTimeout, true, func(ctx context.Context) (bool, error) {
 		return checkRealize(nodeName, table, policyRules, data)
 	})
 }

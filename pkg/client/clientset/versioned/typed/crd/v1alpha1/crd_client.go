@@ -1,4 +1,4 @@
-// Copyright 2022 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,12 +26,11 @@ import (
 
 type CrdV1alpha1Interface interface {
 	RESTClient() rest.Interface
-	ClusterNetworkPoliciesGetter
+	BGPPoliciesGetter
 	ExternalNodesGetter
-	NetworkPoliciesGetter
+	NodeLatencyMonitorsGetter
+	PacketCapturesGetter
 	SupportBundleCollectionsGetter
-	TiersGetter
-	TraceflowsGetter
 }
 
 // CrdV1alpha1Client is used to interact with features provided by the crd.antrea.io group.
@@ -39,28 +38,24 @@ type CrdV1alpha1Client struct {
 	restClient rest.Interface
 }
 
-func (c *CrdV1alpha1Client) ClusterNetworkPolicies() ClusterNetworkPolicyInterface {
-	return newClusterNetworkPolicies(c)
+func (c *CrdV1alpha1Client) BGPPolicies() BGPPolicyInterface {
+	return newBGPPolicies(c)
 }
 
 func (c *CrdV1alpha1Client) ExternalNodes(namespace string) ExternalNodeInterface {
 	return newExternalNodes(c, namespace)
 }
 
-func (c *CrdV1alpha1Client) NetworkPolicies(namespace string) NetworkPolicyInterface {
-	return newNetworkPolicies(c, namespace)
+func (c *CrdV1alpha1Client) NodeLatencyMonitors() NodeLatencyMonitorInterface {
+	return newNodeLatencyMonitors(c)
+}
+
+func (c *CrdV1alpha1Client) PacketCaptures() PacketCaptureInterface {
+	return newPacketCaptures(c)
 }
 
 func (c *CrdV1alpha1Client) SupportBundleCollections() SupportBundleCollectionInterface {
 	return newSupportBundleCollections(c)
-}
-
-func (c *CrdV1alpha1Client) Tiers() TierInterface {
-	return newTiers(c)
-}
-
-func (c *CrdV1alpha1Client) Traceflows() TraceflowInterface {
-	return newTraceflows(c)
 }
 
 // NewForConfig creates a new CrdV1alpha1Client for the given config.

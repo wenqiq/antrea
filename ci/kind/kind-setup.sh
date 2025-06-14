@@ -29,16 +29,17 @@ SERVICE_CIDR=""
 IP_FAMILY="ipv4"
 NUM_WORKERS=2
 SUBNETS=""
+VLAN_SUBNETS=()
 EXTRA_NETWORKS=""
-VLAN_SUBNETS=""
-VLAN_ID=""
 ENCAP_MODE=""
 PROXY=true
 KUBE_PROXY_MODE="iptables"
 PROMETHEUS=false
 K8S_VERSION=""
 KUBE_NODE_IPAM=true
-DEPLOY_EXTERNAL_SERVER=false
+DEPLOY_EXTERNAL_AGNHOST=false
+DEPLOY_EXTERNAL_FRR=false
+FLEXIBLE_IPAM=false
 positional_args=()
 options=()
 
@@ -50,37 +51,37 @@ function echoerr {
 }
 
 _usage="
-Usage: $0 create CLUSTER_NAME [--pod-cidr POD_CIDR] [--service-cidr SERVICE_CIDR]  [--antrea-cni] [--num-workers NUM_WORKERS] [--images IMAGES] [--subnets SUBNETS] [--ip-family ipv4|ipv6|dual] [--k8s-version VERSION]
+Usage: $0 create CLUSTER_NAME [--pod-cidr POD_CIDR] [--service-cidr SERVICE_CIDR] [--antrea-cni] [--num-workers NUM_WORKERS] [--images IMAGES] [--subnets SUBNETS] [--ip-family ipv4|ipv6|dual] [--k8s-version VERSION]
        $0 destroy CLUSTER_NAME
        $0 help
 where:
-  create: create a kind cluster with name CLUSTER_NAME
-  destroy: delete a kind cluster with name CLUSTER_NAME
-  --pod-cidr: specifies pod cidr used in kind cluster, kind's default value will be used if empty.
-  --service-cidr: specifies service clusterip cidr used in kind cluster, kind's default value will be used if empty.
-  --encap-mode: inter-node pod traffic encap mode, default is encap
-  --no-proxy: disable Antrea proxy
-  --no-kube-proxy: disable Kube proxy
-  --no-kube-node-ipam: disable NodeIPAM in kube-controller-manager
+  create: create a kind cluster with name CLUSTER_NAME.
+  destroy: delete a kind cluster with name CLUSTER_NAME.
+  --pod-cidr: specify pod cidr used in kind cluster, kind's default value will be used if empty.
+  --service-cidr: specify service clusterip cidr used in kind cluster, kind's default value will be used if empty.
+  --encap-mode: inter-node pod traffic encap mode, default is encap.
+  --no-proxy: disable Antrea proxy.
+  --no-kube-proxy: disable Kube proxy.
+  --no-kube-node-ipam: disable NodeIPAM in kube-controller-manager.
   --antrea-cni: install Antrea CNI in Kind cluster; by default the cluster is created without a CNI installed.
-  --prometheus: create RBAC resources for Prometheus, default is false
-  --num-workers: specifies number of worker nodes in kind cluster, default is $NUM_WORKERS
-  --images: specifies images loaded to kind cluster, default is $IMAGES
+  --prometheus: create RBAC resources for Prometheus, default is false.
+  --num-workers: specify number of worker nodes in kind cluster, default is $NUM_WORKERS.
+  --images: specify images loaded to kind cluster, default is $IMAGES.
   --subnets: a subnet creates a separate Docker bridge network (named 'antrea-<idx>') with the assigned subnet. A worker
     Node will be connected to one of those network. Default is empty: all worker Nodes connected to the default Docker
     bridge network created by kind.
-  --vlan-subnets: specifies the subnets of the VLAN to which all Nodes will be connected, in addition to the primary network.
-    The IP expression of the subnet will be used as the gateway IP. For example, '--vlan-subnets 10.100.100.1/24' means
-    that a VLAN sub-interface will be created on the primary Docker bridge, and it will be assigned the 10.100.100.1/24 address.
-  --vlan-id: specifies the ID of the VLAN to which all Nodes will be connected, in addition to the primary network. Note,
-    '--vlan-subnets' and '--vlan-id' must be specified together.
+  --vlan-subnets: specify the id and subnets of the VLAN to which all Nodes will be connected, in addition to the primary network.
+    The IP expression of the subnet will be used as the gateway IP. For example, '--vlan-subnets 10=172.100.10.1/24,fd00:172:100:10::1/96,' means
+    that a VLAN sub-interface will be created on the primary Docker bridge, and it will be assigned the 10.100.100.1/24 and fd00:172:100:10::1/96 addresses
+    and vlan-id 10. This option can be specified multiple times.
   --extra-networks: an extra network creates a separate Docker bridge network (named 'antrea-<idx>') with the assigned
     subnet. All worker Nodes will be connected to all the extra networks, in addition to the default Docker bridge
     network. Note, '--extra-networks' and '--subnets' cannot be specified together.
-  --ip-family: specifies the ip-family for the kind cluster, default is $IP_FAMILY.
-  --k8s-version: specifies the Kubernetes version of the kind cluster, kind's default K8s version will be used if empty.
-  --deploy-external-server: deploy a container running as an external server for the cluster.
-  --all: delete all kind clusters
+  --ip-family: specify the ip-family for the kind cluster, default is $IP_FAMILY.
+  --k8s-version: specify the Kubernetes version of the kind cluster, kind's default K8s version will be used if empty.
+  --deploy-external-agnhost: deploy a container running agnhost as an external server for the cluster, default is $DEPLOY_EXTERNAL_AGNHOST.
+  --deploy-external-frr: deploy a container running FRR as an external router for the cluster, default is $DEPLOY_EXTERNAL_FRR.
+  --all: delete all kind clusters.
   --until: delete kind clusters that have been created before the specified duration.
 "
 
@@ -170,17 +171,21 @@ function configure_networks {
   i=0
   for node in $nodes; do
     network=${networks[i]}
-    docker network connect $network $node >/dev/null 2>&1
+    ifname="eth1"
+    # the com.docker.network.endpoint.ifname label is only supported starting with Docker Engine v28
+    # prior to that, the interface should be named "eth1" by default
+    # note that providing an unsupported label does not generate an error
+    docker network connect --driver-opt=com.docker.network.endpoint.ifname=$ifname $network $node
     echo "connected worker $node to network $network"
     node_ip=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
 
     # reset network
-    docker exec -t $node ip link set eth1 down
-    docker exec -t $node ip link set eth1 name eth0
+    docker exec -t $node ip link set $ifname down
+    docker exec -t $node ip link set $ifname name eth0
     docker exec -t $node ip link set eth0 up
     gateway=$(echo "${node_ip/%?/1}")
     docker exec -t $node ip route add default via $gateway
-    echo "node $node is ready with ip change to $node_ip with gw $gateway"
+    echo "node $node is ready with ip changed to $node_ip with gw $gateway"
 
     # change kubelet config before reset network
     docker exec -t $node sed -i "s/node-ip=.*/node-ip=$node_ip/g" /var/lib/kubelet/kubeadm-flags.env
@@ -233,34 +238,91 @@ function configure_extra_networks {
     i=$((i+1))
   done
 
-  nodes="$(kind get nodes --name $CLUSTER_NAME | grep worker)"
+  nodes="$(kind get nodes --name $CLUSTER_NAME)"
   for node in $nodes; do
+    i=1
     for network in $networks; do
-      docker network connect $network $node >/dev/null 2>&1
+      ifname="eth$i"
+      docker network connect --driver-opt=com.docker.network.endpoint.ifname=$ifname $network $node
       echo "connected worker $node to network $network"
     done
+    i=$((i+1))
+  done
+}
+
+# update_kind_ipam_routes add and del routes for non-ipam test-pods.
+function update_kind_ipam_routes {
+  local operation="$1"
+  if [[ "$operation" == "del" ]]; then
+    echo "Deleting routes"
+  else  
+    echo "Adding routes"
+  fi
+
+  node_data=$(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{" "}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null || true)
+  if [[ -z $node_data ]]; then
+    return
+  fi
+  echo "$node_data"| while read pod_cidr node_ip; do
+    docker_run_with_host_net ip route "$operation" "$pod_cidr" via "$node_ip" >/dev/null 2>&1 || true
   done
 }
 
 function configure_vlan_subnets {
-  if [[ -z $VLAN_SUBNETS || -z $VLAN_ID ]]; then
+  if [[ ${#VLAN_SUBNETS[@]} -eq 0 ]]; then
     return
   fi
   echo "Configuring VLAN subnets"
 
   bridge_id=$(docker network inspect kind -f {{.ID}})
   bridge_interface="br-${bridge_id:0:12}"
-  vlan_interface="br-${bridge_id:0:7}.$VLAN_ID"
+  
+  vlan_interfaces=()
+  for vlan_subnet in "${VLAN_SUBNETS[@]}"; do
+    # Extract VLAN ID and subnets
+    vlan_id=$(echo $vlan_subnet | cut -d= -f1)
+    subnets=$(echo $vlan_subnet | cut -d= -f2)
+    
+    vlan_interface="br-${bridge_id:0:7}.$vlan_id"
+    vlan_interfaces+=("$vlan_interface")
 
-  docker_run_with_host_net ip link add link $bridge_interface name $vlan_interface type vlan id $VLAN_ID
-  docker_run_with_host_net ip link set $vlan_interface up
-  IFS=',' read -r -a vlan_subnets <<< "$VLAN_SUBNETS"
-  for s in "${vlan_subnets[@]}" ; do
-    echo "Configuring extra IP $s to vlan interface $vlan_interface"
-    docker_run_with_host_net ip addr add dev $vlan_interface $s
+    docker_run_with_host_net ip link add link $bridge_interface name $vlan_interface type vlan id $vlan_id
+    docker_run_with_host_net ip link set $vlan_interface up
+    
+    IFS=',' read -r -a subnet_array <<< "$subnets"
+    for subnet in "${subnet_array[@]}" ; do
+      echo "Configuring extra IP $subnet to VLAN interface $vlan_interface"
+      docker_run_with_host_net ip addr add dev $vlan_interface $subnet
+    done
+
+    docker_run_with_host_net iptables -t filter -A FORWARD -i $bridge_interface -o $vlan_interface -j ACCEPT
+    docker_run_with_host_net iptables -t filter -A FORWARD -i $vlan_interface -o $bridge_interface -j ACCEPT
+    docker_run_with_host_net iptables -t filter -A FORWARD -i $vlan_interface -o $vlan_interface -j ACCEPT
   done
-  docker_run_with_host_net iptables -t filter -A FORWARD -i $bridge_interface -o $vlan_interface -j ACCEPT
-  docker_run_with_host_net iptables -t filter -A FORWARD -o $bridge_interface -i $vlan_interface -j ACCEPT
+
+  # Allow traffic between VLANs
+  for ((i=0; i<${#vlan_interfaces[@]}; i++)); do
+    for ((j=i+1; j<${#vlan_interfaces[@]}; j++)); do
+      docker_run_with_host_net iptables -t filter -A FORWARD -i ${vlan_interfaces[i]} -o ${vlan_interfaces[j]} -j ACCEPT
+      docker_run_with_host_net iptables -t filter -A FORWARD -i ${vlan_interfaces[j]} -o ${vlan_interfaces[i]} -j ACCEPT
+    done
+  done
+
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+    docker_run_with_host_net ipset create excluded_subnets hash:net
+    docker_run_with_host_net ipset add excluded_subnets 192.168.241.0/24
+    docker_run_with_host_net ipset add excluded_subnets 192.168.242.0/24
+    docker_run_with_host_net ipset add excluded_subnets 192.168.240.0/24
+    docker_run_with_host_net ipset list excluded_subnets
+    
+    # Bypass default Docker SNAT rule for FlexibleIPAM traffic from the untagged subnet (192.168.240.0/24, which is the subnet for the Docker bridge network)
+    # and destined to the VLAN subnets (192.168.241.0/24, 192.168.242.0/24).
+    docker_run_with_host_net iptables -t nat -I POSTROUTING 1 ! -o $bridge_interface -s 192.168.240.0/24 -m set --match-set excluded_subnets dst -j RETURN
+
+    # With FlexibleIPAM, Antrea SNAT is disabled (noSNAT: true) so Pods don't have access to the external network by default (including regular / NodeIPAM Pods).
+    # Our e2e tests require external network access for regular Pods, so we need to add a custom SNAT rule.
+    docker_run_with_host_net iptables -t nat -A POSTROUTING ! -o $bridge_interface -s 10.244.0.0/16 -m set ! --match-set excluded_subnets dst -j MASQUERADE
+  fi
 }
 
 function delete_vlan_subnets {
@@ -270,7 +332,7 @@ function delete_vlan_subnets {
   bridge_interface="br-${bridge_id:0:12}"
   vlan_interface_prefix="br-${bridge_id:0:7}."
 
-  found_vlan_interfaces=$(ip -br link show type vlan | cut -d " " -f 1)
+  found_vlan_interfaces=$(docker_run_with_host_net ip -br link show type vlan | cut -d " " -f 1)
   for interface in $found_vlan_interfaces ; do
     if [[ $interface =~ ${vlan_interface_prefix}[0-9]+@${bridge_interface} ]]; then
       interface_name=${interface%@*}
@@ -279,15 +341,27 @@ function delete_vlan_subnets {
       docker_run_with_host_net ip link del $interface_name
     fi
   done
+
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+    docker_run_with_host_net iptables -t nat -D POSTROUTING ! -o $bridge_interface -s 192.168.240.0/24 -m set --match-set excluded_subnets dst -j RETURN || true
+    docker_run_with_host_net iptables -t nat -D POSTROUTING ! -o $bridge_interface -s 10.244.0.0/16 -m set ! --match-set excluded_subnets dst -j MASQUERADE || true
+    docker_run_with_host_net ipset destroy excluded_subnets || true  
+  fi
+}
+
+function delete_network_by_filter {
+  local networks=$(docker network ls -f name="$1" --format '{{.Name}}')
+  if [[ -n $networks ]]; then
+    docker network rm $networks > /dev/null 2>&1
+    echo "Deleted networks: $networks"
+  fi
 }
 
 function delete_networks {
-  networks=$(docker network ls -f name=antrea --format '{{.Name}}')
-  networks="$(echo $networks)"
-  if [[ ! -z $networks ]]; then
-    docker network rm $networks > /dev/null 2>&1
-    echo "deleted networks $networks"
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+    delete_network_by_filter "kind"
   fi
+  delete_network_by_filter "antrea"
 }
 
 function load_images {
@@ -337,7 +411,7 @@ function create {
   fi
 
   set +e
-  kind get clusters | grep $CLUSTER_NAME > /dev/null 2>&1
+  kind get clusters | grep -x "$CLUSTER_NAME" > /dev/null 2>&1
   if [[ $? -eq 0 ]]; then
     echoerr "cluster $CLUSTER_NAME already created"
     exit 0
@@ -391,6 +465,9 @@ EOF
     fi
     IMAGE_OPT="--image kindest/node:${K8S_VERSION}"
   fi
+
+  flock ~/.antrea/.clusters.lock --command "echo \"$CLUSTER_NAME $(date +%s)\" >> ~/.antrea/.clusters"
+  rm -rf ~/.antrea/.clusters.lock
   kind create cluster --name $CLUSTER_NAME --config $config_file $IMAGE_OPT
 
   # force coredns to run on control-plane node because it
@@ -411,8 +488,11 @@ EOF
   configure_networks
   configure_extra_networks
   configure_vlan_subnets
-  setup_external_server
+  setup_external_servers
   load_images
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+      update_kind_ipam_routes "add"
+  fi
 
   if [[ $ANTREA_CNI == true ]]; then
     cmd=$(dirname $0)
@@ -436,14 +516,17 @@ EOF
 }
 
 function destroy {
+  update_kind_ipam_routes "del"
   if [[ $UNTIL_TIME_IN_MINS != "" ]]; then
-      clean_kind
+      if [[ -e ~/.antrea/.clusters ]]; then
+          clean_kind
+      fi
   else
       kind delete cluster --name $CLUSTER_NAME
   fi
-  delete_networks
+  destroy_external_servers
   delete_vlan_subnets
-  destroy_external_server
+  delete_networks
 }
 
 function printUnixTimestamp {
@@ -455,32 +538,59 @@ function printUnixTimestamp {
     fi
 }
 
-function setup_external_server {
-  if [[ $DEPLOY_EXTERNAL_SERVER == true ]]; then
-    docker run -d --name external-server --network kind -it --rm registry.k8s.io/e2e-test-images/agnhost:2.29 netexec &> /dev/null
+function setup_external_servers {
+  if [[ $DEPLOY_EXTERNAL_AGNHOST == true ]]; then
+    docker run -d --name antrea-external-agnhost-$RANDOM --network kind -it --rm registry.k8s.io/e2e-test-images/agnhost:2.40 netexec &> /dev/null
   fi
+
+  if [[ $DEPLOY_EXTERNAL_FRR == true ]]; then
+    docker run -d \
+      --name antrea-external-frr-$RANDOM \
+      --network kind --cap-add=NET_BIND_SERVICE \
+      --cap-add=NET_ADMIN \
+      --cap-add=NET_RAW \
+      --cap-add=SYS_ADMIN \
+      -it \
+      --rm \
+      frrouting/frr:v8.4.0 \
+      bash -c "/bin/sed -i s/bgpd=no/bgpd=yes/g /etc/frr/daemons && /sbin/tini -- /usr/lib/frr/docker-start" &> /dev/null
+    fi
 }
 
-function destroy_external_server {
-  echo "Deleting external server"
-  docker rm -f external-server &> /dev/null || true
+function destroy_external_servers {
+  echo "Deleting external servers"
+  cid=$(docker ps -f name="^antrea-external-agnhost" --format '{{.ID}}')
+  docker rm -f $cid &> /dev/null || true
+
+  cid=$(docker ps -f name="^antrea-external-frr" --format '{{.ID}}')
+  docker rm -f $cid &> /dev/null || true
 }
 
 function clean_kind {
     echo "=== Cleaning up stale kind clusters ==="
-    read -a all_kind_clusters <<< $(kind get clusters)
-    for kind_cluster_name in "${all_kind_clusters[@]}"; do
-        creationTimestamp=$(kubectl get nodes --context kind-$kind_cluster_name -o json -l node-role.kubernetes.io/control-plane | \
-        jq -r '.items[0].metadata.creationTimestamp')
-        creation=$(printUnixTimestamp "$creationTimestamp")
-        now=$(date -u '+%s')
-        diff=$((now-creation))
-        timeout=$(($UNTIL_TIME_IN_MINS*60))
-        if [[ $diff -gt $timeout ]]; then
-           echo "=== kind ${kind_cluster_name} present from more than $UNTIL_TIME_IN_MINS minutes ==="
-           kind delete cluster --name $kind_cluster_name
-        fi
-    done
+    (
+      flock -x 200
+
+      current_timestamp=$(date +%s)
+      > ~/.antrea/.clusters.swp
+      while IFS=' ' read -r name creationTimestamp; do
+          if [[ -z "$name" || -z "$creationTimestamp" ]]; then
+              continue
+          fi
+          # Calculate the time difference
+          time_difference=$((current_timestamp - creationTimestamp))
+          # Check if the creation happened more than 1 hour ago (3600 seconds)
+          if (( time_difference > 3600 )); then
+              echo "The creation of $name happened more than 1 hour ago."
+              kind delete cluster --name "$name" || echo "Cluster could not be deleted"
+          else
+              echo "The creation of $name happened within the last hour."
+              echo "$name $creationTimestamp" >> ~/.antrea/.clusters.swp
+          fi
+      done < ~/.antrea/.clusters
+      mv ~/.antrea/.clusters.swp ~/.antrea/.clusters
+    ) 200>>~/.antrea/.clusters.lock
+    rm -rf ~/.antrea/.clusters.lock
 }
 
 if ! command -v kind &> /dev/null
@@ -488,6 +598,8 @@ then
     echoerr "kind could not be found"
     exit 1
 fi
+
+mkdir -p ~/.antrea
 
 while [[ $# -gt 0 ]]
  do
@@ -554,14 +666,13 @@ while [[ $# -gt 0 ]]
       ;;
     --vlan-subnets)
       add_option "--vlan-subnets" "create"
-      VLAN_SUBNETS="$2"
+      VLAN_SUBNETS+=("$2")
       shift 2
       ;;
-    --vlan-id)
-      add_option "--vlan-id" "create"
-      VLAN_ID="$2"
-      shift 2
-      ;;
+    --flexible-ipam)
+      FLEXIBLE_IPAM=true
+      shift
+      ;; 
     --images)
       add_option "--image" "create"
       IMAGES="$2"
@@ -573,7 +684,7 @@ while [[ $# -gt 0 ]]
       shift
       ;;
     --num-workers)
-     add_option "--num-workers" "create"
+      add_option "--num-workers" "create"
       NUM_WORKERS="$2"
       shift 2
       ;;
@@ -582,9 +693,14 @@ while [[ $# -gt 0 ]]
       K8S_VERSION="$2"
       shift 2
       ;;
-    --deploy-external-server)
-      add_option "--deploy-external-server" "create"
-      DEPLOY_EXTERNAL_SERVER=true
+    --deploy-external-agnhost)
+      add_option "--deploy-external-agnhost" "create"
+      DEPLOY_EXTERNAL_AGNHOST=true
+      shift
+      ;;
+    --deploy-external-frr)
+      add_option "--deploy-external-frr" "create"
+      DEPLOY_EXTERNAL_FRR=true
       shift
       ;;
     --all)
@@ -643,14 +759,7 @@ fi
 
 if [[ $ACTION == "destroy" ]]; then
       destroy
-      exit 0
-fi
-
-if [[ -n "$VLAN_SUBNETS" || -n "$VLAN_ID" ]]; then
-  if [[ -z "$VLAN_SUBNETS" || -z "$VLAN_ID" ]]; then
-    echoerr "'--vlan-subnets' and '--vlan-id' must be specified together"
-    exit 1
-  fi
+      exit
 fi
 
 kind_version=$(kind version | awk  '{print $2}')
@@ -669,5 +778,34 @@ if [[ $ACTION == "create" ]]; then
         echoerr "Only one of '--subnets' and '--extra-networks' can be specified"
         exit 1
     fi
+
+    # Create the docker bridge network used as the primary network for the kind cluster. As long as
+    # we use the expected name, kind will use our network.
+    # We mostly replicate what is in:
+    # https://github.com/kubernetes-sigs/kind/blob/180d624f741e3da5ceba52b643e29c4e64538537/pkg/cluster/internal/providers/docker/network.go#L149-L160
+    # We also add some extra options required for our use case.
+    docker_network_mtu=$(docker network inspect bridge -f '{{ index .Options "com.docker.network.driver.mtu" }}')
+    docker_network_args=("-d" "bridge")
+    docker_network_args+=("-o" "com.docker.network.bridge.enable_ip_masquerade=true")
+    docker_network_args+=("-o" "com.docker.network.driver.mtu=$docker_network_mtu")
+    # Use nat-unprotected to revert to the legacy default behavior (pre Docker Engine v28)
+    # Without this, access to the K8s apiserver from Nodes using a non-default network will be
+    # blocked because of port mapping hardening.
+    # See https://www.docker.com/blog/docker-engine-28-hardening-container-networking-by-default/
+    # While this is only required when we create extra docker networks, it's easier to use it
+    # consistently. It is also better than modifying the iptables rules installed by docker.
+    docker_network_args+=("-o" "com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected")
+    if [[ "$IP_FAMILY" != "ipv4" ]]; then
+        docker_network_args+=("-o" "com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected")
+        docker_network_args+=("--ipv6")
+    fi
+    if [[ $FLEXIBLE_IPAM == true ]]; then
+        docker_network_args+=("--subnet" "192.168.240.0/24")
+        docker_network_args+=("--gateway" "192.168.240.1")
+        # Reserve IPs after 192.168.240.63 for e2e tests.
+        docker_network_args+=("--ip-range" "192.168.240.0/26")
+    fi
+    echo "Creating docker network $CLUSTER_NAME with args: ${docker_network_args[@]}"
+    docker network create "${docker_network_args[@]}" "$CLUSTER_NAME"
     create
 fi

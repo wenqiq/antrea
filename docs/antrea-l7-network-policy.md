@@ -34,8 +34,12 @@ This guide demonstrates how to configure layer 7 NetworkPolicy.
 
 Layer 7 NetworkPolicy was introduced in v1.10 as an alpha feature and is disabled by default. A feature gate,
 `L7NetworkPolicy`, must be enabled in antrea-controller.conf and antrea-agent.conf in the `antrea-config` ConfigMap.
-Additionally, due to the constraint of the application detection engine, TX checksum offloading must be disabled via the
-`disableTXChecksumOffload` option in antrea-agent.conf for the feature to work. An example configuration is as below:
+Additionally, to ensure proper functionality, TX checksum offloading must be disabled for container network interfaces
+and the host gateway interface (default: antrea-gw0) due to the constraint of the application detection engine. Ths can
+be configured using the `disableTXChecksumOffload` option in antrea-agent.conf. Disabling TX checksum offloading ensures
+that TCP connections traverse these interfaces correctly, preventing connection failures and packet loss.
+
+An example configuration is as below:
 
 ```yaml
 apiVersion: v1
@@ -119,7 +123,7 @@ OPTIONS, CONNECT and PATCH. If not set, the rule matches all methods.
 
 #### More examples
 
-The following NetworkPolicy grants access of privileged URLs to specific clients while make other URLs publicly
+The following NetworkPolicy grants access of privileged URLs to specific clients while making other URLs publicly
 accessible:
 
 ```yaml
@@ -146,7 +150,7 @@ spec:
             path: "/admin/*"
         - http:
             path: "/public/*"
-    - name: for-public   # Allow inbound HTTP GET requests to "/public" from Pods with label "app=client".
+    - name: for-public   # Allow inbound HTTP GET requests to "/public" from everyone.
       action: Allow      # All other inbound traffic will be automatically dropped.
       l7Protocols:
         - http:
@@ -292,70 +296,107 @@ spec:
 
 Layer 7 traffic that matches the NetworkPolicy will be logged in an event
 triggered log file (`/var/log/antrea/networkpolicy/l7engine/eve-YEAR-MONTH-DAY.json`).
-The event type for this log is `alert`. If `enableLogging` is set for the rule,
+Logs are categorized by **event_type**. The event type for allowed traffic is `http`,
+for dropped traffic it is `alert`. If `enableLogging` is set for the rule, dropped
 packets that match the rule will also be logged in addition to the event with
-event type `packet`. Below is an example of the two event types.
+event type `packet`. Below are examples for allow, drop, packet scenarios.
 
-Deny ingress from client (10.10.1.5) to web (10.10.1.4/admin)
+Allow ingress from client (10.10.1.9) to web (10.10.1.10/public/*).
 
 ```json
 {
-  "timestamp": "2023-03-09T20:00:28.210821+0000",
-  "flow_id": 627175734391745,
+  "timestamp": "2024-08-26T22:37:30.895673+0000",
+  "flow_id": 742847661553363,
+  "in_iface": "antrea-l7-tap0",
+  "event_type": "http",
+  "vlan": [
+    2
+  ],
+  "src_ip": "10.10.1.9",
+  "src_port": 55822,
+  "dest_ip": "10.10.1.10",
+  "dest_port": 80,
+  "proto": "TCP",
+  "pkt_src": "wire/pcap",
+  "tenant_id": 2,
+  "tx_id": 0,
+  "http": {
+    "hostname": "10.10.1.10",
+    "url": "/public/index.html",
+    "http_user_agent": "curl/7.81.0",
+    "http_content_type": "text/html",
+    "http_method": "GET",
+    "protocol": "HTTP/1.1",
+    "status": 200,
+    "length": 0
+  }
+}
+```
+
+Deny ingress from client (10.10.1.4) to web (10.10.1.3/admin/*).
+
+```json
+{
+  "timestamp": "2024-09-05T22:49:24.788756+0000",
+  "flow_id": 1131530446896560,
   "in_iface": "antrea-l7-tap0",
   "event_type": "alert",
   "vlan": [
-    1
+    2
   ],
-  "src_ip": "10.10.1.5",
-  "src_port": 43352,
-  "dest_ip": "10.10.1.4",
+  "src_ip": "10.10.1.4",
+  "src_port": 45034,
+  "dest_ip": "10.10.1.3",
   "dest_port": 80,
   "proto": "TCP",
+  "pkt_src": "wire/pcap",
+  "tenant_id": 2,
   "alert": {
     "action": "blocked",
     "gid": 1,
     "signature_id": 1,
     "rev": 0,
-    "signature": "Reject by AntreaClusterNetworkPolicy:test-l7-ingress",
+    "signature": "Reject by AntreaNetworkPolicy:default/allow-privileged-url-to-admin-role",
     "category": "",
     "severity": 3,
-    "tenant_id": 1
-  },
-  "http": {
-    "hostname": "10.10.1.4",
-    "url": "/admin",
-    "http_user_agent": "curl/7.74.0",
-    "http_method": "GET",
-    "protocol": "HTTP/1.1",
-    "length": 0
+    "tenant_id": 2
   },
   "app_proto": "http",
+  "direction": "to_server",
   "flow": {
     "pkts_toserver": 3,
     "pkts_toclient": 1,
-    "bytes_toserver": 284,
-    "bytes_toclient": 74,
-    "start": "2023-03-09T20:00:28.209857+0000"
+    "bytes_toserver": 307,
+    "bytes_toclient": 78,
+    "start": "2024-09-05T22:49:24.787742+0000",
+    "src_ip": "10.10.1.4",
+    "dest_ip": "10.10.1.3",
+    "src_port": 45034,
+    "dest_port": 80
   }
 }
 ```
 
+Additional packet logs are available when `enableLogging` is set, which tracks all
+packets in Suricata matching the dst IP address of the packet generating the alert.
+
 ```json
 {
-  "timestamp": "2023-03-09T20:00:28.225016+0000",
-  "flow_id": 627175734391745,
+  "timestamp": "2024-09-05T22:49:24.788756+0000",
+  "flow_id": 1131530446896560,
   "in_iface": "antrea-l7-tap0",
   "event_type": "packet",
   "vlan": [
-    1
+    2
   ],
   "src_ip": "10.10.1.4",
-  "src_port": 80,
-  "dest_ip": "10.10.1.5",
-  "dest_port": 43352,
+  "src_port": 45034,
+  "dest_ip": "10.10.1.3",
+  "dest_port": 80,
   "proto": "TCP",
-  "packet": "/lhtPRglzmQvxnJoCABFAAAoUGYAAEAGFE4KCgEECgoBBQBQqVhIGzbi/odenlAUAfsR7QAA",
+  "pkt_src": "wire/pcap",
+  "tenant_id": 2,
+  "packet": "dtwWezuaHlOhfWpNgQAAAggARQAAjU/0QABABtRcCgoBBAoKAQOv6gBQgOZTvPTauPuAGAH7TZcAAAEBCAouFZzsR8fBM0dFVCAvYWRtaW4vaW5kZXguaHRtbCBIVFRQLzEuMQ0KSG9zdDogMTAuMTAuMS4zDQpVc2VyLUFnZW50OiBjdXJsLzcuNzQuMA0KQWNjZXB0OiAqLyoNCg0K",
   "packet_info": {
     "linktype": 1
   }

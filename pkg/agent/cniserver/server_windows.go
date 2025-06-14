@@ -18,9 +18,11 @@
 package cniserver
 
 import (
+	"fmt"
 	"strings"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -64,6 +66,15 @@ func isDockerContainer(netNS string) bool {
 	return netNS == dockerInfraContainerNetNS || strings.Contains(netNS, ":")
 }
 
+// validateRuntime returns error if a container is created by Docker with the provided network namespace
+// because the Docker support has been removed since Antrea 2.0.
+func validateRuntime(netNS string) error {
+	if isDockerContainer(netNS) {
+		return fmt.Errorf("Docker runtime is not supported after Antrea 2.0 for Windows Nodes")
+	}
+	return nil
+}
+
 func getInfraContainer(containerID, netNS string) string {
 	if isInfraContainer(netNS) {
 		return containerID
@@ -87,4 +98,9 @@ func getInfraContainer(containerID, netNS string) string {
 // "container_id" and have infra container ID in "netns" in the form of "container:<INFRA CONTAINER ID>".
 func (c *CNIConfig) getInfraContainer() string {
 	return getInfraContainer(c.ContainerId, c.Netns)
+}
+
+// filterPodsForReconcile returns Pods that should be reconciled.
+func (s *CNIServer) filterPodsForReconcile(pods *corev1.PodList) []corev1.Pod {
+	return pods.Items
 }

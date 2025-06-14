@@ -189,10 +189,10 @@ function release_static_ip() {
 function setup_cluster() {
     export KUBECONFIG=$KUBECONFIG_PATH
     if [ -z $K8S_VERSION ]; then
-      export K8S_VERSION=v1.28.0
+      export K8S_VERSION=v1.30.0
     fi
     if [ -z $TEST_OS ]; then
-      export TEST_OS=ubuntu-2004
+      export TEST_OS=ubuntu-2204
     fi
     export OVA_TEMPLATE_NAME=${TEST_OS}-kube-${K8S_VERSION}
     rm -rf ${GIT_CHECKOUT_DIR}/jenkins || true
@@ -301,6 +301,22 @@ function copy_image {
   ${SSH_WITH_ANTREA_CI_KEY} -n capv@${IP} "sudo crictl images | grep '<none>' | awk '{print \$3}' | xargs -r crictl rmi"
 }
 
+function copy_test_image {
+  image=$1
+  tag=$2
+
+  docker pull ${image} && docker save -o image.tar ${image}
+
+  for IP in "${IPs[@]}"; do
+      echo "Processing image on node: $IP"
+      ${SCP_WITH_ANTREA_CI_KEY} image.tar capv@${IP}:/home/capv
+      ${SSH_WITH_ANTREA_CI_KEY} -n capv@${IP} "sudo ctr -n=k8s.io images import /home/capv/image.tar"
+      if [ -n "$tag" ]; then
+          ${SSH_WITH_ANTREA_CI_KEY} -n capv@${IP} "sudo ctr -n=k8s.io images tag $image $tag --force"
+      fi
+  done
+}
+
 # We run the function in a subshell with "set -e" to ensure that it exits in
 # case of error (e.g. integrity check), no matter the context in which the
 # function is called.
@@ -308,8 +324,6 @@ function run_codecov { (set -e
     flag=$1
     file=$2
     dir=$3
-    remote=$4
-    ip=$5
 
     rm -f trustedkeys.gpg codecov
     # This is supposed to be a one-time step, but there should be no harm in
@@ -327,12 +341,7 @@ function run_codecov { (set -e
 
     chmod +x codecov
 
-    if [[ $remote == true ]]; then
-        ${SCP_WITH_UTILS_KEY} codecov jenkins@${ip}:~
-        ${SSH_WITH_UTILS_KEY} -n jenkins@${ip} "cd antrea; ~/codecov -c -t ${CODECOV_TOKEN} -F ${flag} -f ${file} -C ${GIT_COMMIT} -r antrea-io/antrea"
-    else
-        ./codecov -c -t ${CODECOV_TOKEN} -F ${flag} -f ${file} -s ${dir} -C ${GIT_COMMIT} -r antrea-io/antrea
-    fi
+    ./codecov -c -t "${CODECOV_TOKEN}" -F "${flag}" -f "${file}" -s "${dir}" -C "${GIT_COMMIT}" -r "antrea-io/antrea"
     rm -f trustedkeys.gpg codecov
 )}
 
@@ -350,7 +359,7 @@ function deliver_antrea {
 
     # The cleanup and stats are best-effort.
     set +e
-    docker images | grep "${JOB_NAME}" | awk '{print $3}' | uniq | xargs -r docker rmi -f > /dev/null
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep "${JOB_NAME}" | xargs -r docker rmi -f > /dev/null
     # Clean up dangling and unused images generated in previous builds. Recent ones must be excluded
     # because they might be being used in other builds running simultaneously.
     docker image prune -af --filter "until=1h" > /dev/null
@@ -438,6 +447,16 @@ function deliver_antrea {
     ${SCP_WITH_ANTREA_CI_KEY} $GIT_CHECKOUT_DIR/build/yamls/*.yml capv@${control_plane_ip}:~
 
     IPs=($(kubectl get nodes -o wide --no-headers=true | awk '{print $6}' | xargs))
+    antrea_images=("registry.k8s.io/e2e-test-images/agnhost:2.40" "antrea/nginx:1.21.6-alpine" "antrea/sonobuoy:v0.56.16" "antrea/toolbox:1.5-1" "antrea/systemd-logs:v0.4")
+    k8s_images=("registry.k8s.io/e2e-test-images/agnhost:2.45" "registry.k8s.io/e2e-test-images/jessie-dnsutils:1.5" "registry.k8s.io/e2e-test-images/nginx:1.14-2")
+    e2e_images=("k8sprow.azurecr.io/kubernetes-e2e-test-images/agnhost:2.45" "k8sprow.azurecr.io/kubernetes-e2e-test-images/jessie-dnsutils:1.5" "k8sprow.azurecr.io/kubernetes-e2e-test-images/nginx:1.14-2")
+    for image in "${antrea_images[@]}"; do
+        copy_test_image ${image}
+    done
+    for k in "${!k8s_images[@]}"; do
+        copy_test_image ${k8s_images[$k]} ${e2e_images[$k]}
+    done
+
     for i in "${!IPs[@]}"
     do
         ssh-keygen -f "/var/lib/jenkins/.ssh/known_hosts" -R ${IPs[$i]}
@@ -457,22 +476,35 @@ function deliver_antrea {
     fi
 
     echo "====== Pulling old Antrea images ======"
-    if [[ ${DOCKER_REGISTRY} != "" ]]; then
-        docker pull ${DOCKER_REGISTRY}/antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+    # Old Antrea versions can either use a unified image (pre v1.15) or split images.
+    local old_agent_image=""
+    if version_lt "$OLD_ANTREA_VERSION" v1.15; then
+        if [[ ${DOCKER_REGISTRY} != "" ]]; then
+            docker pull ${DOCKER_REGISTRY}/antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+            docker tag ${DOCKER_REGISTRY}/antrea/antrea-ubuntu:$OLD_ANTREA_VERSION antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        else
+            docker pull antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        fi
+        old_agent_image="antrea/antrea-ubuntu:$OLD_ANTREA_VERSION"
     else
-        docker pull antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        if [[ ${DOCKER_REGISTRY} != "" ]]; then
+            docker pull ${DOCKER_REGISTRY}/antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION
+            docker tag ${DOCKER_REGISTRY}/antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        else
+            docker pull antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION
+        fi
+        old_agent_image="antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION"
     fi
 
     echo "====== Delivering old Antrea images to all the Nodes ======"
-    docker save -o antrea-ubuntu-old.tar antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+    docker save -o antrea-ubuntu-old.tar $old_agent_image
     node_num=$(kubectl get nodes --no-headers=true | wc -l)
-    antrea_image="antrea-ubuntu"
     for i in "${!IPs[@]}"
     do
         # We want old-versioned Antrea agents to be more than half in cluster
         if [[ $i -ge $((${node_num}/2)) ]]; then
             # Tag old image to latest if we want Antrea agent to be old-versioned
-            copy_image antrea-ubuntu-old.tar docker.io/antrea/antrea-ubuntu ${IPs[$i]} $OLD_ANTREA_VERSION false
+            copy_image antrea-ubuntu-old.tar docker.io/antrea/antrea-agent-ubuntu ${IPs[$i]} $OLD_ANTREA_VERSION false
         fi
     done
 }
@@ -534,8 +566,14 @@ function run_e2e {
 
     tar -zcf ${GIT_CHECKOUT_DIR}/antrea-test-logs.tar.gz ${GIT_CHECKOUT_DIR}/antrea-test-logs
     if [[ "$COVERAGE" == true ]]; then
+        pushd ${GIT_CHECKOUT_DIR}/e2e-coverage
+        for dir in */; do
+            go tool covdata textfmt -i="${dir}" -o "${dir%?}.cov.out"
+            rm -rf "${dir}";
+        done
+        popd
         tar -zcf ${GIT_CHECKOUT_DIR}/e2e-coverage.tar.gz ${GIT_CHECKOUT_DIR}/e2e-coverage
-        run_codecov "e2e-tests" "*.cov.out*" "${GIT_CHECKOUT_DIR}/e2e-coverage" false ""
+        run_codecov "e2e-tests" "*.cov.out*" "${GIT_CHECKOUT_DIR}/e2e-coverage"
     fi
 }
 
@@ -577,7 +615,6 @@ function run_conformance {
 
     set +e
     kubectl taint nodes --selector='!node-role.kubernetes.io/control-plane' node.cluster.x-k8s.io/uninitialized-
-    set -e
 
     if [[ "$TESTCASE" == "conformance" ]]; then
         ${GIT_CHECKOUT_DIR}/ci/run-k8s-e2e-tests.sh --e2e-conformance --e2e-sig-network --log-mode ${MODE} --kubeconfig ${GIT_CHECKOUT_DIR}/jenkins/out/kubeconfig > ${GIT_CHECKOUT_DIR}/vmc-test.log
@@ -589,30 +626,42 @@ function run_conformance {
         ${GIT_CHECKOUT_DIR}/ci/run-k8s-e2e-tests.sh --e2e-network-policy --log-mode ${MODE} --kubeconfig ${GIT_CHECKOUT_DIR}/jenkins/out/kubeconfig > ${GIT_CHECKOUT_DIR}/vmc-test.log
     fi
 
-    cat ${GIT_CHECKOUT_DIR}/vmc-test.log
-    if grep -Fxq "Failed tests:" ${GIT_CHECKOUT_DIR}/vmc-test.log
-    then
-        echo "Failed cases exist."
+    TEST_SCRIPT_RC=$?
+    if [[ $TEST_SCRIPT_RC -eq 0 ]]; then
+        echo "All tests passed."
+        echo "=== SUCCESS !!! ==="
+    elif [[ $TEST_SCRIPT_RC -eq 1 ]]; then
+        echo "Failed test cases exist."
+        echo "=== FAILURE !!! ==="
         TEST_FAILURE=true
     else
-        echo "All tests passed."
+        echo "Unexpected error when running tests but not a test failure."
+        echo "=== FAILURE !!! ==="
     fi
+    set -e
 
     if [[ "$COVERAGE" == true ]]; then
         rm -rf ${GIT_CHECKOUT_DIR}/conformance-coverage
         mkdir -p ${GIT_CHECKOUT_DIR}/conformance-coverage
-        collect_coverage
+        collect_coverage_for_conformance
         tar -zcf ${GIT_CHECKOUT_DIR}/$TESTCASE-coverage.tar.gz ${GIT_CHECKOUT_DIR}/conformance-coverage
-        run_codecov "e2e-tests" "*antrea*" "${GIT_CHECKOUT_DIR}/conformance-coverage" false ""
+        run_codecov "e2e-tests" "*antrea*" "${GIT_CHECKOUT_DIR}/conformance-coverage"
     fi
 }
 
-function collect_coverage() {
+function collect_coverage_for_conformance() {
         antrea_controller_pod_name="$(kubectl get pods --selector=app=antrea,component=antrea-controller -n kube-system --no-headers=true | awk '{ print $1 }')"
         controller_pid="$(kubectl exec -i $antrea_controller_pod_name -n kube-system -- pgrep antrea)"
         kubectl exec -i $antrea_controller_pod_name -n kube-system -- kill -SIGINT $controller_pid
         timestamp=$(date +%Y%m%d%H%M%S)
-        kubectl cp kube-system/$antrea_controller_pod_name:antrea-controller.cov.out ${GIT_CHECKOUT_DIR}/conformance-coverage/$antrea_controller_pod_name-$timestamp
+        cov_dir="${GIT_CHECKOUT_DIR}/conformance-coverage/$antrea_controller_pod_name-$timestamp"
+        mkdir -p $cov_dir
+        files=(`kubectl exec $antrea_controller_pod_name -n kube-system ${kubeconfig} -- ls /tmp/coverage/`)
+        for file in "${files[@]}"; do
+            kubectl cp kube-system/$antrea_controller_pod_name:/tmp/coverage/$file $cov_dir/$file ${kubeconfig}
+        done
+        go tool covdata textfmt -i="${cov_dir}" -o "${cov_dir}.cov.out"
+        rm -rf "${cov_dir}"
 
         antrea_agent_pod_names="$(kubectl get pods --selector=app=antrea,component=antrea-agent -n kube-system --no-headers=true | awk '{ print $1 }')"
         for agent in ${antrea_agent_pod_names}
@@ -620,19 +669,25 @@ function collect_coverage() {
             agent_pid="$(kubectl exec -i $agent -n kube-system -- pgrep antrea)"
             kubectl exec -i $agent -c antrea-agent -n kube-system -- kill -SIGINT $agent_pid
             timestamp=$(date +%Y%m%d%H%M%S)
-            kubectl cp kube-system/$agent:antrea-agent.cov.out -c antrea-agent ${GIT_CHECKOUT_DIR}/conformance-coverage/$agent-$timestamp
+            cov_dir="${GIT_CHECKOUT_DIR}/conformance-coverage/$agent-$timestamp"
+            mkdir -p $cov_dir
+            files=(`kubectl exec $agent -n kube-system ${kubeconfig} -c antrea-agent -- ls /tmp/coverage/`)
+            for file in "${files[@]}"; do
+                kubectl cp kube-system/$agent:/tmp/coverage/$file -c antrea-agent $cov_dir/$file ${kubeconfig}
+            done
+            go tool covdata textfmt -i="${cov_dir}" -o "${cov_dir}.cov.out"
+            rm -rf "${cov_dir}"
         done
 }
 
 function cleanup_cluster() {
+    release_static_ip
     echo "=== Cleaning up VMC cluster ${CLUSTER} ==="
     export KUBECONFIG=$KUBECONFIG_PATH
 
     kubectl delete ns ${CLUSTER}
     rm -rf "${GIT_CHECKOUT_DIR}/jenkins"
     echo "=== Cleanup cluster ${CLUSTER} succeeded ==="
-
-    release_static_ip
 }
 
 function garbage_collection() {

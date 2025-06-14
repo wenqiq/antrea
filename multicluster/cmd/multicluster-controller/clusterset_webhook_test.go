@@ -25,7 +25,6 @@ import (
 	v1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -181,11 +180,7 @@ func TestWebhookClusterSetEvents(t *testing.T) {
 		},
 	}
 
-	decoder, err := admission.NewDecoder(common.TestScheme)
-	if err != nil {
-		klog.ErrorS(err, "Error constructing a decoder")
-	}
-
+	decoder := admission.NewDecoder(common.TestScheme)
 	for _, tt := range tests {
 		objects := []client.Object{}
 		if tt.existingClusterSet != nil {
@@ -197,10 +192,10 @@ func TestWebhookClusterSetEvents(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(common.TestScheme).WithObjects(objects...).Build()
 		clusterSetWebhookUnderTest = &clusterSetValidator{
 			Client:    fakeClient,
+			decoder:   decoder,
 			namespace: "mcs1",
 			role:      tt.role,
 		}
-		clusterSetWebhookUnderTest.InjectDecoder(decoder)
 
 		t.Run(tt.name, func(t *testing.T) {
 			response := clusterSetWebhookUnderTest.Handle(context.Background(), tt.req)

@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/config"
 	agentconfig "antrea.io/antrea/pkg/config/agent"
@@ -93,7 +93,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			name:             "default",
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeNAT.String(),
 			},
 			expectedDefaultLoadBalancerMode: config.LoadBalancerModeNAT,
@@ -103,7 +103,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			enabledDSR:       true,
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeDSR.String(),
 			},
 			expectedDefaultLoadBalancerMode: config.LoadBalancerModeDSR,
@@ -111,7 +111,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 		{
 			name: "LoadBalancerModeDSR disabled",
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeDSR.String(),
 			},
 			trafficEncapMode: config.TrafficEncapModeEncap,
@@ -121,7 +121,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			name:       "unsupported encap mode",
 			enabledDSR: true,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeDSR.String(),
 			},
 			trafficEncapMode: config.TrafficEncapModeNoEncap,
@@ -131,7 +131,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			name:             "invalid LoadBalancerMode",
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: "drs",
 			},
 			expectedErr: "LoadBalancerMode drs is unknown",
@@ -139,7 +139,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.LoadBalancerModeDSR, tt.enabledDSR)()
+			featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.LoadBalancerModeDSR, tt.enabledDSR)
 
 			o := &Options{config: &agentconfig.AgentConfig{
 				AntreaProxy: tt.antreaProxyConfig,
@@ -199,7 +199,7 @@ func TestOptionsValidateEgressConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Egress, tt.featureGateValue)()
+			featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Egress, tt.featureGateValue)
 
 			o := &Options{config: &agentconfig.AgentConfig{
 				Egress: tt.egressConfig,
@@ -261,7 +261,7 @@ func TestOptionsValidateMulticastConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Multicast, true)()
+			featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Multicast, true)
 			o := &Options{config: &agentconfig.AgentConfig{
 				Multicast: agentconfig.MulticastConfig{
 					Enable:            true,
@@ -319,13 +319,13 @@ func TestOptionsValidateSecondaryNetworkConfig(t *testing.T) {
 			name:               "two interfaces",
 			featureGateValue:   true,
 			ovsBridges:         []string{"br1"},
-			physicalInterfaces: []string{"eth1", "eth2"},
-			expectedErr:        "at most one physical interface can be specified for the secondary network OVS bridge",
+			physicalInterfaces: []string{"eth1", "eth2", "eth3", "eth4", "eth5", "eth6", "eth7", "eth8", "eth9"},
+			expectedErr:        "at most eight physical interfaces can be specified for the secondary network OVS bridge",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.SecondaryNetwork, tc.featureGateValue)()
+			featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.SecondaryNetwork, tc.featureGateValue)
 
 			o := &Options{config: &agentconfig.AgentConfig{}}
 			for _, brName := range tc.ovsBridges {

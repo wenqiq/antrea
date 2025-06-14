@@ -465,7 +465,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 	}
 	wg.Wait()
 
-	if err := wait.Poll(5*time.Second, defaultTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 5*time.Second, defaultTimeout, false, func(ctx context.Context) (bool, error) {
 		for _, senderConfig := range mc.senderConfigs {
 			stats := mc.antctlResults[senderConfig.name]
 			t.Logf("Checking antctl get podmulticaststats result for %s", senderConfig.name)
@@ -493,7 +493,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 			}
 		}
 		for _, anp := range mc.igmpANPConfigs {
-			stats, err := data.crdClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
+			stats, err := data.CRDClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -514,7 +514,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 			}
 		}
 		for _, anp := range mc.multicastANPConfigs {
-			stats, err := data.crdClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
+			stats, err := data.CRDClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -530,7 +530,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 			}
 		}
 		for _, group := range sets.List(groupAddresses) {
-			multicastGroup, err := data.crdClient.StatsV1alpha1().MulticastGroups().Get(context.TODO(), group, metav1.GetOptions{})
+			multicastGroup, err := data.CRDClient.StatsV1alpha1().MulticastGroups().Get(context.TODO(), group, metav1.GetOptions{})
 			if err != nil && !errors.IsNotFound(err) {
 				t.Logf("Got multicastGroup error %v", err)
 				return false, err
@@ -571,7 +571,7 @@ func testMulticastForwardToMultipleInterfaces(t *testing.T, data *TestData, send
 		data.RunCommandFromPod(data.testNamespace, senderName, mcjoinContainerName, sendMulticastCommand)
 	}()
 
-	if err := wait.Poll(5*time.Second, defaultTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 5*time.Second, defaultTimeout, false, func(ctx context.Context) (bool, error) {
 		// Check whether multicast interfaces can receive multicast traffic in the server side.
 		// The check is needed for verifying external interfaces acting as multicast interfaces are able to forward multicast traffic.
 		// If multicast traffic is sent from non-HostNetwork pods, all multicast interfaces in senders should receive multicast traffic.
@@ -644,7 +644,7 @@ func runTestMulticastBetweenPods(t *testing.T, data *TestData, mc multicastTestc
 
 	readyReceivers := sets.New[int]()
 	senderReady := false
-	if err := wait.Poll(3*time.Second, defaultTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 3*time.Second, defaultTimeout, false, func(ctx context.Context) (bool, error) {
 		if checkSenderRoute && !senderReady {
 			// Sender pods should add an outbound multicast route except when running as HostNetwork.
 			mRoutesResult, err := getMroutes(nodeName(mc.senderConfig.nodeIdx), gatewayInterface, mc.group.String(), strings.Join(nodeMulticastInterfaces[mc.senderConfig.nodeIdx], " "))

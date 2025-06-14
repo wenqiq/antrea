@@ -43,7 +43,9 @@ import (
 	crdinformers "antrea.io/antrea/pkg/client/informers/externalversions"
 	bundlecollectionstore "antrea.io/antrea/pkg/controller/supportbundlecollection/store"
 	"antrea.io/antrea/pkg/controller/types"
+	"antrea.io/antrea/pkg/util/auth"
 	"antrea.io/antrea/pkg/util/k8s"
+	sftptesting "antrea.io/antrea/pkg/util/sftp/testing"
 )
 
 const (
@@ -83,6 +85,7 @@ type bundleConfig struct {
 	authType        v1alpha1.BundleServerAuthType
 	secretName      string
 	secretNamespace string
+	hostPublicKey   []byte
 	conditions      []v1alpha1.SupportBundleCollectionCondition
 	phase           bundlePhase
 	createTime      *time.Time
@@ -94,9 +97,7 @@ func TestReconcileSupportBundles(t *testing.T) {
 	nodeConfigs, externalNodeConfigs := parseDependentResources(testConfigs)
 	coreObjects := prepareNodes(nodeConfigs)
 	crdObjects := prepareExternalNodes(externalNodeConfigs)
-	for _, c := range prepareBundleCollections(testConfigs) {
-		crdObjects = append(crdObjects, c)
-	}
+	crdObjects = append(crdObjects, prepareBundleCollections(testConfigs)...)
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -104,7 +105,7 @@ func TestReconcileSupportBundles(t *testing.T) {
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
-			secretKeyWithAPIKey: []byte(base64.StdEncoding.EncodeToString([]byte("a valid API key"))),
+			auth.SecretKeyWithAPIKey: []byte(base64.StdEncoding.EncodeToString([]byte("a valid API key"))),
 		},
 	}
 	coreObjects = append(coreObjects, secret)
@@ -372,7 +373,12 @@ func TestAddSupportBundleCollection(t *testing.T) {
 			testClient := newTestClient(nil, nil)
 			controller := &Controller{
 				crdClient: testClient.crdClient,
-				queue:     workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "supportBundle"),
+				queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+					workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+					workqueue.TypedRateLimitingQueueConfig[string]{
+						Name: "supportBundle",
+					},
+				),
 			}
 			controller.addSupportBundleCollection(tc.supportBundleCollection)
 			if tc.expectedItem != "" {
@@ -415,12 +421,11 @@ func TestSupportBundleCollectionEvents(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		processNextWorkItem := func() bool {
-			obj, quit := controller.queue.Get()
+			key, quit := controller.queue.Get()
 			if quit {
 				return false
 			}
-			defer controller.queue.Done(obj)
-			key, _ := obj.(string)
+			defer controller.queue.Done(key)
 			if _, exists := enqueuedBundleNameCountMappings[key]; !exists {
 				enqueuedBundleNameCountMappings[key] = 0
 			}
@@ -660,111 +665,6 @@ type secretConfig struct {
 	data map[string][]byte
 }
 
-func TestParseBundleAuth(t *testing.T) {
-	ns := "ns-auth"
-	apiKey := testKeyString
-	token := testTokenString
-	usr := "user"
-	pwd := "pwd123456"
-	var secretObjects []runtime.Object
-	for _, s := range prepareSecrets(ns, []secretConfig{
-		{name: "s1", data: map[string][]byte{secretKeyWithAPIKey: []byte(apiKey)}},
-		{name: "s2", data: map[string][]byte{secretKeyWithBearerToken: []byte(token)}},
-		{name: "s3", data: map[string][]byte{secretKeyWithUsername: []byte(usr), secretKeyWithPassword: []byte(pwd)}},
-		{name: "invalid-base64", data: map[string][]byte{secretKeyWithAPIKey: []byte("invalid string to decode with base64")}},
-		{name: "invalid-secret", data: map[string][]byte{"unknown": []byte(apiKey)}},
-	}) {
-		secretObjects = append(secretObjects, s)
-	}
-
-	testClient := newTestClient(secretObjects, nil)
-	controller := newController(testClient)
-	stopCh := make(chan struct{})
-	testClient.start(stopCh)
-
-	testClient.waitForSync(stopCh)
-
-	for _, tc := range []struct {
-		authentication v1alpha1.BundleServerAuthConfiguration
-		expectedError  string
-		expectedAuth   *controlplane.BundleServerAuthConfiguration
-	}{
-		{
-			authentication: v1alpha1.BundleServerAuthConfiguration{
-				AuthType: v1alpha1.APIKey,
-				AuthSecret: &corev1.SecretReference{
-					Namespace: ns,
-					Name:      "s1",
-				},
-			},
-			expectedAuth: &controlplane.BundleServerAuthConfiguration{
-				APIKey: testKeyString,
-			},
-		},
-		{
-			authentication: v1alpha1.BundleServerAuthConfiguration{
-				AuthType: v1alpha1.BearerToken,
-				AuthSecret: &corev1.SecretReference{
-					Namespace: ns,
-					Name:      "s2",
-				},
-			},
-			expectedAuth: &controlplane.BundleServerAuthConfiguration{
-				BearerToken: testTokenString,
-			},
-		},
-		{
-			authentication: v1alpha1.BundleServerAuthConfiguration{
-				AuthType: v1alpha1.BasicAuthentication,
-				AuthSecret: &corev1.SecretReference{
-					Namespace: ns,
-					Name:      "s3",
-				},
-			},
-			expectedAuth: &controlplane.BundleServerAuthConfiguration{
-				BasicAuthentication: &controlplane.BasicAuthentication{
-					Username: usr,
-					Password: pwd,
-				},
-			},
-		},
-		{
-			authentication: v1alpha1.BundleServerAuthConfiguration{
-				AuthType: v1alpha1.BearerToken,
-				AuthSecret: &corev1.SecretReference{
-					Namespace: ns,
-					Name:      "invalid-secret",
-				},
-			},
-			expectedError: fmt.Sprintf("not found authentication in Secret %s/invalid-secret with key %s", ns, secretKeyWithBearerToken),
-		},
-		{
-			authentication: v1alpha1.BundleServerAuthConfiguration{
-				AuthType: v1alpha1.BearerToken,
-				AuthSecret: &corev1.SecretReference{
-					Namespace: ns,
-					Name:      "not-exist",
-				},
-			},
-			expectedError: fmt.Sprintf("unable to get Secret with name not-exist in Namespace %s", ns),
-		},
-		{
-			authentication: v1alpha1.BundleServerAuthConfiguration{
-				AuthType:   v1alpha1.APIKey,
-				AuthSecret: nil,
-			},
-			expectedError: "authentication is not specified",
-		},
-	} {
-		auth, err := controller.parseBundleAuth(tc.authentication)
-		if tc.expectedError != "" {
-			assert.Contains(t, err.Error(), tc.expectedError)
-		} else {
-			assert.Equal(t, tc.expectedAuth, auth)
-		}
-	}
-}
-
 func TestCreateAndDeleteInternalSupportBundleCollection(t *testing.T) {
 	coreObjects, crdObjects := prepareTopology()
 	testClient := newTestClient(coreObjects, crdObjects)
@@ -773,6 +673,9 @@ func TestCreateAndDeleteInternalSupportBundleCollection(t *testing.T) {
 	testClient.start(stopCh)
 
 	testClient.waitForSync(stopCh)
+
+	hostPublicKey, _, err := sftptesting.GenerateEd25519Key()
+	require.NoError(t, err)
 
 	expiredDuration, _ := time.ParseDuration("-61m")
 	expiredCreationTime := time.Now().Add(expiredDuration)
@@ -790,7 +693,8 @@ func TestCreateAndDeleteInternalSupportBundleCollection(t *testing.T) {
 					names:  []string{"n1", "n2"},
 					labels: map[string]string{"test": "selected"},
 				},
-				authType: v1alpha1.APIKey,
+				authType:      v1alpha1.APIKey,
+				hostPublicKey: hostPublicKey.Marshal(),
 			},
 			expectedNodes: sets.New[string]("n1", "n2", "n3", "n4"),
 			expectedAuth: controlplane.BundleServerAuthConfiguration{
@@ -863,9 +767,10 @@ func TestCreateAndDeleteInternalSupportBundleCollection(t *testing.T) {
 			bundleConfig.secretName = secretName
 			bundleConfig.secretNamespace = secretNamespace
 		}
-		bundle, err := testClient.crdClient.CrdV1alpha1().SupportBundleCollections().Create(context.TODO(), generateSupportBundleResource(bundleConfig), metav1.CreateOptions{})
-		require.Nil(t, err)
-		err = wait.PollImmediate(time.Millisecond*50, time.Second, func() (done bool, err error) {
+		bundle := generateSupportBundleResource(bundleConfig)
+		_, err := testClient.crdClient.CrdV1alpha1().SupportBundleCollections().Create(context.TODO(), bundle, metav1.CreateOptions{})
+		require.NoError(t, err)
+		err = wait.PollUntilContextTimeout(context.Background(), time.Millisecond*50, time.Second, true, func(ctx context.Context) (done bool, err error) {
 			_, getErr := controller.supportBundleCollectionLister.Get(tc.bundleConfig.name)
 			if getErr == nil {
 				return true, nil
@@ -892,6 +797,7 @@ func TestCreateAndDeleteInternalSupportBundleCollection(t *testing.T) {
 				internalBundle, _ := obj.(*types.SupportBundleCollection)
 				assert.Equal(t, tc.expectedNodes, internalBundle.NodeNames)
 				assert.Equal(t, tc.expectedAuth, internalBundle.Authentication)
+				assert.Equal(t, bundle.Spec.FileServer, internalBundle.FileServer)
 			} else {
 				updatedBundle, err := testClient.crdClient.CrdV1alpha1().SupportBundleCollections().Get(context.TODO(), bundle.Name, metav1.GetOptions{})
 				require.NoError(t, err)
@@ -910,8 +816,7 @@ func TestCreateAndDeleteInternalSupportBundleCollection(t *testing.T) {
 	}
 
 	// Test update span
-	err := testClient.client.CoreV1().Nodes().Delete(context.TODO(), "n3", metav1.DeleteOptions{})
-	require.NoError(t, err)
+	require.NoError(t, testClient.client.CoreV1().Nodes().Delete(context.TODO(), "n3", metav1.DeleteOptions{}))
 	updatedBundleCollection := generateSupportBundleResource(
 		bundleConfig{
 			name: "b1",
@@ -1060,7 +965,7 @@ func TestSyncSupportBundleCollection(t *testing.T) {
 	go controller.worker()
 
 	for _, tc := range testCases {
-		err := wait.PollImmediate(time.Millisecond*100, time.Second, func() (done bool, err error) {
+		err := wait.PollUntilContextTimeout(context.Background(), time.Millisecond*100, time.Second, true, func(ctx context.Context) (done bool, err error) {
 			_, exists, err := controller.supportBundleCollectionStore.Get(tc.bundleConfig.name)
 			if err != nil {
 				return false, err
@@ -1664,7 +1569,7 @@ func TestUpdateStatus(t *testing.T) {
 	syncSupportBundleCollection := func() {
 		key, _ := controller.queue.Get()
 		controller.queue.Done(key)
-		err := controller.syncSupportBundleCollection(key.(string))
+		err := controller.syncSupportBundleCollection(key)
 		assert.NoError(t, err)
 	}
 
@@ -1773,7 +1678,7 @@ func TestUpdateStatus(t *testing.T) {
 		prepareController(collectionName, desiredNodes)
 		reportedNodes := 1
 		agentReportStatus(reportedNodes, 0, collectionName)
-		statusPerNode, _ := controller.statuses[collectionName]
+		statusPerNode := controller.statuses[collectionName]
 		assert.Equal(t, reportedNodes, len(statusPerNode))
 		syncSupportBundleCollection()
 		assert.Equal(t, reportedNodes, len(statusPerNode))
@@ -1783,10 +1688,10 @@ func TestUpdateStatus(t *testing.T) {
 			NodeType:  controlplane.SupportBundleCollectionNodeTypeNode,
 			Completed: true,
 		})
-		statusPerNode, _ = controller.statuses[collectionName]
+		statusPerNode = controller.statuses[collectionName]
 		assert.Equal(t, reportedNodes+1, len(statusPerNode))
 		syncSupportBundleCollection()
-		statusPerNode, _ = controller.statuses[collectionName]
+		statusPerNode = controller.statuses[collectionName]
 		assert.Equal(t, reportedNodes, len(statusPerNode))
 	})
 
@@ -1964,7 +1869,8 @@ func generateSupportBundleResource(b bundleConfig) *v1alpha1.SupportBundleCollec
 		},
 		Spec: v1alpha1.SupportBundleCollectionSpec{
 			FileServer: v1alpha1.BundleFileServer{
-				URL: "https://1.1.1.1:443/supportbundles/upload",
+				URL:           "https://1.1.1.1:443/supportbundles/upload",
+				HostPublicKey: b.hostPublicKey,
 			},
 			ExpirationMinutes: 60,
 			SinceTime:         "2h",
@@ -2058,33 +1964,29 @@ func prepareSecrets(ns string, secretConfigs []secretConfig) []*corev1.Secret {
 
 func prepareTopology() ([]runtime.Object, []runtime.Object) {
 	var coreObjects, crdObjects []runtime.Object
-	for _, n := range prepareNodes([]nodeConfig{
+	coreObjects = append(coreObjects, prepareNodes([]nodeConfig{
 		{name: "n1"},
 		{name: "n2"},
 		{name: "n3", labels: map[string]string{"test": "selected"}},
 		{name: "n4", labels: map[string]string{"test": "selected"}},
 		{name: "n5", labels: map[string]string{"test": "not-selected"}},
-	}) {
-		coreObjects = append(coreObjects, n)
-	}
-	for _, en := range prepareExternalNodes([]externalNodeConfig{
+	})...)
+	crdObjects = append(crdObjects, prepareExternalNodes([]externalNodeConfig{
 		{namespace: "ns1", name: "en1"},
 		{namespace: "ns1", name: "en2"},
 		{namespace: "ns1", name: "en3", labels: map[string]string{"test": "selected"}},
 		{namespace: "ns1", name: "en4", labels: map[string]string{"test": "not-selected"}},
 		{namespace: "ns2", name: "en5", labels: map[string]string{"test": "selected"}},
-	}) {
-		crdObjects = append(crdObjects, en)
-	}
+	})...)
 
 	apiKey := []byte(testKeyString)
 	token := []byte(testTokenString)
 	username := []byte("testUsername")
 	pwd := []byte("testPassword")
 	for _, s := range prepareSecrets(secretNamespace, []secretConfig{
-		{name: secretWithAPIKey, data: map[string][]byte{secretKeyWithAPIKey: apiKey}},
-		{name: secretWithToken, data: map[string][]byte{secretKeyWithBearerToken: token}},
-		{name: secretWithBasicAuth, data: map[string][]byte{secretKeyWithUsername: username, secretKeyWithPassword: pwd}},
+		{name: secretWithAPIKey, data: map[string][]byte{auth.SecretKeyWithAPIKey: apiKey}},
+		{name: secretWithToken, data: map[string][]byte{auth.SecretKeyWithBearerToken: token}},
+		{name: secretWithBasicAuth, data: map[string][]byte{auth.SecretKeyWithUsername: username, auth.SecretKeyWithPassword: pwd}},
 	}) {
 		coreObjects = append(coreObjects, s)
 	}

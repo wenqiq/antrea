@@ -9,6 +9,13 @@ updates:
       golang.org/x:
         patterns:
         - "golang.org/x/*"
+      prometheus:
+        patterns:
+        - "github.com/prometheus/*"
+      ginkgo:
+        patterns:
+        - "github.com/onsi/ginkgo/v2"
+        - "github.com/onsi/gomega"
     ignore:
     - dependency-name: "k8s.io/*"
     - dependency-name: "sigs.k8s.io/*"
@@ -32,3 +39,7 @@ updates:
         patterns:
         - "actions/upload-artifact"
         - "actions/download-artifact"
+      trivy-actions:
+        patterns:
+        - "aquasecurity/setup-trivy"
+        - "aquasecurity/trivy-action"

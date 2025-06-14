@@ -17,9 +17,8 @@ package multicast
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +38,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
 
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/interfacestore"
@@ -52,6 +50,7 @@ import (
 	agentutil "antrea.io/antrea/pkg/agent/util"
 	"antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 	"antrea.io/antrea/pkg/apis/crd/v1beta1"
+	ovsopenflow "antrea.io/antrea/pkg/ovs/openflow"
 	"antrea.io/antrea/pkg/util/channel"
 )
 
@@ -80,7 +79,8 @@ var (
 		},
 		ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{PodName: "pod3", PodNamespace: "ns1", ContainerID: "container3"},
 	}
-	nodeIf1IP = net.ParseIP("192.168.20.22")
+	nodeIf1IP         = net.ParseIP("192.168.20.22")
+	igmpQueryVersions = []uint8{1, 2, 3}
 )
 
 func TestAddGroupMemberStatus(t *testing.T) {
@@ -92,7 +92,7 @@ func TestAddGroupMemberStatus(t *testing.T) {
 		iface: if1,
 	}
 	mctrl := newMockMulticastController(t, false, false)
-	err := mctrl.initialize(t)
+	err := mctrl.initialize()
 	mctrl.mRouteClient.multicastInterfaceConfigs = []multicastInterfaceConfig{
 		{Name: if1.InterfaceName, IPv4Addr: &net.IPNet{IP: nodeIf1IP, Mask: net.IPv4Mask(255, 255, 255, 0)}},
 	}
@@ -100,9 +100,7 @@ func TestAddGroupMemberStatus(t *testing.T) {
 	mctrl.addGroupMemberStatus(event)
 	groupCache := mctrl.groupCache
 	compareGroupStatus(t, groupCache, event)
-	obj, _ := mctrl.queue.Get()
-	key, ok := obj.(string)
-	assert.True(t, ok)
+	key, _ := mctrl.queue.Get()
 	assert.Equal(t, mgroup.String(), key)
 	mockIfaceStore.EXPECT().GetInterfaceByName(if1.InterfaceName).Return(if1, true)
 	mockOFClient.EXPECT().InstallMulticastGroup(gomock.Any(), gomock.Any(), gomock.Any())
@@ -110,12 +108,12 @@ func TestAddGroupMemberStatus(t *testing.T) {
 	mockMulticastSocket.EXPECT().MulticastInterfaceJoinMgroup(mgroup.To4(), nodeIf1IP.To4(), if1.InterfaceName).Times(1)
 	err = mctrl.syncGroup(key)
 	assert.NoError(t, err)
-	mctrl.queue.Forget(obj)
+	mctrl.queue.Forget(key)
 }
 
 func TestUpdateGroupMemberStatus(t *testing.T) {
 	mctrl := newMockMulticastController(t, false, false)
-	err := mctrl.initialize(t)
+	err := mctrl.initialize()
 	assert.NoError(t, err)
 	mgroup := net.ParseIP("224.96.1.4")
 	event := &mcastGroupEvent{
@@ -180,10 +178,6 @@ func TestUpdateGroupMemberStatus(t *testing.T) {
 }
 
 func TestCheckNodeUpdate(t *testing.T) {
-	mockController := newMockMulticastController(t, false, false)
-	err := mockController.initialize(t)
-	require.NoError(t, err)
-
 	for _, tc := range []struct {
 		name        string
 		oldNode     *corev1.Node
@@ -244,7 +238,11 @@ func TestCheckNodeUpdate(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mockController.nodeUpdateQueue = workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "nodeUpdate")
+			// This test assumes encap mode.
+			mockController := newMockMulticastController(t, true, false)
+			err := mockController.initialize()
+			require.NoError(t, err)
+
 			mockController.checkNodeUpdate(tc.oldNode, tc.curNode)
 			if tc.nodeUpdated {
 				assert.Equal(t, 1, mockController.nodeUpdateQueue.Len())
@@ -256,14 +254,14 @@ func TestCheckNodeUpdate(t *testing.T) {
 }
 
 func TestCheckLastMember(t *testing.T) {
+	mockIgmpMaxResponseTime(t)
 	mctrl := newMockMulticastController(t, false, false)
 	workerCount = 1
 	lastProbe := time.Now()
 	mgroup := net.ParseIP("224.96.1.2")
 	testCheckLastMember := func(ev *mcastGroupEvent, expExist bool) {
 		status := &GroupMemberStatus{
-			localMembers:   map[string]time.Time{},
-			lastIGMPReport: lastProbe,
+			localMembers: map[string]time.Time{},
 		}
 		if ev != nil {
 			status.group = ev.group
@@ -284,16 +282,13 @@ func TestCheckLastMember(t *testing.T) {
 		go func() {
 			mctrl.checkLastMember(status.group)
 			// Wait igmpMaxResponseTime to ensure the group is added into mctrl.queue.
-			time.Sleep(igmpMaxResponseTime)
 			wg.Done()
 		}()
 		if ev != nil {
 			mctrl.addOrUpdateGroupEvent(ev)
 		}
 		wg.Wait()
-		obj, _ := mctrl.queue.Get()
-		key, ok := obj.(string)
-		assert.True(t, ok)
+		key, _ := mctrl.queue.Get()
 		assert.Equal(t, status.group.String(), key)
 		err := mctrl.syncGroup(key)
 		assert.NoError(t, err)
@@ -304,7 +299,7 @@ func TestCheckLastMember(t *testing.T) {
 		if _, ok, _ := mctrl.groupCache.GetByKey(key); ok {
 			_ = mctrl.groupCache.Delete(status)
 		}
-		mctrl.queue.Forget(obj)
+		mctrl.queue.Forget(key)
 	}
 	mockIfaceStore.EXPECT().GetInterfaceByName(if1.InterfaceName).Return(if1, true).Times(1)
 	mockOFClient.EXPECT().InstallMulticastGroup(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
@@ -349,7 +344,7 @@ func TestGetGroupPods(t *testing.T) {
 	now := time.Now()
 
 	mctrl := newMockMulticastController(t, false, false)
-	err := mctrl.initialize(t)
+	err := mctrl.initialize()
 	require.NoError(t, err)
 	groupMemberStatuses := []*GroupMemberStatus{
 		{
@@ -385,7 +380,7 @@ func TestGetGroupPods(t *testing.T) {
 
 func TestGetPodStats(t *testing.T) {
 	mctrl := newMockMulticastController(t, false, false)
-	err := mctrl.initialize(t)
+	err := mctrl.initialize()
 	require.NoError(t, err)
 
 	iface := if1
@@ -402,7 +397,7 @@ func TestGetPodStats(t *testing.T) {
 
 func TestGetAllPodStats(t *testing.T) {
 	mctrl := newMockMulticastController(t, false, false)
-	err := mctrl.initialize(t)
+	err := mctrl.initialize()
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -447,21 +442,19 @@ func TestGetAllPodStats(t *testing.T) {
 func TestClearStaleGroupsCreatingLeaveEvent(t *testing.T) {
 	mctrl := newMockMulticastController(t, false, false)
 	workerCount = 1
-	err := mctrl.initialize(t)
+	err := mctrl.initialize()
 	require.NoError(t, err)
 	now := time.Now()
 	staleTime := now.Add(-mctrl.mcastGroupTimeout - time.Second)
 	activeTime := now.Add(-mctrl.mcastGroupTimeout + time.Second)
 	groups := []*GroupMemberStatus{
 		{
-			group:          net.ParseIP("224.96.1.4"),
-			localMembers:   map[string]time.Time{"p1": staleTime, "p3": activeTime},
-			lastIGMPReport: activeTime,
+			group:        net.ParseIP("224.96.1.4"),
+			localMembers: map[string]time.Time{"p1": staleTime, "p3": activeTime},
 		},
 		{
-			group:          net.ParseIP("224.96.1.5"),
-			localMembers:   map[string]time.Time{},
-			lastIGMPReport: activeTime,
+			group:        net.ParseIP("224.96.1.5"),
+			localMembers: map[string]time.Time{"p1": activeTime},
 		},
 	}
 	for _, g := range groups {
@@ -481,88 +474,177 @@ func TestClearStaleGroupsCreatingLeaveEvent(t *testing.T) {
 }
 
 func TestClearStaleGroups(t *testing.T) {
-	mctrl := newMockMulticastController(t, false, false)
-	workerCount = 1
-	err := mctrl.initialize(t)
-	require.NoError(t, err)
-	mctrl.mRouteClient.multicastInterfaceConfigs = []multicastInterfaceConfig{
-		{Name: if1.InterfaceName, IPv4Addr: &net.IPNet{IP: nodeIf1IP, Mask: net.IPv4Mask(255, 255, 255, 0)}},
-	}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		mctrl.worker()
-		wg.Done()
-	}()
-	now := time.Now()
-	validUpdateTime := now.Add(-mctrl.queryInterval)
-	validGroups := []*GroupMemberStatus{
+	mockIgmpMaxResponseTime(t)
+	for _, tc := range []struct {
+		name    string
+		isEncap bool
+	}{
 		{
-			group:          net.ParseIP("224.96.1.2"),
-			localMembers:   map[string]time.Time{"p1": now, "p2": validUpdateTime},
-			lastIGMPReport: validUpdateTime,
+			name:    "noEncap",
+			isEncap: false,
 		},
 		{
-			group:          net.ParseIP("224.96.1.3"),
-			localMembers:   map[string]time.Time{"p2": validUpdateTime},
-			lastIGMPReport: validUpdateTime,
+			name:    "encap",
+			isEncap: true,
 		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mctrl := newMockMulticastController(t, tc.isEncap, false)
+			// Only use IGMPv3 in this test.
+			mctrl.igmpSnooper.queryVersions = []uint8{3}
+			workerCount = 1
+			err := mctrl.initialize()
+			require.NoError(t, err)
+			mctrl.mRouteClient.multicastInterfaceConfigs = []multicastInterfaceConfig{
+				{Name: if1.InterfaceName, IPv4Addr: &net.IPNet{IP: nodeIf1IP, Mask: net.IPv4Mask(255, 255, 255, 0)}},
+			}
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			go mctrl.eventHandler(stopCh)
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				mctrl.worker()
+			}()
+
+			fakePort := int32(1)
+			for _, ifName := range []string{"p1", "p2", "p3", "p4"} {
+				mockIface := &interfacestore.InterfaceConfig{InterfaceName: ifName, OVSPortConfig: &interfacestore.OVSPortConfig{OFPort: fakePort}}
+				mockIfaceStore.EXPECT().GetInterfaceByName(ifName).Return(mockIface, true).AnyTimes()
+				fakePort++
+			}
+
+			now := time.Now()
+			validUpdateTime := now.Add(-mctrl.queryInterval)
+			validGroups := []*GroupMemberStatus{
+				{
+					group:        net.ParseIP("224.96.1.2"),
+					localMembers: map[string]time.Time{"p1": now, "p2": validUpdateTime},
+					ofGroupID:    ovsopenflow.GroupIDType(4),
+				},
+				{
+					group:        net.ParseIP("224.96.1.3"),
+					localMembers: map[string]time.Time{"p2": validUpdateTime},
+					ofGroupID:    ovsopenflow.GroupIDType(5),
+				},
+			}
+			staleUpdateTime := now.Add(-mctrl.mcastGroupTimeout - time.Second)
+			staleGroups := []*GroupMemberStatus{
+				{
+					group:        net.ParseIP("224.96.1.4"),
+					localMembers: map[string]time.Time{"p1": staleUpdateTime, "p3": staleUpdateTime},
+					ofGroupID:    ovsopenflow.GroupIDType(6),
+				},
+				{
+					group:        net.ParseIP("224.96.1.5"),
+					localMembers: map[string]time.Time{},
+					ofGroupID:    ovsopenflow.GroupIDType(7),
+				},
+			}
+
+			localStaleGroups := []*GroupMemberStatus{}
+			if tc.isEncap {
+				localStaleGroups = append(localStaleGroups, &GroupMemberStatus{
+					group:         net.ParseIP("224.96.1.6"),
+					localMembers:  map[string]time.Time{"p4": staleUpdateTime},
+					remoteMembers: sets.New[string]("10.10.1.2"),
+					ofGroupID:     ovsopenflow.GroupIDType(8),
+				})
+			}
+
+			for _, g := range validGroups {
+				err = mctrl.groupCache.Add(g)
+				assert.NoError(t, err)
+				mctrl.addInstalledGroup(g.group.String())
+				mctrl.addInstalledLocalGroup(g.group.String())
+			}
+			for _, g := range staleGroups {
+				err = mctrl.groupCache.Add(g)
+				assert.NoError(t, err)
+				mctrl.addInstalledGroup(g.group.String())
+				mctrl.addInstalledLocalGroup(g.group.String())
+				mockOFClient.EXPECT().UninstallMulticastGroup(g.ofGroupID).Times(1)
+				mockOFClient.EXPECT().UninstallMulticastFlows(gomock.Any()).Times(1)
+				mockMulticastSocket.EXPECT().MulticastInterfaceLeaveMgroup(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+				mockOFClient.EXPECT().SendIGMPQueryPacketOut(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+				if len(g.localMembers) > 1 {
+					// If multiple local members exist in the stale Multicast group, the corresponding OpenFlow group is
+					// possibly re-installed len(localMembers)-1 at most. We can't know the exact number in the mock here,
+					// since the actual execution depends on the runtime status of the local cache which is updated by the
+					// event handler in another goroutine.
+					mockOFClient.EXPECT().InstallMulticastGroup(g.ofGroupID, gomock.Any(), gomock.Any()).MaxTimes(len(g.localMembers) - 1)
+				}
+				if tc.isEncap {
+					mockOFClient.EXPECT().SendIGMPRemoteReportPacketOut(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+				}
+			}
+
+			for _, g := range localStaleGroups {
+				err = mctrl.groupCache.Add(g)
+				assert.NoError(t, err)
+				mctrl.addInstalledGroup(g.group.String())
+				mctrl.addInstalledLocalGroup(g.group.String())
+				if tc.isEncap {
+					// Send IGMP leave message to other Nodes
+					mockOFClient.EXPECT().SendIGMPRemoteReportPacketOut(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+					// Update OpenFlow group corresponding to the Multicast group to remove local members
+					mockOFClient.EXPECT().InstallMulticastGroup(g.ofGroupID, gomock.Any(), gomock.Any()).Times(1)
+				}
+
+				mockMulticastSocket.EXPECT().MulticastInterfaceLeaveMgroup(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+				// Send IGMP query to ensure the last local member has left.
+				mockOFClient.EXPECT().SendIGMPQueryPacketOut(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+			}
+
+			mctrl.clearStaleGroups()
+
+			// Enqueue an IGMP leave event with an invalid Multicast group, which ensures all the group events
+			// generated by the "clearStaleGroups" are processed.
+			mctrl.groupEventCh <- &mcastGroupEvent{
+				// 224.96.101.101 is unknown to the groupCache.
+				group: net.ParseIP("224.96.101.101"),
+				eType: groupLeave,
+				time:  now,
+			}
+			require.Eventually(t, func() bool {
+				return len(mctrl.groupEventCh) == 0
+			}, time.Second, time.Millisecond*100)
+
+			mctrl.queue.ShutDownWithDrain()
+
+			wg.Wait()
+			assert.Equal(t, len(validGroups)+len(localStaleGroups), len(mctrl.groupCache.List()))
+			for _, g := range validGroups {
+				_, exists, _ := mctrl.groupCache.GetByKey(g.group.String())
+				assert.True(t, exists)
+			}
+			for _, g := range staleGroups {
+				_, exists, _ := mctrl.groupCache.GetByKey(g.group.String())
+				assert.False(t, exists)
+			}
+			for _, g := range localStaleGroups {
+				obj, exists, _ := mctrl.groupCache.GetByKey(g.group.String())
+				require.True(t, exists)
+				status := obj.(*GroupMemberStatus)
+				assert.Equal(t, 0, len(status.localMembers))
+			}
+		})
 	}
-	staleUpdateTime := now.Add(-mctrl.mcastGroupTimeout - time.Second)
-	staleGroups := []*GroupMemberStatus{
-		{
-			group:          net.ParseIP("224.96.1.4"),
-			localMembers:   map[string]time.Time{"p1": staleUpdateTime, "p3": staleUpdateTime},
-			lastIGMPReport: staleUpdateTime,
-		},
-		{
-			group:          net.ParseIP("224.96.1.5"),
-			localMembers:   map[string]time.Time{},
-			lastIGMPReport: staleUpdateTime,
-		},
-	}
-	for _, g := range validGroups {
-		err := mctrl.groupCache.Add(g)
-		assert.NoError(t, err)
-		mctrl.addInstalledGroup(g.group.String())
-		mctrl.addInstalledLocalGroup(g.group.String())
-	}
-	fakePort := int32(1)
-	for _, g := range staleGroups {
-		err := mctrl.groupCache.Add(g)
-		assert.NoError(t, err)
-		mctrl.addInstalledGroup(g.group.String())
-		mctrl.addInstalledLocalGroup(g.group.String())
-		for m := range g.localMembers {
-			mockIface := &interfacestore.InterfaceConfig{InterfaceName: m, OVSPortConfig: &interfacestore.OVSPortConfig{OFPort: fakePort}}
-			mockIfaceStore.EXPECT().GetInterfaceByName(m).Return(mockIface, true)
-			fakePort++
-		}
-	}
-	mockOFClient.EXPECT().UninstallMulticastGroup(gomock.Any()).Times(len(staleGroups))
-	mockOFClient.EXPECT().UninstallMulticastFlows(gomock.Any()).Times(len(staleGroups))
-	mockMulticastSocket.EXPECT().MulticastInterfaceLeaveMgroup(gomock.Any(), gomock.Any(), gomock.Any()).Times(len(staleGroups))
-	mctrl.clearStaleGroups()
-	mctrl.queue.ShutDown()
-	wg.Wait()
-	assert.Equal(t, len(validGroups), len(mctrl.groupCache.List()))
-	for _, g := range validGroups {
-		_, exists, _ := mctrl.groupCache.GetByKey(g.group.String())
-		assert.True(t, exists)
-	}
-	for _, g := range staleGroups {
-		_, exists, _ := mctrl.groupCache.GetByKey(g.group.String())
-		assert.False(t, exists)
-	}
+
 }
 
 func TestProcessPacketIn(t *testing.T) {
 	mockController := newMockMulticastController(t, false, false)
 	snooper := mockController.igmpSnooper
 	stopCh := make(chan struct{})
-	defer close(stopCh)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
 	go func() {
 		mockController.eventHandler(stopCh)
+		wg.Done()
 	}()
 
 	getIPs := func(ipStrs []string) []net.IP {
@@ -721,33 +803,48 @@ func TestProcessPacketIn(t *testing.T) {
 			assert.Equal(t, tc.igmpACNPStats, snooper.igmpReportACNPStats)
 			assert.Equal(t, tc.igmpANNPStats, snooper.igmpReportANNPStats)
 
-			time.Sleep(time.Second)
-			statuses := mockController.getGroupMemberStatusesByPod(tc.iface.InterfaceName)
-			assert.Equal(t, tc.expGroups.Len(), len(statuses))
-			for _, s := range statuses {
-				assert.True(t, tc.expGroups.Has(s.group.String()))
-			}
+			assert.Eventually(t, func() bool {
+				statuses := mockController.getGroupMemberStatusesByPod(tc.iface.InterfaceName)
+				if tc.expGroups.Len() != len(statuses) {
+					return false
+				}
+				for _, s := range statuses {
+					if !tc.expGroups.Has(s.group.String()) {
+						return false
+					}
+				}
+				return true
+			}, time.Second, 100*time.Millisecond)
 		})
 	}
+	assert.Eventually(t, func() bool {
+		return len(mockController.groupEventCh) == 0
+	}, time.Second, 100*time.Millisecond)
+	close(stopCh)
+	wg.Wait()
 }
 
 func TestEncapModeInitialize(t *testing.T) {
 	mockController := newMockMulticastController(t, true, false)
 	assert.NotZero(t, mockController.nodeGroupID)
-	err := mockController.initialize(t)
+	err := mockController.initialize()
 	assert.NoError(t, err)
 }
 
 func TestEncapLocalReportAndNotifyRemote(t *testing.T) {
+	mockIgmpMaxResponseTime(t)
 	mockController := newMockMulticastController(t, true, false)
-	_ = mockController.initialize(t)
+	_ = mockController.initialize()
 	mockController.mRouteClient.multicastInterfaceConfigs = []multicastInterfaceConfig{
 		{Name: if1.InterfaceName, IPv4Addr: &net.IPNet{IP: nodeIf1IP, Mask: net.IPv4Mask(255, 255, 255, 0)}},
 	}
-	stopCh := make(chan struct{})
-	defer close(stopCh)
 
-	go wait.Until(mockController.worker, time.Second, stopCh)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		mockController.worker()
+		wg.Done()
+	}()
 
 	iface1 := createInterface("pod1", 3)
 	iface2 := createInterface("pod2", 4)
@@ -830,20 +927,29 @@ func TestEncapLocalReportAndNotifyRemote(t *testing.T) {
 			}
 			mockController.addOrUpdateGroupEvent(tc.e)
 
-			if tc.groupChanged {
-				err := wait.PollImmediate(time.Millisecond*100, time.Second*3, func() (done bool, err error) {
+			assert.Eventually(t, func() bool {
+				// Wait until the event is processed.
+				if mockController.queue.Len() > 0 {
+					return false
+				}
+				if tc.groupChanged {
 					if tc.e.eType == groupJoin {
-						return mockController.localGroupHasInstalled(groupKey) && mockController.groupHasInstalled(groupKey), nil
+						return mockController.localGroupHasInstalled(groupKey) && mockController.groupHasInstalled(groupKey)
 					} else {
-						return !mockController.localGroupHasInstalled(groupKey) && !mockController.groupHasInstalled(groupKey), nil
+						return !mockController.localGroupHasInstalled(groupKey) && !mockController.groupHasInstalled(groupKey)
 					}
-				})
-				assert.NoError(t, err)
-			} else {
-				time.Sleep(time.Millisecond * 200)
-			}
+				}
+				return true
+			}, time.Second, time.Millisecond*100)
 		})
 	}
+	mockController.queue.Add("unexistgroup")
+	// Wait until all events in the queue are processed.
+	assert.Eventually(t, func() bool {
+		return mockController.queue.Len() == 0
+	}, time.Second, time.Millisecond*100)
+	mockController.queue.ShutDown()
+	wg.Wait()
 }
 
 func TestNodeUpdate(t *testing.T) {
@@ -942,7 +1048,7 @@ func TestNodeUpdate(t *testing.T) {
 
 func TestMemberChanged(t *testing.T) {
 	mockController := newMockMulticastController(t, false, false)
-	_ = mockController.initialize(t)
+	_ = mockController.initialize()
 
 	containerA := &interfacestore.ContainerInterfaceConfig{PodNamespace: "nameA", PodName: "podA", ContainerID: "tttt"}
 	containerB := &interfacestore.ContainerInterfaceConfig{PodNamespace: "nameA", PodName: "podB", ContainerID: "mmmm"}
@@ -1085,7 +1191,7 @@ func TestConcurrentEventHandlerAndWorkers(t *testing.T) {
 
 func TestRemoteMemberJoinLeave(t *testing.T) {
 	mockController := newMockMulticastController(t, true, false)
-	_ = mockController.initialize(t)
+	_ = mockController.initialize()
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
@@ -1166,33 +1272,13 @@ func testRemoteReport(t *testing.T, mockController *Controller, groups []net.IP,
 				continue
 			}
 		}
-		mockOFClient.EXPECT().InstallMulticastGroup(gomock.Any(), []uint32{config.HostGatewayOFPort}, gomock.Any())
-	}
-
-	processNextItem := func(stopStr string) {
-		for {
-			obj, quit := mockController.queue.Get()
-			if quit {
-				return
-			}
-			key := obj.(string)
-			if key == stopStr {
-				mockController.queue.Forget(key)
-				mockController.queue.Done(obj)
-				return
-			}
-			if err := mockController.syncGroup(key); err != nil {
-				t.Errorf("Failed to process %s: %v", key, err)
-			}
-			mockController.queue.Forget(key)
-			mockController.queue.Done(obj)
-		}
+		mockOFClient.EXPECT().InstallMulticastGroup(gomock.Any(), []uint32{config.DefaultHostGatewayOFPort}, gomock.Any())
 	}
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		processNextItem(stopStr)
+		processNextItem(t, mockController, stopStr)
 		wg.Done()
 	}()
 
@@ -1216,6 +1302,25 @@ func testRemoteReport(t *testing.T, mockController *Controller, groups []net.IP,
 	}
 }
 
+func processNextItem(t *testing.T, mockController *Controller, stopStr string) {
+	for {
+		key, quit := mockController.queue.Get()
+		if quit {
+			return
+		}
+		if key == stopStr {
+			mockController.queue.Forget(key)
+			mockController.queue.Done(key)
+			return
+		}
+		if err := mockController.syncGroup(key); err != nil {
+			t.Errorf("Failed to process %s: %v", key, err)
+		}
+		mockController.queue.Forget(key)
+		mockController.queue.Done(key)
+	}
+}
+
 func processRemoteReport(t *testing.T, mockController *Controller, groups []net.IP, remoteNode net.IP, reportType uint8, tunnelPort uint32) error {
 	pkt := generatePacketInForRemoteReport(t, mockController.igmpSnooper, groups, remoteNode, reportType, tunnelPort)
 	mockIfaceStore.EXPECT().GetInterfaceByOFPort(tunnelPort).Return(createTunnelInterface(tunnelPort, nodeIf1IP), true)
@@ -1230,11 +1335,9 @@ func compareGroupStatus(t *testing.T, cache cache.Indexer, event *mcastGroupEven
 	assert.Equal(t, true, ok)
 	assert.Equal(t, event.group, status.group)
 	if event.eType == groupJoin {
-		assert.True(t, status.lastIGMPReport.Equal(event.time) || status.lastIGMPReport.After(event.time))
 		_, exists := status.localMembers[event.iface.InterfaceName]
 		assert.Truef(t, exists, "member is not added into cache")
 	} else {
-		assert.True(t, status.lastIGMPReport.Before(event.time))
 		_, exists := status.localMembers[event.iface.InterfaceName]
 		assert.Falsef(t, exists, "member is not removed from cache")
 	}
@@ -1247,7 +1350,17 @@ func newMockMulticastController(t *testing.T, isEncap bool, enableFlexibleIPAM b
 	mockMulticastSocket = multicasttest.NewMockRouteInterface(controller)
 	mockMulticastValidator = typestest.NewMockMcastNetworkPolicyController(controller)
 	addr := &net.IPNet{IP: nodeIf1IP, Mask: net.IPv4Mask(255, 255, 255, 0)}
-	nodeConfig := &config.NodeConfig{GatewayConfig: &config.GatewayConfig{Name: "antrea-gw0"}, NodeIPv4Addr: addr}
+	nodeConfig := &config.NodeConfig{
+		GatewayConfig: &config.GatewayConfig{Name: "antrea-gw0", OFPort: config.DefaultHostGatewayOFPort},
+		NodeIPv4Addr:  addr,
+	}
+	if enableFlexibleIPAM {
+		// These ofPort numbers are required to configure Multicast Group member ports.
+		nodeConfig.UplinkNetConfig = &config.AdapterNetConfig{
+			OFPort: config.DefaultUplinkOFPort,
+		}
+		nodeConfig.HostInterfaceOFPort = config.DefaultHostInterfaceOFPort
+	}
 	mockOFClient.EXPECT().RegisterPacketInHandler(gomock.Any(), gomock.Any()).Times(1)
 	groupAllocator := openflow.NewGroupAllocator()
 	podUpdateSubscriber := channel.NewSubscribableChannel("PodUpdate", 100)
@@ -1255,17 +1368,58 @@ func newMockMulticastController(t *testing.T, isEncap bool, enableFlexibleIPAM b
 	clientset = fake.NewSimpleClientset()
 	informerFactory = informers.NewSharedInformerFactory(clientset, 12*time.Hour)
 	nodeInformer := informerFactory.Core().V1().Nodes()
-	mctrl := NewMulticastController(mockOFClient, groupAllocator, nodeConfig, mockIfaceStore, mockMulticastSocket, sets.New[string](), podUpdateSubscriber, time.Second*5, []uint8{1, 2, 3}, mockMulticastValidator, isEncap, nodeInformer, enableFlexibleIPAM)
+	mctrl := NewMulticastController(mockOFClient, groupAllocator, nodeConfig, mockIfaceStore, mockMulticastSocket, sets.New[string](), podUpdateSubscriber, time.Second*5, igmpQueryVersions, mockMulticastValidator, isEncap, nodeInformer, enableFlexibleIPAM, true, false)
 	return mctrl
 }
 
 func TestFlexibleIPAMModeInitialize(t *testing.T) {
 	mockController := newMockMulticastController(t, false, true)
-	err := mockController.initialize(t)
+	err := mockController.initialize()
 	assert.NoError(t, err)
 }
 
-func (c *Controller) initialize(t *testing.T) error {
+func TestMulticastControllerOnIPv6Cluster(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ipv4Enabled bool
+		ipv6Enabled bool
+		expErr      string
+	}{
+		{
+			name:        "Fails on IPv6-only cluster",
+			ipv4Enabled: false,
+			ipv6Enabled: true,
+			expErr:      "Multicast is not supported on an IPv6-only cluster",
+		},
+		{
+			name:        "Succeeds on dual-stack cluster",
+			ipv4Enabled: true,
+			ipv6Enabled: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockController := newMockMulticastController(t, true, false)
+			mockController.ipv4Enabled = tc.ipv4Enabled
+			mockController.ipv6Enabled = tc.ipv6Enabled
+			if tc.expErr == "" {
+				mockController.initMocks()
+			}
+			err := mockController.Initialize()
+			if tc.expErr != "" {
+				assert.EqualError(t, err, tc.expErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func (c *Controller) initialize() error {
+	c.initMocks()
+	return c.Initialize()
+}
+
+func (c *Controller) initMocks() {
 	mockOFClient.EXPECT().InstallMulticastGroup(c.queryGroupId, gomock.Any(), gomock.Any()).Times(1)
 	mockOFClient.EXPECT().InstallMulticastFlows(gomock.Any(), gomock.Any())
 	mockIfaceStore.EXPECT().GetInterfacesByType(interfacestore.InterfaceType(0)).Times(1).Return([]*interfacestore.InterfaceConfig{})
@@ -1278,7 +1432,6 @@ func (c *Controller) initialize(t *testing.T) error {
 	if c.flexibleIPAMEnabled {
 		mockOFClient.EXPECT().InstallMulticastFlexibleIPAMFlows().Times(1)
 	}
-	return c.Initialize()
 }
 
 func createInterface(name string, ofport uint32) *interfacestore.InterfaceConfig {
@@ -1348,7 +1501,10 @@ func createIGMPJoinMessage(groups []net.IP, version uint8) []util.Message {
 	return pkts
 }
 
-func TestMain(m *testing.M) {
-	igmpMaxResponseTime = time.Second
-	os.Exit(m.Run())
+func mockIgmpMaxResponseTime(t *testing.T) {
+	originalMaxResponseTime := igmpMaxResponseTime
+	igmpMaxResponseTime = -1
+	t.Cleanup(func() {
+		igmpMaxResponseTime = originalMaxResponseTime
+	})
 }

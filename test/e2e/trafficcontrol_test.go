@@ -33,6 +33,7 @@ import (
 
 type trafficControlTestConfig struct {
 	nodeName         string
+	podLabels        map[string]string
 	podName          string
 	podIPs           map[corev1.IPFamily]string
 	collectorPodName string
@@ -42,9 +43,9 @@ type trafficControlTestConfig struct {
 var (
 	vni          = int32(1)
 	dstVXLANPort = int32(1111)
-	labels       = map[string]string{"tc-e2e": "agnhost"}
 
 	tcTestConfig = trafficControlTestConfig{
+		podLabels:        map[string]string{"tc-e2e": "agnhost"},
 		podName:          "test-tc-pod",
 		podIPs:           map[corev1.IPFamily]string{},
 		collectorPodName: "test-packets-collector-pod",
@@ -64,7 +65,7 @@ func TestTrafficControl(t *testing.T) {
 
 	tcTestConfig.nodeName = controlPlaneNodeName()
 
-	createTrafficControlTestPod(t, data, tcTestConfig.podName)
+	createTrafficControlTestPod(t, data, tcTestConfig.podName, tcTestConfig.podLabels)
 	createTrafficControlPacketsCollectorPod(t, data, tcTestConfig.collectorPodName)
 
 	t.Run("TestMirrorToRemote", func(t *testing.T) { testMirrorToRemote(t, data) })
@@ -72,7 +73,7 @@ func TestTrafficControl(t *testing.T) {
 	t.Run("TestRedirectToLocal", func(t *testing.T) { testRedirectToLocal(t, data) })
 }
 
-func createTrafficControlTestPod(t *testing.T, data *TestData, podName string) {
+func createTrafficControlTestPod(t *testing.T, data *TestData, podName string, labels map[string]string) {
 	args := []string{"netexec", "--http-port=8080"}
 	ports := []corev1.ContainerPort{
 		{
@@ -98,7 +99,7 @@ func createTrafficControlTestPod(t *testing.T, data *TestData, podName string) {
 }
 
 func createTrafficControlPacketsCollectorPod(t *testing.T, data *TestData, podName string) {
-	require.NoError(t, NewPodBuilder(podName, data.testNamespace, agnhostImage).OnNode(tcTestConfig.nodeName).WithCommand([]string{"sleep", "3600"}).Privileged().Create(data))
+	require.NoError(t, NewPodBuilder(podName, data.testNamespace, agnhostImage).OnNode(tcTestConfig.nodeName).Privileged().Create(data))
 	ips, err := data.podWaitForIPs(defaultTimeout, podName, data.testNamespace)
 	if err != nil {
 		t.Fatalf("Error when waiting for IP for Pod '%s': %v", podName, err)
@@ -136,33 +137,33 @@ func (data *TestData) createTrafficControl(t *testing.T,
 			ReturnPort: &v1alpha2.TrafficControlPort{},
 		},
 	}
-	switch targetPort.(type) {
+	switch targetPort := targetPort.(type) {
 	case *v1alpha2.OVSInternalPort:
-		tc.Spec.TargetPort.OVSInternal = targetPort.(*v1alpha2.OVSInternalPort)
+		tc.Spec.TargetPort.OVSInternal = targetPort
 	case *v1alpha2.NetworkDevice:
-		tc.Spec.TargetPort.Device = targetPort.(*v1alpha2.NetworkDevice)
+		tc.Spec.TargetPort.Device = targetPort
 	case *v1alpha2.UDPTunnel:
 		if isTargetPortVXLAN {
-			tc.Spec.TargetPort.VXLAN = targetPort.(*v1alpha2.UDPTunnel)
+			tc.Spec.TargetPort.VXLAN = targetPort
 		} else {
-			tc.Spec.TargetPort.GENEVE = targetPort.(*v1alpha2.UDPTunnel)
+			tc.Spec.TargetPort.GENEVE = targetPort
 		}
 	case *v1alpha2.GRETunnel:
-		tc.Spec.TargetPort.GRE = targetPort.(*v1alpha2.GRETunnel)
+		tc.Spec.TargetPort.GRE = targetPort
 	case *v1alpha2.ERSPANTunnel:
-		tc.Spec.TargetPort.ERSPAN = targetPort.(*v1alpha2.ERSPANTunnel)
+		tc.Spec.TargetPort.ERSPAN = targetPort
 	}
 
-	switch returnPort.(type) {
+	switch returnPort := returnPort.(type) {
 	case *v1alpha2.OVSInternalPort:
-		tc.Spec.ReturnPort.OVSInternal = returnPort.(*v1alpha2.OVSInternalPort)
+		tc.Spec.ReturnPort.OVSInternal = returnPort
 	case *v1alpha2.NetworkDevice:
-		tc.Spec.ReturnPort.Device = returnPort.(*v1alpha2.NetworkDevice)
+		tc.Spec.ReturnPort.Device = returnPort
 	default:
 		tc.Spec.ReturnPort = nil
 	}
 
-	tc, err := data.crdClient.CrdV1alpha2().TrafficControls().Create(context.TODO(), tc, metav1.CreateOptions{})
+	tc, err := data.CRDClient.CrdV1alpha2().TrafficControls().Create(context.TODO(), tc, metav1.CreateOptions{})
 	require.NoError(t, err, "Failed to create TrafficControl")
 	return tc
 }
@@ -229,8 +230,8 @@ ip link set %[3]s up`, vni, dstVXLANPort, tunnelPeer)
 	// Create a TrafficControl whose target port is VXLAN.
 	targetPort := &v1alpha2.UDPTunnel{RemoteIP: tcTestConfig.collectorPodIPs[corev1.IPv4Protocol], VNI: &vni, DestinationPort: &dstVXLANPort}
 
-	tc := data.createTrafficControl(t, "tc-", nil, labels, v1alpha2.DirectionBoth, v1alpha2.ActionMirror, targetPort, true, nil)
-	defer data.crdClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
+	tc := data.createTrafficControl(t, "tc-", nil, tcTestConfig.podLabels, v1alpha2.DirectionBoth, v1alpha2.ActionMirror, targetPort, true, nil)
+	defer data.CRDClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
 	// Wait flows of the TrafficControl to be realized.
 	time.Sleep(time.Second)
 
@@ -242,8 +243,8 @@ func testMirrorToLocal(t *testing.T, data *TestData) {
 	// Create a TrafficControl whose target port is OVS internal port.
 	portName := "test-port"
 	targetPort := &v1alpha2.OVSInternalPort{Name: portName}
-	tc := data.createTrafficControl(t, "tc-", nil, labels, v1alpha2.DirectionBoth, v1alpha2.ActionMirror, targetPort, false, nil)
-	defer data.crdClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
+	tc := data.createTrafficControl(t, "tc-", nil, tcTestConfig.podLabels, v1alpha2.DirectionBoth, v1alpha2.ActionMirror, targetPort, false, nil)
+	defer data.CRDClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
 	// Wait flows of the TrafficControl to be realized.
 	time.Sleep(time.Second)
 
@@ -299,7 +300,7 @@ func testRedirectToLocal(t *testing.T, data *TestData) {
 ip link add dev %[1]s type veth peer name %[2]s && \
 ip link set dev %[1]s up && \
 ip link set dev %[2]s up`, targetPortName, returnPortName)
-	if err := NewPodBuilder(tempPodName, data.testNamespace, agnhostImage).OnNode(tcTestConfig.nodeName).WithCommand([]string{"sleep", "3600"}).InHostNetwork().Privileged().Create(data); err != nil {
+	if err := NewPodBuilder(tempPodName, data.testNamespace, agnhostImage).OnNode(tcTestConfig.nodeName).InHostNetwork().Privileged().Create(data); err != nil {
 		t.Fatalf("Failed to create Pod %s: %v", tempPodName, err)
 	}
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, tempPodName, data.testNamespace))
@@ -310,8 +311,8 @@ ip link set dev %[2]s up`, targetPortName, returnPortName)
 	targetPort := &v1alpha2.NetworkDevice{Name: targetPortName}
 	returnPort := &v1alpha2.NetworkDevice{Name: returnPortName}
 
-	tc := data.createTrafficControl(t, "tc-", nil, labels, v1alpha2.DirectionBoth, v1alpha2.ActionRedirect, targetPort, false, returnPort)
-	defer data.crdClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
+	tc := data.createTrafficControl(t, "tc-", nil, tcTestConfig.podLabels, v1alpha2.DirectionBoth, v1alpha2.ActionRedirect, targetPort, false, returnPort)
+	defer data.CRDClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
 	// Wait flows of TrafficControl to be realized.
 	time.Sleep(time.Second)
 

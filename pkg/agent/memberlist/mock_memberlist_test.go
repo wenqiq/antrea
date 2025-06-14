@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/agent/memberlist/mock_memberlist_test.go -package memberlist antrea.io/antrea/pkg/agent/memberlist Memberlist
 //
+
 // Package memberlist is a generated GoMock package.
 package memberlist
 
@@ -35,6 +36,7 @@ import (
 type MockMemberlist struct {
 	ctrl     *gomock.Controller
 	recorder *MockMemberlistMockRecorder
+	isgomock struct{}
 }
 
 // MockMemberlistMockRecorder is the mock recorder for MockMemberlist.
@@ -55,32 +57,32 @@ func (m *MockMemberlist) EXPECT() *MockMemberlistMockRecorder {
 }
 
 // Join mocks base method.
-func (m *MockMemberlist) Join(arg0 []string) (int, error) {
+func (m *MockMemberlist) Join(existing []string) (int, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Join", arg0)
+	ret := m.ctrl.Call(m, "Join", existing)
 	ret0, _ := ret[0].(int)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Join indicates an expected call of Join.
-func (mr *MockMemberlistMockRecorder) Join(arg0 any) *gomock.Call {
+func (mr *MockMemberlistMockRecorder) Join(existing any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Join", reflect.TypeOf((*MockMemberlist)(nil).Join), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Join", reflect.TypeOf((*MockMemberlist)(nil).Join), existing)
 }
 
 // Leave mocks base method.
-func (m *MockMemberlist) Leave(arg0 time.Duration) error {
+func (m *MockMemberlist) Leave(timeout time.Duration) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Leave", arg0)
+	ret := m.ctrl.Call(m, "Leave", timeout)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Leave indicates an expected call of Leave.
-func (mr *MockMemberlistMockRecorder) Leave(arg0 any) *gomock.Call {
+func (mr *MockMemberlistMockRecorder) Leave(timeout any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Leave", reflect.TypeOf((*MockMemberlist)(nil).Leave), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Leave", reflect.TypeOf((*MockMemberlist)(nil).Leave), timeout)
 }
 
 // Members mocks base method.

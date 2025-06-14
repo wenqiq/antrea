@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import (
 
 	v1beta2 "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	testing "k8s.io/client-go/testing"
 )
 
@@ -31,17 +30,18 @@ type FakeGroupMembers struct {
 	ns   string
 }
 
-var groupmembersResource = schema.GroupVersionResource{Group: "controlplane.antrea.io", Version: "v1beta2", Resource: "groupmembers"}
+var groupmembersResource = v1beta2.SchemeGroupVersion.WithResource("groupmembers")
 
-var groupmembersKind = schema.GroupVersionKind{Group: "controlplane.antrea.io", Version: "v1beta2", Kind: "GroupMembers"}
+var groupmembersKind = v1beta2.SchemeGroupVersion.WithKind("GroupMembers")
 
 // Get takes name of the groupMembers, and returns the corresponding groupMembers object, and an error if there is any.
 func (c *FakeGroupMembers) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1beta2.GroupMembers, err error) {
+	emptyResult := &v1beta2.GroupMembers{}
 	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(groupmembersResource, c.ns, name), &v1beta2.GroupMembers{})
+		Invokes(testing.NewGetActionWithOptions(groupmembersResource, c.ns, name, options), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1beta2.GroupMembers), err
 }

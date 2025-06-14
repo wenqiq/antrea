@@ -33,8 +33,9 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/clock"
 
-	"antrea.io/antrea/pkg/agent"
+	"antrea.io/antrea/pkg/agent/client"
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/controller/networkpolicy/l7engine"
 	"antrea.io/antrea/pkg/agent/flowexporter/connections"
@@ -72,7 +73,7 @@ const (
 )
 
 type L7RuleReconciler interface {
-	AddRule(ruleID, policyName string, vlanID uint32, l7Protocols []v1beta2.L7Protocol, enableLogging bool) error
+	AddRule(ruleID, policyName string, vlanID uint32, l7Protocols []v1beta2.L7Protocol) error
 	DeleteRule(ruleID string, vlanID uint32) error
 }
 
@@ -113,16 +114,19 @@ type Controller struct {
 	multicastEnabled bool
 	// nodeType indicates type of the Node where Antrea Agent is running on.
 	nodeType config.NodeType
-	// antreaClientProvider provides interfaces to get antreaClient, which can be
-	// used to watch Antrea AddressGroups, AppliedToGroups, and NetworkPolicies.
-	// We need to get antreaClient dynamically because the apiserver cert can be
-	// rotated and we need a new client with the updated CA cert.
+	// antreaClientProvider provides interfaces to get antreaClient, which
+	// can be used to watch Antrea AddressGroups, AppliedToGroups, and
+	// NetworkPolicies. We need to get antreaClient dynamically because we
+	// are not relying on the ClusterIP to access the Antrea Service (we
+	// resolve the endpoint directly, and the endpoint can change if the
+	// antrea-controller Pod is rescheduled), and because the apiserver cert
+	// can be rotated and we need a new client with the updated CA cert.
 	// Verifying server certificate only takes place for new requests and existing
 	// watches won't be interrupted by rotating cert. The new client will be used
 	// after the existing watches expire.
-	antreaClientProvider agent.AntreaClientProvider
+	antreaClientProvider client.AntreaClientProvider
 	// queue maintains the NetworkPolicy ruleIDs that need to be synced.
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 	// ruleCache maintains the desired state of NetworkPolicy rules.
 	ruleCache *ruleCache
 	// podReconciler provides interfaces to reconcile the desired state of
@@ -167,7 +171,7 @@ type Controller struct {
 }
 
 // NewNetworkPolicyController returns a new *Controller.
-func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
+func NewNetworkPolicyController(antreaClientGetter client.AntreaClientProvider,
 	ofClient openflow.Client,
 	routeClient route.Interface,
 	ifaceStore interfacestore.InterfaceStore,
@@ -192,11 +196,17 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	gwPort, tunPort uint32,
 	nodeConfig *config.NodeConfig,
 	podNetworkWait *utilwait.Group,
-	l7Reconciler *l7engine.Reconciler) (*Controller, error) {
+	l7Reconciler *l7engine.Reconciler,
+	fqdnCacheMinTTL uint32) (*Controller, error) {
 	idAllocator := newIDAllocator(asyncRuleDeleteInterval, dnsInterceptRuleID)
 	c := &Controller{
-		antreaClientProvider:     antreaClientGetter,
-		queue:                    workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicyrule"),
+		antreaClientProvider: antreaClientGetter,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "networkpolicyrule",
+			},
+		),
 		ofClient:                 ofClient,
 		nodeType:                 nodeType,
 		antreaPolicyEnabled:      antreaPolicyEnabled,
@@ -218,7 +228,7 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 
 	var err error
 	if antreaPolicyEnabled {
-		if c.fqdnController, err = newFQDNController(ofClient, idAllocator, dnsServerOverride, c.enqueueRule, v4Enabled, v6Enabled, gwPort); err != nil {
+		if c.fqdnController, err = newFQDNController(ofClient, idAllocator, dnsServerOverride, c.enqueueRule, v4Enabled, v6Enabled, gwPort, clock.RealClock{}, fqdnCacheMinTTL); err != nil {
 			return nil, err
 		}
 
@@ -528,6 +538,19 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	return c, nil
 }
 
+func (c *Controller) GetFQDNCache(fqdnFilter *querier.FQDNCacheFilter) []types.DnsCacheEntry {
+	cacheEntryList := []types.DnsCacheEntry{}
+	for fqdn, dnsMeta := range c.fqdnController.dnsEntryCache {
+		for _, ipWithExpiration := range dnsMeta.responseIPs {
+			if fqdnFilter == nil || fqdnFilter.DomainRegex.MatchString(fqdn) {
+				entry := types.DnsCacheEntry{FQDNName: fqdn, IPAddress: ipWithExpiration.ip, ExpirationTime: ipWithExpiration.expirationTime}
+				cacheEntryList = append(cacheEntryList, entry)
+			}
+		}
+	}
+	return cacheEntryList
+}
+
 func (c *Controller) GetNetworkPolicyNum() int {
 	return c.ruleCache.GetNetworkPolicyNum()
 }
@@ -594,7 +617,13 @@ func (c *Controller) SetDenyConnStore(denyConnStore *connections.DenyConnectionS
 // Run will not return until stopCh is closed.
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	attempts := 0
-	if err := wait.PollImmediateUntil(200*time.Millisecond, func() (bool, error) {
+	// If Antrea client is not ready within 5s, we assume that the Antrea Controller is not
+	// available. We proceed with our watches, which are likely to fail. In turn, this will
+	// trigger the fallback mechanism.
+	// 5s should be more than enough if the Antrea Controller is running correctly.
+	ctx, cancel := context.WithTimeout(wait.ContextForChannel(stopCh), 5*time.Second)
+	defer cancel()
+	if err := wait.PollUntilContextCancel(ctx, 200*time.Millisecond, true, func(ctx context.Context) (bool, error) {
 		if attempts%10 == 0 {
 			klog.Info("Waiting for Antrea client to be ready")
 		}
@@ -603,11 +632,11 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 			return false, nil
 		}
 		return true, nil
-	}, stopCh); err != nil {
+	}); err != nil {
 		klog.Info("Stopped waiting for Antrea client")
-		return
+	} else {
+		klog.Info("Antrea client is ready")
 	}
-	klog.Info("Antrea client is ready")
 
 	// Use NonSlidingUntil so that normal reconnection (disconnected after
 	// running a while) can reconnect immediately while abnormal reconnection
@@ -712,7 +741,7 @@ func (c *Controller) processNextWorkItem() bool {
 	}
 	defer c.queue.Done(key)
 
-	err := c.syncRule(key.(string))
+	err := c.syncRule(key)
 	c.handleErr(err, key)
 
 	return true
@@ -725,7 +754,7 @@ func (c *Controller) processAllItemsInQueue() {
 	batchSyncRuleKeys := make([]string, numRules)
 	for i := 0; i < numRules; i++ {
 		ruleKey, _ := c.queue.Get()
-		batchSyncRuleKeys[i] = ruleKey.(string)
+		batchSyncRuleKeys[i] = ruleKey
 		// set key to done to prevent missing watched updates between here and fullSync finish.
 		c.queue.Done(ruleKey)
 	}
@@ -788,7 +817,7 @@ func (c *Controller) syncRule(key string) error {
 		vlanID := c.l7VlanIDAllocator.allocate(key)
 		rule.L7RuleVlanID = &vlanID
 
-		if err := c.l7RuleReconciler.AddRule(key, rule.SourceRef.ToString(), vlanID, rule.L7Protocols, rule.EnableLogging); err != nil {
+		if err := c.l7RuleReconciler.AddRule(key, rule.SourceRef.ToString(), vlanID, rule.L7Protocols); err != nil {
 			return err
 		}
 	}
@@ -843,7 +872,7 @@ func (c *Controller) syncRules(keys []string) error {
 				vlanID := c.l7VlanIDAllocator.allocate(key)
 				rule.L7RuleVlanID = &vlanID
 
-				if err := c.l7RuleReconciler.AddRule(key, rule.SourceRef.ToString(), vlanID, rule.L7Protocols, rule.EnableLogging); err != nil {
+				if err := c.l7RuleReconciler.AddRule(key, rule.SourceRef.ToString(), vlanID, rule.L7Protocols); err != nil {
 					return err
 				}
 			}
@@ -879,7 +908,7 @@ func (c *Controller) syncRules(keys []string) error {
 	return nil
 }
 
-func (c *Controller) handleErr(err error, key interface{}) {
+func (c *Controller) handleErr(err error, key string) {
 	if err == nil {
 		c.queue.Forget(key)
 		return
@@ -934,10 +963,10 @@ func (w *watcher) fallback() {
 	if w.fullSynced {
 		return
 	}
-	klog.InfoS("Getting init events for %s from fallback", w.objectType)
+	klog.InfoS("Getting init events from fallback", "objectType", w.objectType)
 	objects, err := w.FallbackFunc()
 	if err != nil {
-		klog.ErrorS(err, "Failed to get init events for %s from fallback", w.objectType)
+		klog.ErrorS(err, "Failed to get init events from fallback", "objectType", w.objectType)
 		return
 	}
 	if err := w.ReplaceFunc(objects); err != nil {
@@ -986,19 +1015,17 @@ func (w *watcher) watch() {
 	var initObjects []runtime.Object
 loop:
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				klog.Warningf("Result channel for %s was closed", w.objectType)
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				klog.V(2).Infof("Added %s (%#v)", w.objectType, event.Object)
-				initObjects = append(initObjects, event.Object)
-			case watch.Bookmark:
-				break loop
-			}
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			klog.Warningf("Result channel for %s was closed", w.objectType)
+			return
+		}
+		switch event.Type {
+		case watch.Added:
+			klog.V(2).Infof("Added %s (%#v)", w.objectType, event.Object)
+			initObjects = append(initObjects, event.Object)
+		case watch.Bookmark:
+			break loop
 		}
 	}
 	klog.Infof("Received %d init events for %s", len(initObjects), w.objectType)
@@ -1011,33 +1038,31 @@ loop:
 	w.onFullSync()
 
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return
-			}
-			klog.V(2).InfoS("Received event", "eventType", event.Type, "objectType", w.objectType, "object", event.Object)
-			switch event.Type {
-			case watch.Added:
-				if err := w.AddFunc(event.Object); err != nil {
-					klog.Errorf("Failed to handle added event: %v", err)
-					return
-				}
-			case watch.Modified:
-				if err := w.UpdateFunc(event.Object); err != nil {
-					klog.Errorf("Failed to handle modified event: %v", err)
-					return
-				}
-			case watch.Deleted:
-				if err := w.DeleteFunc(event.Object); err != nil {
-					klog.Errorf("Failed to handle deleted event: %v", err)
-					return
-				}
-			default:
-				klog.Errorf("Unknown event: %v", event)
-				return
-			}
-			eventCount++
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			return
 		}
+		klog.V(2).InfoS("Received event", "eventType", event.Type, "objectType", w.objectType, "object", event.Object)
+		switch event.Type {
+		case watch.Added:
+			if err := w.AddFunc(event.Object); err != nil {
+				klog.Errorf("Failed to handle added event: %v", err)
+				return
+			}
+		case watch.Modified:
+			if err := w.UpdateFunc(event.Object); err != nil {
+				klog.Errorf("Failed to handle modified event: %v", err)
+				return
+			}
+		case watch.Deleted:
+			if err := w.DeleteFunc(event.Object); err != nil {
+				klog.Errorf("Failed to handle deleted event: %v", err)
+				return
+			}
+		default:
+			klog.Errorf("Unknown event: %v", event)
+			return
+		}
+		eventCount++
 	}
 }

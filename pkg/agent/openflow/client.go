@@ -16,7 +16,7 @@ package openflow
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 
 	"antrea.io/libOpenflow/openflow15"
@@ -216,7 +216,7 @@ type Client interface {
 	// flows for a NetworkPolicy. Flows are grouped by policy rules, and duplicated
 	// entries can be added due to conjunctive match flows shared by multiple
 	// rules.
-	GetNetworkPolicyFlowKeys(npName, npNamespace string) []string
+	GetNetworkPolicyFlowKeys(npName, npNamespace string, npType v1beta2.NetworkPolicyType) []string
 
 	// ReassignFlowPriorities takes a list of priority updates, and update the actionFlows to replace
 	// the old priority with the desired one, for each priority update on that table.
@@ -244,7 +244,7 @@ type Client interface {
 
 	// RegisterPacketInHandler uses SubscribePacketIn to get PacketIn message and process received
 	// packets through registered handler.
-	RegisterPacketInHandler(packetHandlerReason uint8, packetInHandler interface{})
+	RegisterPacketInHandler(packetHandlerReason uint8, packetInHandler PacketInHandler)
 
 	StartPacketInHandler(stopCh <-chan struct{})
 	// Get traffic metrics of each NetworkPolicy rule.
@@ -408,6 +408,12 @@ type Client interface {
 	// or ip, port, protocol and direction. It is used to bypass NetworkPolicy enforcement on a VM for the particular
 	// traffic.
 	InstallPolicyBypassFlows(protocol binding.Protocol, ipNet *net.IPNet, port uint16, isIngress bool) error
+
+	// SubscribeOFPortStatusMessage registers a channel to listen the OpenFlow PortStatus message.
+	SubscribeOFPortStatusMessage(statusCh chan *openflow15.PortStatus)
+
+	// InstallL7NetworkPolicyFlows will be called only when at least one L7 NetworkPolicy is applied locally.
+	InstallL7NetworkPolicyFlows() error
 }
 
 // GetFlowTableStatus returns an array of flow table status.
@@ -445,7 +451,7 @@ func (c *client) addFlowsWithMultipleKeys(cache *flowCategoryCache, keyToFlows m
 		for _, flow := range flows {
 			msg := getFlowModMessage(flow, binding.AddMessage)
 			allMessages = append(allMessages, msg)
-			fCache[getFlowKey(msg)] = msg
+			fCache[getFlowModKey(msg)] = msg
 		}
 		flowCacheMap[flowCacheKey] = fCache
 	}
@@ -473,7 +479,7 @@ func (c *client) modifyFlows(cache *flowCategoryCache, flowCacheKey string, flow
 		for _, flow := range flows {
 			msg := getFlowModMessage(flow, binding.AddMessage)
 			messages = append(messages, msg)
-			fCache[getFlowKey(msg)] = msg
+			fCache[getFlowModKey(msg)] = msg
 		}
 		err = c.ofEntryOperations.AddAll(messages)
 	} else {
@@ -695,7 +701,7 @@ func (c *client) getFlowKeysFromCache(cache *flowCategoryCache, cacheKey string)
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
 	for _, flow := range fCache {
-		flowKeys = append(flowKeys, getFlowKey(flow))
+		flowKeys = append(flowKeys, getFlowModKey(flow))
 	}
 	return flowKeys
 }
@@ -978,7 +984,7 @@ func (c *client) generatePipelines() {
 		}
 
 		// TODO: add support for IPv6 protocol
-		c.featureMulticast = newFeatureMulticast(c.cookieAllocator, []binding.Protocol{binding.ProtocolIP}, c.bridge, c.enableAntreaPolicy, c.nodeConfig.GatewayConfig.OFPort, c.networkConfig.TrafficEncapMode.SupportsEncap(), config.DefaultTunOFPort, uplinkPort, c.nodeConfig.HostInterfaceOFPort, c.connectUplinkToBridge)
+		c.featureMulticast = newFeatureMulticast(c.cookieAllocator, []binding.Protocol{binding.ProtocolIP}, c.bridge, c.enableAntreaPolicy, c.nodeConfig.GatewayConfig.OFPort, c.networkConfig.TrafficEncapMode.SupportsEncap(), c.nodeConfig.TunnelOFPort, uplinkPort, c.nodeConfig.HostInterfaceOFPort, c.connectUplinkToBridge)
 		c.activatedFeatures = append(c.activatedFeatures, c.featureMulticast)
 	}
 
@@ -1696,4 +1702,18 @@ func (c *client) getMeterStats() {
 	if err := c.bridge.GetMeterStats(handleMeterStatsReply); err != nil {
 		klog.ErrorS(err, "Failed to get OVS meter stats")
 	}
+}
+
+func (c *client) SubscribeOFPortStatusMessage(statusCh chan *openflow15.PortStatus) {
+	c.bridge.SubscribePortStatusConsumer(statusCh)
+}
+
+// InstallL7NetworkPolicyFlows will be called only when at least one L7 NetworkPolicy is applied locally.
+func (c *client) InstallL7NetworkPolicyFlows() error {
+	c.replayMutex.RLock()
+	defer c.replayMutex.RUnlock()
+
+	cacheKey := "l7_np_flows"
+	flows := c.featureNetworkPolicy.l7NPTrafficControlFlows()
+	return c.addFlows(c.featureNetworkPolicy.cachedFlows, cacheKey, flows)
 }

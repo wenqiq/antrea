@@ -36,7 +36,7 @@ import (
 // ClusterSet validator
 type clusterSetValidator struct {
 	Client    client.Client
-	decoder   *admission.Decoder
+	decoder   admission.Decoder
 	namespace string
 	role      string
 }
@@ -92,13 +92,8 @@ func (v *clusterSetValidator) Handle(ctx context.Context, req admission.Request)
 
 	if len(clusterSetList.Items) > 0 {
 		err := fmt.Errorf("multiple ClusterSets in a Namespace are not allowed")
-		klog.ErrorS(err, "ClusterSet", klog.KObj(clusterSet), "Namespace", v.namespace)
+		klog.ErrorS(err, "Found existing ClusterSets when handling new ClusterSet", "newClusterSet", klog.KObj(clusterSet), "Namespace", v.namespace)
 		return admission.Errored(http.StatusPreconditionFailed, err)
 	}
 	return admission.Allowed("")
-}
-
-func (v *clusterSetValidator) InjectDecoder(d *admission.Decoder) error {
-	v.decoder = d
-	return nil
 }

@@ -18,6 +18,54 @@ kind: Role
 metadata:
   labels:
     app: flow-aggregator
+  name: flow-aggregator-role
+  namespace: flow-aggregator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resourceNames:
+  - flow-aggregator-ca
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resourceNames:
+  - flow-aggregator-client-tls
+  resources:
+  - secrets
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ""
+  resourceNames:
+  - flow-aggregator-configmap
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app: flow-aggregator
   name: flow-exporter-role
   namespace: flow-aggregator
 rules:
@@ -47,63 +95,28 @@ metadata:
 rules:
 - apiGroups:
   - ""
-  resourceNames:
-  - flow-aggregator-ca
-  resources:
-  - configmaps
-  verbs:
-  - get
-  - update
-- apiGroups:
-  - ""
   resources:
   - pods
   verbs:
   - get
   - list
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - create
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resourceNames:
-  - extension-apiserver-authentication
-  resources:
-  - configmaps
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resourceNames:
-  - flow-aggregator-client-tls
-  resources:
-  - secrets
-  verbs:
-  - get
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resourceNames:
-  - flow-aggregator-configmap
-  resources:
-  - configmaps
-  verbs:
-  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app: flow-aggregator
+  name: flow-aggregator-role-binding
+  namespace: flow-aggregator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flow-aggregator-role
+subjects:
+- kind: ServiceAccount
+  name: flow-aggregator
+  namespace: flow-aggregator
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -120,6 +133,37 @@ subjects:
 - kind: ServiceAccount
   name: antrea-agent
   namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app: flow-aggregator
+  name: flow-aggregator-extension-apiserver-authentication-reader-role-binding
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: flow-aggregator
+  namespace: flow-aggregator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: flow-aggregator
+  name: flow-aggregator-auth-delegator-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: flow-aggregator
+  namespace: flow-aggregator
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -154,6 +198,12 @@ subjects:
 apiVersion: v1
 data:
   flow-aggregator.conf: |
+    # Mode in which to run the flow aggregator. Must be one of "Aggregate" or "Proxy". In Aggregate
+    # mode, flow records received from source and destination are aggregated and sent as one flow
+    # record. In Proxy mode, flow records are enhanced with some additional information, then sent
+    # directly without buffering or aggregation.
+    mode: Aggregate
+
     # Provide the active flow record timeout as a duration string. This determines
     # how often the flow aggregator exports the active flow records to the flow
     # collector. Thus, for flows with a continuous stream of packets, a flow record
@@ -215,6 +265,16 @@ data:
       # Provide format for records sent to the configured flow collector.
       # Supported formats are IPFIX and JSON.
       recordFormat: "IPFIX"
+
+      # Template retransmission interval when using the udp protocol to export records.
+      # The value must be provided as a duration string.
+      # Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
+      templateRefreshTimeout: "600s"
+
+      # Maximum message size to use for IPFIX records. If set to 0 (recommended), a reasonable default
+      # value will be used based on the protocol (tcp or udp) used to connect to the collector.
+      # Min valid value is 512 and max valid value is 65535.
+      maxIPFIXMsgSize: 0
 
     # clickHouse contains ClickHouse related configuration options.
     clickHouse:
@@ -323,6 +383,11 @@ data:
       # PrettyPrint enables conversion of some numeric fields to a more meaningful string
       # representation.
       prettyPrint: true
+
+    # Provide a clusterID to be added to records. By default this ID is an auto-generated UUID which
+    # can be found in the antrea-cluster-identity ConfigMap. Currently this is only consumed by the
+    # flowCollector (IPFIX) exporter.
+    clusterID: ""
 kind: ConfigMap
 metadata:
   labels:
@@ -389,6 +454,8 @@ spec:
       app: flow-aggregator
   template:
     metadata:
+      annotations:
+        checksum/config: 226913332e1c10fc849cb803ad124d7a6c94362bdc287775db7641539812f609
       labels:
         app: flow-aggregator
     spec:
@@ -442,6 +509,10 @@ spec:
         name: flow-aggregator
         ports:
         - containerPort: 4739
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
         volumeMounts:
         - mountPath: /etc/flow-aggregator
           name: flow-aggregator-config
@@ -450,10 +521,11 @@ spec:
           name: host-var-log-antrea-flow-aggregator
         - mountPath: /etc/flow-aggregator/certs
           name: clickhouse-ca
-      hostAliases: null
+      hostNetwork: false
       nodeSelector:
         kubernetes.io/arch: amd64
         kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
       serviceAccountName: flow-aggregator
       volumes:
       - configMap:

@@ -37,7 +37,7 @@ import (
 
 type memberClusterAnnounceValidator struct {
 	Client    client.Client
-	decoder   *admission.Decoder
+	decoder   admission.Decoder
 	namespace string
 }
 
@@ -107,9 +107,4 @@ func (v *memberClusterAnnounceValidator) Handle(ctx context.Context, req admissi
 	default:
 		return admission.Allowed("")
 	}
-}
-
-func (v *memberClusterAnnounceValidator) InjectDecoder(d *admission.Decoder) error {
-	v.decoder = d
-	return nil
 }

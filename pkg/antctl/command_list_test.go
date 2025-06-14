@@ -56,7 +56,6 @@ func TestCommandListApplyToCommand(t *testing.T) {
 }
 
 func TestGetDebugCommands(t *testing.T) {
-
 	tc := []struct {
 		name     string
 		mode     string
@@ -70,7 +69,7 @@ func TestGetDebugCommands(t *testing.T) {
 		{
 			name:     "Antctl running against agent mode",
 			mode:     "agent",
-			expected: [][]string{{"version"}, {"get", "podmulticaststats"}, {"log-level"}, {"get", "networkpolicy"}, {"get", "appliedtogroup"}, {"get", "addressgroup"}, {"get", "agentinfo"}, {"get", "podinterface"}, {"get", "ovsflows"}, {"trace-packet"}, {"get", "serviceexternalip"}, {"get", "memberlist"}, {"supportbundle"}, {"traceflow"}, {"get", "featuregates"}},
+			expected: [][]string{{"version"}, {"get", "podmulticaststats"}, {"log-level"}, {"get", "networkpolicy"}, {"get", "appliedtogroup"}, {"get", "addressgroup"}, {"get", "agentinfo"}, {"get", "podinterface"}, {"get", "ovsflows"}, {"trace-packet"}, {"get", "serviceexternalip"}, {"get", "memberlist"}, {"get", "bgppolicy"}, {"get", "bgppeers"}, {"get", "bgproutes"}, {"get", "fqdncache"}, {"supportbundle"}, {"traceflow"}, {"get", "featuregates"}},
 		},
 		{
 			name:     "Antctl running against flow-aggregator mode",
@@ -84,5 +83,4 @@ func TestGetDebugCommands(t *testing.T) {
 			assert.Equal(t, tt.expected, generated)
 		})
 	}
-
 }

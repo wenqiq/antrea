@@ -30,7 +30,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/agent/config"
-	"antrea.io/antrea/pkg/agent/controller/networkpolicy/l7engine"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/types"
@@ -63,13 +62,13 @@ type L7FlowExporterController struct {
 	namespaceLister       corelisters.NamespaceLister
 	namespaceListerSynced cache.InformerSynced
 
-	l7Reconciler           *l7engine.Reconciler
+	startSuricataOnceFn    func() error
 	podToDirectionMap      map[string]v1alpha2.Direction
 	podToDirectionMapMutex sync.RWMutex
 
 	targetPort uint32
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 }
 
 func NewL7FlowExporterController(
@@ -77,7 +76,7 @@ func NewL7FlowExporterController(
 	interfaceStore interfacestore.InterfaceStore,
 	podInformer cache.SharedIndexInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
-	l7Reconciler *l7engine.Reconciler) *L7FlowExporterController {
+	suricataStartFunc func() error) *L7FlowExporterController {
 	l7c := &L7FlowExporterController{
 		ofClient:              ofClient,
 		interfaceStore:        interfaceStore,
@@ -87,9 +86,14 @@ func NewL7FlowExporterController(
 		namespaceInformer:     namespaceInformer.Informer(),
 		namespaceLister:       namespaceInformer.Lister(),
 		namespaceListerSynced: namespaceInformer.Informer().HasSynced,
-		l7Reconciler:          l7Reconciler,
+		startSuricataOnceFn:   suricataStartFunc,
 		podToDirectionMap:     make(map[string]v1alpha2.Direction),
-		queue:                 workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "L7FlowExporterController"),
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "L7FlowExporterController",
+			},
+		),
 	}
 	l7c.podInformer.AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
@@ -134,20 +138,13 @@ func (l7c *L7FlowExporterController) worker() {
 }
 
 func (l7c *L7FlowExporterController) processNextWorkItem() bool {
-	obj, quit := l7c.queue.Get()
+	key, quit := l7c.queue.Get()
 	if quit {
 		return false
 	}
-	defer l7c.queue.Done(obj)
+	defer l7c.queue.Done(key)
 
-	if key, ok := obj.(string); !ok {
-		// As the item in the work queue is actually invalid, we call Forget here else we'd
-		// go into a loop of attempting to process a work item that is invalid.
-		// This should not happen.
-		l7c.queue.Forget(key)
-		klog.ErrorS(nil, "Expected string in work queue but got", "key", obj)
-		return true
-	} else if err := l7c.syncPod(key); err == nil {
+	if err := l7c.syncPod(key); err == nil {
 		// If no error occurs we Forget this item, so it does not get queued again until
 		// another change happens.
 		l7c.queue.Forget(key)
@@ -326,7 +323,9 @@ func (l7c *L7FlowExporterController) syncPod(podNN string) error {
 	sourceOfPort := []uint32{uint32(podInterfaces[0].OFPort)}
 
 	// Start Suricata before starting traffic control mark flows
-	l7c.l7Reconciler.StartSuricataOnce()
+	if err := l7c.startSuricataOnceFn(); err != nil {
+		return err
+	}
 
 	oldDirection, exists := l7c.getMirroredDirection(podNN)
 	if exists {

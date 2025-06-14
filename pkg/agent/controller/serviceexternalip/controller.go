@@ -25,13 +25,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
+	"antrea.io/antrea/pkg/agent/apis"
 	"antrea.io/antrea/pkg/agent/ipassigner"
+	"antrea.io/antrea/pkg/agent/ipassigner/linkmonitor"
 	"antrea.io/antrea/pkg/agent/memberlist"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/querier"
@@ -63,13 +64,11 @@ type ServiceExternalIPController struct {
 	serviceLister       corelisters.ServiceLister
 	serviceListerSynced cache.InformerSynced
 
-	client kubernetes.Interface
-
 	endpointsInformer     cache.SharedIndexInformer
 	endpointsLister       corelisters.EndpointsLister
 	endpointsListerSynced cache.InformerSynced
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[apimachinerytypes.NamespacedName]
 
 	externalIPStates      map[apimachinerytypes.NamespacedName]externalIPState
 	externalIPStatesMutex sync.RWMutex
@@ -79,6 +78,8 @@ type ServiceExternalIPController struct {
 
 	assignedIPs      map[string]sets.Set[string]
 	assignedIPsMutex sync.Mutex
+
+	linkMonitor linkmonitor.Interface
 }
 
 var _ querier.ServiceExternalIPStatusQuerier = (*ServiceExternalIPController)(nil)
@@ -86,16 +87,20 @@ var _ querier.ServiceExternalIPStatusQuerier = (*ServiceExternalIPController)(ni
 func NewServiceExternalIPController(
 	nodeName string,
 	nodeTransportInterface string,
-	client kubernetes.Interface,
 	cluster memberlist.Interface,
 	serviceInformer coreinformers.ServiceInformer,
 	endpointsInformer coreinformers.EndpointsInformer,
+	linkMonitor linkmonitor.Interface,
 ) (*ServiceExternalIPController, error) {
 	c := &ServiceExternalIPController{
-		nodeName:              nodeName,
-		client:                client,
-		cluster:               cluster,
-		queue:                 workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "AgentServiceExternalIP"),
+		nodeName: nodeName,
+		cluster:  cluster,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[apimachinerytypes.NamespacedName](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[apimachinerytypes.NamespacedName]{
+				Name: "AgentServiceExternalIP",
+			},
+		),
 		serviceInformer:       serviceInformer.Informer(),
 		serviceLister:         serviceInformer.Lister(),
 		serviceListerSynced:   serviceInformer.Informer().HasSynced,
@@ -104,8 +109,9 @@ func NewServiceExternalIPController(
 		endpointsListerSynced: endpointsInformer.Informer().HasSynced,
 		externalIPStates:      make(map[apimachinerytypes.NamespacedName]externalIPState),
 		assignedIPs:           make(map[string]sets.Set[string]),
+		linkMonitor:           linkMonitor,
 	}
-	ipAssigner, err := ipassigner.NewIPAssigner(nodeTransportInterface, "")
+	ipAssigner, err := ipassigner.NewIPAssigner(nodeTransportInterface, "", linkMonitor)
 	if err != nil {
 		return nil, fmt.Errorf("initializing service external IP assigner failed: %v", err)
 	}
@@ -239,7 +245,7 @@ func (c *ServiceExternalIPController) Run(stopCh <-chan struct{}) {
 	klog.Infof("Starting %s", controllerName)
 	defer klog.Infof("Shutting down %s", controllerName)
 
-	if !cache.WaitForNamedCacheSync(controllerName, stopCh, c.serviceListerSynced, c.endpointsListerSynced) {
+	if !cache.WaitForNamedCacheSync(controllerName, stopCh, c.serviceListerSynced, c.endpointsListerSynced, c.linkMonitor.HasSynced) {
 		return
 	}
 
@@ -257,16 +263,12 @@ func (c *ServiceExternalIPController) worker() {
 }
 
 func (c *ServiceExternalIPController) processNextWorkItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
-	defer c.queue.Done(obj)
-	if key, ok := obj.(apimachinerytypes.NamespacedName); !ok {
-		c.queue.Forget(obj)
-		klog.Errorf("Expected NamespacedName in work queue but got %#v", obj)
-		return true
-	} else if err := c.syncService(key); err == nil {
+	defer c.queue.Done(key)
+	if err := c.syncService(key); err == nil {
 		// If no error occurs we Forget this item so it does not get queued again until
 		// another change happens.
 		c.queue.Forget(key)
@@ -439,12 +441,12 @@ func (c *ServiceExternalIPController) nodesHasHealthyServiceEndpoint(service *co
 	return nodes, nil
 }
 
-func (c *ServiceExternalIPController) GetServiceExternalIPStatus() []querier.ServiceExternalIPInfo {
+func (c *ServiceExternalIPController) GetServiceExternalIPStatus() []apis.ServiceExternalIPInfo {
 	c.externalIPStatesMutex.RLock()
 	defer c.externalIPStatesMutex.RUnlock()
-	info := make([]querier.ServiceExternalIPInfo, 0, len(c.externalIPStates))
+	info := make([]apis.ServiceExternalIPInfo, 0, len(c.externalIPStates))
 	for k, v := range c.externalIPStates {
-		info = append(info, querier.ServiceExternalIPInfo{
+		info = append(info, apis.ServiceExternalIPInfo{
 			ServiceName:    k.Name,
 			Namespace:      k.Namespace,
 			ExternalIP:     v.ip,

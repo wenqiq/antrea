@@ -16,6 +16,7 @@ package ovsconfig
 
 import (
 	"net"
+	"time"
 )
 
 type TunnelType string
@@ -32,6 +33,20 @@ const (
 	OVSDatapathSystem OVSDatapathType = "system"
 
 	OVSOtherConfigDatapathIDKey string = "datapath-id"
+
+	// Valid ofport_request values are in the range 1 to 65,279. For ofport_request value not in
+	// this range, OVS ignores it and automatically assigns a port number.
+	// Here we use invalid port number "0" to explicitly request automatic port allocation.
+	AutoAssignedOFPort = 0
+	// Open vSwitch limits the port numbers that it automatically assigns to the range 1 through
+	// 32,767, inclusive. Controllers therefore have free use of ports 32,768 and up.
+	// When requesting a specific port number with ofport_request, it is better to use one of
+	// these "controller ports", to avoid unexpected ofport changes.
+	FirstControllerOFPort = 32768
+	// 0xfffffffe (OFPP_LOCAL) is a reserved port number in OpenFlow protocol, which is reserved
+	// for the Bridge interface.
+	// In OVS, it is equivalent to 0xfffe / 65534.
+	BridgeOFPort = 0xfffffffe
 )
 
 type OVSBridgeClient interface {
@@ -40,6 +55,7 @@ type OVSBridgeClient interface {
 	GetExternalIDs() (map[string]string, Error)
 	SetExternalIDs(externalIDs map[string]interface{}) Error
 	GetDatapathID() (string, Error)
+	WaitForDatapathID(timeout time.Duration) (string, Error)
 	SetDatapathID(datapathID string) Error
 	GetInterfaceOptions(name string) (map[string]string, Error)
 	SetInterfaceOptions(name string, options map[string]interface{}) Error
@@ -54,7 +70,6 @@ type OVSBridgeClient interface {
 	GetOFPort(ifName string, waitUntilValid bool) (int32, Error)
 	GetPortData(portUUID, ifName string) (*OVSPortData, Error)
 	GetPortList() ([]OVSPortData, Error)
-	AllocateOFPort(startPort int) (int32, error)
 	SetInterfaceMTU(name string, MTU int) error
 	GetOVSVersion() (string, Error)
 	AddOVSOtherConfig(configs map[string]interface{}) Error
@@ -67,5 +82,6 @@ type OVSBridgeClient interface {
 	GetOVSDatapathType() OVSDatapathType
 	SetInterfaceType(name, ifType string) Error
 	SetPortExternalIDs(portName string, externalIDs map[string]interface{}) Error
+	GetPortExternalIDs(portName string) (map[string]string, Error)
 	SetInterfaceMAC(name string, mac net.HardwareAddr) Error
 }

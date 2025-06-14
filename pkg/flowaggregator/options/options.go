@@ -19,15 +19,18 @@ import (
 	"net"
 	"time"
 
-	"gopkg.in/yaml.v2"
+	"k8s.io/klog/v2"
 
 	flowaggregatorconfig "antrea.io/antrea/pkg/config/flowaggregator"
 	"antrea.io/antrea/pkg/util/flowexport"
+	"antrea.io/antrea/pkg/util/yaml"
 )
 
 type Options struct {
 	// The configuration object
 	Config *flowaggregatorconfig.FlowAggregatorConfig
+	// Mode is the mode in which to run the flow aggregator (with aggregation or just as a proxy)
+	AggregatorMode flowaggregatorconfig.AggregatorMode
 	// Expiration timeout for active flow records in the flow aggregator
 	ActiveFlowRecordTimeout time.Duration
 	// Expiration timeout for inactive flow records in the flow aggregator
@@ -38,6 +41,8 @@ type Options struct {
 	ExternalFlowCollectorAddr string
 	// IPFIX flow collector transport protocol
 	ExternalFlowCollectorProto string
+	//  Template retransmission interval when using the UDP protocol to export records.
+	TemplateRefreshTimeout time.Duration
 	// clickHouseCommitInterval flow records batch commit interval to clickhouse in the flow aggregator
 	ClickHouseCommitInterval time.Duration
 	// Flow records batch upload interval from flow aggregator to S3 bucket
@@ -46,11 +51,11 @@ type Options struct {
 
 func LoadConfig(configBytes []byte) (*Options, error) {
 	var opt Options
-	if err := yaml.UnmarshalStrict(configBytes, &opt.Config); err != nil {
+	if err := yaml.UnmarshalLenient(configBytes, &opt.Config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal FlowAggregator config from ConfigMap: %v", err)
 	}
 	flowaggregatorconfig.SetConfigDefaults(opt.Config)
-	// validate all the required options.
+	// Validate all the required options.
 	if opt.Config.FlowCollector.Enable && opt.Config.FlowCollector.Address == "" {
 		return nil, fmt.Errorf("external flow collector enabled without providing address")
 	}
@@ -58,9 +63,18 @@ func LoadConfig(configBytes []byte) (*Options, error) {
 		return nil, fmt.Errorf("s3Uploader enabled without specifying bucket name")
 	}
 	if !opt.Config.FlowCollector.Enable && !opt.Config.ClickHouse.Enable && !opt.Config.S3Uploader.Enable && !opt.Config.FlowLogger.Enable {
-		return nil, fmt.Errorf("external flow collector or ClickHouse or S3Uploader should be configured")
+		klog.InfoS("No collector / sink has been configured, so no flow data will be exported")
 	}
 	// Validate common parameters
+	if opt.Config.Mode != flowaggregatorconfig.AggregatorModeAggregate && opt.Config.Mode != flowaggregatorconfig.AggregatorModeProxy {
+		return nil, fmt.Errorf("unsupported FlowAggregator mode %s", opt.Config.Mode)
+	}
+	opt.AggregatorMode = opt.Config.Mode
+	if opt.AggregatorMode == flowaggregatorconfig.AggregatorModeProxy {
+		if opt.Config.ClickHouse.Enable || opt.Config.S3Uploader.Enable || opt.Config.FlowLogger.Enable {
+			return nil, fmt.Errorf("only flow collector is supported in Proxy mode")
+		}
+	}
 	var err error
 	opt.ActiveFlowRecordTimeout, err = time.ParseDuration(opt.Config.ActiveFlowRecordTimeout)
 	if err != nil {
@@ -75,7 +89,7 @@ func LoadConfig(configBytes []byte) (*Options, error) {
 		return nil, err
 	}
 	// Validate flow collector specific parameters
-	if opt.Config.FlowCollector.Enable && len(opt.Config.FlowCollector.Address) > 0 {
+	if opt.Config.FlowCollector.Enable {
 		host, port, proto, err := flowexport.ParseFlowCollectorAddr(
 			opt.Config.FlowCollector.Address, flowaggregatorconfig.DefaultExternalFlowCollectorPort,
 			flowaggregatorconfig.DefaultExternalFlowCollectorTransport)
@@ -87,6 +101,26 @@ func LoadConfig(configBytes []byte) (*Options, error) {
 
 		if opt.Config.FlowCollector.RecordFormat != "IPFIX" && opt.Config.FlowCollector.RecordFormat != "JSON" {
 			return nil, fmt.Errorf("record format %s is not supported", opt.Config.FlowCollector.RecordFormat)
+		}
+
+		opt.TemplateRefreshTimeout, err = time.ParseDuration(opt.Config.FlowCollector.TemplateRefreshTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("templateRefreshTimeout is not a valid duration: %w", err)
+		}
+		if opt.TemplateRefreshTimeout < 0 {
+			return nil, fmt.Errorf("templateRefreshTimeout cannot be a negative duration")
+		}
+
+		if opt.Config.FlowCollector.MaxIPFIXMsgSize < 0 {
+			return nil, fmt.Errorf("maxIPFIXMsgSize cannot be negative")
+		}
+		if opt.Config.FlowCollector.MaxIPFIXMsgSize > 0 {
+			if opt.Config.FlowCollector.MaxIPFIXMsgSize < flowaggregatorconfig.MinValidIPFIXMsgSize {
+				return nil, fmt.Errorf("maxIPFIXMsgSize cannot be smaller than the minimum valid IPFIX mesage size %d", flowaggregatorconfig.MinValidIPFIXMsgSize)
+			}
+			if opt.Config.FlowCollector.MaxIPFIXMsgSize > flowaggregatorconfig.MaxValidIPFIXMsgSize {
+				return nil, fmt.Errorf("maxIPFIXMsgSize cannot be greater than the maximum valid IPFIX mesage size %d", flowaggregatorconfig.MaxValidIPFIXMsgSize)
+			}
 		}
 	}
 	// Validate clickhouse specific parameters

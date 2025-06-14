@@ -54,9 +54,6 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	$(CURDIR)/hack/generate-manifest.sh -m > build/yamls/antrea-multicluster-member.yml
 	$(CURDIR)/hack/update-checksum.sh
 
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./..."
-
 fmt: ## Run go fmt against code.
 	go fmt ./...
 
@@ -82,7 +79,7 @@ bin: fmt vet ## Build manager binary.
 
 .PHONY: antrea-mc-instr-binary
 antrea-mc-instr-binary:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -tags testbincover -covermode count -coverpkg=antrea.io/antrea/multicluster/... -c -o bin/antrea-mc-controller-coverage antrea.io/antrea/multicluster/cmd/...
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -cover -coverpkg=antrea.io/antrea/multicluster/...,antrea.io/antrea/multicluster/cmd/... -o bin/antrea-mc-controller-coverage antrea.io/antrea/multicluster/cmd/...
 
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./main.go
@@ -91,7 +88,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.9.0)
+	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.3)
 
 codegen:
 	./hack/update-codegen.sh

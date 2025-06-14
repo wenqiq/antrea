@@ -118,8 +118,8 @@ function Install-AntreaAgent {
     }
 
     New-DirectoryIfNotExist $AntreaEtc
-    Get-WebFileIfNotExist $AntreaCNIConfigFile "$AntreaRawUrlBase/build/yamls/windows/base/conf/antrea-cni.conflist"
-    Get-WebFileIfNotExist $AntreaAgentConfigPath "$AntreaRawUrlBase/build/yamls/windows/base/conf/antrea-agent.conf"
+    Get-WebFileIfNotExist $AntreaCNIConfigFile "$AntreaRawUrlBase/build/charts/antrea-windows/conf/antrea-cni.conflist"
+    Get-WebFileIfNotExist $AntreaAgentConfigPath "$AntreaRawUrlBase/build/charts/antrea-windows/conf/antrea-agent.conf"
     yq w -i $AntreaAgentConfigPath clientConnection.kubeconfig $AntreaEtc\antrea-agent.kubeconfig
     yq w -i $AntreaAgentConfigPath antreaClientConnection.kubeconfig $AntreaEtc\antrea-agent.antrea.kubeconfig
 
@@ -163,9 +163,9 @@ function New-KubeProxyServiceInterface {
         Write-Host "Network adapter $INTERFACE_TO_ADD_SERVICE_IP exists, exit."
         return
     }
-    if (!(Get-VMSwitch -ComputerName $(hostname) -Name $hnsSwitchName -ErrorAction SilentlyContinue)) {
+    if (!(Get-VMSwitch -ComputerName localhost -Name $hnsSwitchName -ErrorAction SilentlyContinue)) {
         Write-Host "Creating internal switch: $hnsSwitchName for kube-proxy"
-        New-VMSwitch -name $hnsSwitchName -SwitchType Internal
+        New-VMSwitch -name $hnsSwitchName -SwitchType Internal -ComputerName localhost
     }
     Write-Host "Creating network adapter: $INTERFACE_TO_ADD_SERVICE_IP for kube-proxy"
     [Environment]::SetEnvironmentVariable("INTERFACE_TO_ADD_SERVICE_IP", $INTERFACE_TO_ADD_SERVICE_IP, [System.EnvironmentVariableTarget]::Machine)
@@ -216,7 +216,7 @@ function Start-OVSServices {
     }
     # Try to cleanup ovsdb-server configurations if the antrea-hnsnetwork is not existing. Or ovs-vswitchd service
     # will can not get started.
-    if (!(Get-VMswitch -ComputerName $(hostname) -Name "antrea-hnsnetwork" -SwitchType External -ErrorAction SilentlyContinue)) {
+    if (!(Get-VMswitch -ComputerName localhost -Name "antrea-hnsnetwork" -SwitchType External -ErrorAction SilentlyContinue)) {
         & ovs-vsctl.exe --no-wait --if-exists del-br br-int
         if ($LASTEXITCODE) {
             return $false

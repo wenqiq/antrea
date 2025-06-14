@@ -20,7 +20,6 @@ import (
 
 	"antrea.io/libOpenflow/openflow15"
 
-	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	"antrea.io/antrea/pkg/agent/types"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
@@ -48,7 +47,18 @@ func (f *featureMulticast) getFeatureName() string {
 	return "Multicast"
 }
 
-func newFeatureMulticast(cookieAllocator cookie.Allocator, ipProtocols []binding.Protocol, bridge binding.Bridge, anpEnabled bool, gwPort uint32, encapEnabled bool, tunnelPort uint32, uplinkPort uint32, hostOFPort uint32, flexibleIPAMEnabled bool) *featureMulticast {
+func newFeatureMulticast(
+	cookieAllocator cookie.Allocator,
+	ipProtocols []binding.Protocol,
+	bridge binding.Bridge,
+	anpEnabled bool,
+	gwPort uint32,
+	encapEnabled bool,
+	tunnelPort uint32,
+	uplinkPort uint32,
+	hostOFPort uint32,
+	flexibleIPAMEnabled bool,
+) *featureMulticast {
 	return &featureMulticast{
 		cookieAllocator:     cookieAllocator,
 		ipProtocols:         ipProtocols,
@@ -97,6 +107,7 @@ func (f *featureMulticast) replayFlows() []*openflow15.FlowMod {
 	return getCachedFlowMessages(f.cachedFlows)
 }
 
+// IMPORTANT: Ensure any changes to this function are tested in TestMulticastReceiversGroupMaxBuckets.
 func (f *featureMulticast) multicastReceiversGroup(groupID binding.GroupIDType, tableID uint8, ports []uint32, remoteIPs []net.IP) binding.Group {
 	group := f.bridge.NewGroupTypeAll(groupID)
 	for i := range ports {
@@ -137,14 +148,14 @@ func (f *featureMulticast) multicastOutputFlows() []binding.Flow {
 			Cookie(cookieID).
 			MatchRegMark(FromTunnelRegMark).
 			MatchRegMark(OutputToOFPortRegMark).
-			MatchRegFieldWithValue(TargetOFPortField, config.HostGatewayOFPort).
+			MatchRegFieldWithValue(TargetOFPortField, f.gatewayPort).
 			Action().Drop().
 			Done(),
 			MulticastOutputTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(cookieID).
 				MatchRegMark(FromGatewayRegMark).
 				MatchRegMark(OutputToOFPortRegMark).
-				MatchRegFieldWithValue(TargetOFPortField, config.DefaultTunOFPort).
+				MatchRegFieldWithValue(TargetOFPortField, f.tunnelPort).
 				Action().Drop().
 				Done(),
 		)

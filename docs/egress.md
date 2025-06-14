@@ -21,6 +21,7 @@
 - [Egress on Cloud](#egress-on-cloud)
   - [AWS](#aws)
 - [Limitations](#limitations)
+- [Known issues](#known-issues)
 <!-- /toc -->
 
 ## What is Egress?
@@ -120,7 +121,10 @@ Node will be elected (from among the remaining Nodes selected by the
 `nodeSelector` of the `externalIPPool`) as the new egress Node of this Egress.
 It will take over the IP and send layer 2 advertisement (for example, Gratuitous
 ARP for IPv4) to notify the other hosts and routers on the network that the MAC
-address associated with the IP has changed.
+address associated with the IP has changed. A dummy interface `antrea-egress0` is
+automatically created on the Node hosting the egress IP, the interface is intended
+to be down and egress traffic will not flow through it but the interface determined
+by the route table.
 
 **Note**: If more than one Egress applies to a Pod and they specify different
 `egressIP`, the effective egress IP will be selected randomly.
@@ -199,6 +203,15 @@ The `ipRanges` field contains a list of IP ranges representing the available IPs
 of this IP pool. Each IP range may consist of a `cidr` or a pair of `start` and
 `end` IPs (which are themselves included in the range).
 
+When using a CIDR to define an IP range, it is important to keep in mind that
+the first IP in the CIDR will be excluded and will never be allocated. This is
+because when the CIDR represents a traditional subnet, the first IP is typically
+the "network IP". Additionally, for IPv4, the last IP in the CIDR, which
+traditionally represents the "broadcast IP", will also be excluded. As a result,
+providing a /32 CIDR or a /31 CIDR will yield an empty pool of IP addresses. A
+/28 CIDR will yield 14 allocatable IP addresses. In the future we may make this
+behavior configurable, so that the full CIDR can be used if desired.
+
 ### SubnetInfo
 
 By default, it's assumed that the IPs allocated from an ExternalIPPool are in
@@ -238,12 +251,12 @@ spec:
       network-role: egress-gateway
 ```
 
-**Note**: Specifying different subnets is currently in alpha version. To use
-this feature, users should enable the `EgressSeparateSubnet` feature gate.
-Currently, the maximum number of different subnets that can be supported in a
-cluster is 20, which should be sufficient for most cases. If you need to have
-more subnets, please raise an issue with your use case, and we will consider
-revising the limit based on that.
+**Note**: Specifying different subnets is enabled by default since Antrea v2.3.
+To use this feature with an earlier release, users should enable the `EgressSeparateSubnet`
+feature gate. Currently, the maximum number of different subnets that can be
+supported in a cluster is 20, which should be sufficient for most cases. If you
+need to have more subnets, please raise an issue with your use case, and we will
+consider revising the limit based on that.
 
 ### NodeSelector
 
@@ -388,8 +401,9 @@ Namespace to the new Node.
 There are several options that can be configured for Egress according to your
 case.
 
-- `egress.exceptCIDRs` - The CIDR ranges to which outbound Pod traffic will not
-  be SNAT'd by Egresses. The option was added in Antrea v1.4.0.
+- `egress.exceptCIDRs` - A list of CIDR ranges to which outbound Pod traffic
+  will not be SNAT'd by Egresses, e.g. `["192.168.0.0/16", "172.16.0.0/12"]`.
+  The option was added in Antrea v1.4.0.
 - `egress.maxEgressIPsPerNode` - The maximum number of Egress IPs that can be
   assigned to a Node. It's useful when the Node network restricts the number of
   secondary IPs a Node can have, e.g. in AWS EC2. The configured value must not
@@ -450,3 +464,43 @@ configuration is required by some Service load balancing solutions including:
 [Antrea Service external IP management, MetalLB](service-loadbalancer.md#interoperability-with-kube-proxy-ipvs-mode),
 and kube-vip. It means Antrea Egress cannot work together with these solutions
 in a cluster using `kube-proxy` IPVS. The issue was fixed in Antrea v1.7.0.
+
+## Known issues
+
+To support the `EgressSeparateSubnet` feature, VLAN sub-interfaces will be
+created by Antrea Agent on a Node, and the `rp_filter` setting of the VLAN
+sub-interfaces should be set to `2`, which configures loose reverse path
+filtering. In a vanilla Kubernetes cluster, Antrea Agent will set `rp_filter` to
+`2` automatically without user intervention. However, it has been observed that
+the `rp_filter` update by Antrea takes no effect on an OpenShift cluster due to
+[a known issue](https://github.com/antrea-io/antrea/issues/6546). A workaround
+for this issue is to leverage OpenShift Node Tuning Operator to update
+`rp_filter` for all interfaces on all Egress Nodes:
+
+```yaml
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: antrea
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Update rp_filter for all
+      [sysctl]
+      net.ipv4.conf.all.rp_filter=2
+    name: openshift-antrea
+  recommend:
+  - match:
+    - label: network-role
+      value: egress-gateway
+    priority: 10
+    profile: openshift-antrea
+```
+
+After you apply the above `Tuned` CR named `antrea` in an OpenShift cluster, the
+Node Tuning Operator will reconcile the CR and update
+`net.ipv4.conf.all.rp_filter` to `2` for all the matched Nodes (e.g. all Nodes
+with label `network-role=egress-gateway`). Please refer to the OpenShift
+document about [Using the Node Tuning Operator](https://docs.openshift.com/container-platform/4.16/scalability_and_performance/using-node-tuning-operator.html).

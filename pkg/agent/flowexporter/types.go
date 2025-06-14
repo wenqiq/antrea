@@ -86,6 +86,7 @@ type Connection struct {
 	EgressIP                             string
 	AppProtocolName                      string
 	HttpVals                             string
+	EgressNodeName                       string
 }
 
 type ItemToExpire struct {
@@ -104,4 +105,5 @@ type FlowExporterOptions struct {
 	StaleConnectionTimeout time.Duration
 	PollInterval           time.Duration
 	ConnectUplinkToBridge  bool
+	ProtocolFilter         []string
 }

@@ -26,10 +26,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/config/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"antrea.io/antrea/multicluster/controllers/multicluster/common"
@@ -39,13 +40,18 @@ import (
 func initMockManager(mockManager *mocks.MockManager) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects().Build()
 
-	mockManager.EXPECT().GetWebhookServer().Return(&webhook.Server{}).AnyTimes()
-	mockManager.EXPECT().GetWebhookServer().Return(&webhook.Server{}).AnyTimes()
+	mockManager.EXPECT().GetWebhookServer().Return(&webhook.DefaultServer{}).AnyTimes()
+	mockManager.EXPECT().GetWebhookServer().Return(&webhook.DefaultServer{}).AnyTimes()
 	mockManager.EXPECT().GetClient().Return(fakeClient).AnyTimes()
 	mockManager.EXPECT().GetScheme().Return(common.TestScheme).AnyTimes()
-	mockManager.EXPECT().GetControllerOptions().Return(v1alpha1.ControllerConfigurationSpec{}).AnyTimes()
+	mockManager.EXPECT().GetControllerOptions().Return(config.Controller{
+		// Necessary for the tests as the controller-runtime includes a global check for
+		// controller name uniqueness, and multiple test cases creating the same controllers
+		// will be run sequentially in the same process by Go.
+		SkipNameValidation: ptr.To(true),
+	}).AnyTimes()
+	mockManager.EXPECT().GetCache().Return(&informertest.FakeInformers{}).AnyTimes()
 	mockManager.EXPECT().GetLogger().Return(klog.NewKlogr()).AnyTimes()
-	mockManager.EXPECT().SetFields(gomock.Any()).Return(nil).AnyTimes()
 	mockManager.EXPECT().Add(gomock.Any()).Return(nil).AnyTimes()
 	mockManager.EXPECT().Start(gomock.Any()).Return(nil).AnyTimes()
 	mockManager.EXPECT().GetConfig().Return(&rest.Config{}).AnyTimes()
@@ -69,14 +75,15 @@ func TestRunLeader(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		mockCtrl := gomock.NewController(t)
-		mockLeaderManager := mocks.NewMockManager(mockCtrl)
-		initMockManager(mockLeaderManager)
-		setupManagerAndCertControllerFunc = func(isLeader bool, o *Options) (ctrl.Manager, error) {
-			return mockLeaderManager, nil
-		}
-		ctrl.SetupSignalHandler = mockSetupSignalHandler
 		t.Run(tc.name, func(t *testing.T) {
+			mockCtrl := gomock.NewController(t)
+			mockLeaderManager := mocks.NewMockManager(mockCtrl)
+			initMockManager(mockLeaderManager)
+			setupManagerAndCertControllerFunc = func(isLeader bool, o *Options) (ctrl.Manager, error) {
+				return mockLeaderManager, nil
+			}
+			ctrl.SetupSignalHandler = mockSetupSignalHandler
+
 			err := runLeader(tc.options)
 			assert.NoError(t, err, "got error when running runLeader")
 		})

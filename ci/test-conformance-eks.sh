@@ -22,7 +22,7 @@ function echoerr {
 
 CLUSTER=""
 REGION="us-west-2"
-K8S_VERSION="1.27"
+K8S_VERSION="1.31"
 AWS_NODE_TYPE="t3.medium"
 SSH_KEY_PATH="$HOME/.ssh/id_rsa.pub"
 SSH_PRIVATE_KEY_PATH="$HOME/.ssh/id_rsa"
@@ -264,11 +264,11 @@ function deliver_antrea_to_eks() {
     # The cleanup and stats are best-effort.
     set +e
     if [[ -n ${JOB_NAME+x} ]]; then
-        docker images | grep "${JOB_NAME}" | awk '{print $3}' | xargs -r docker rmi -f > /dev/null
+        docker images --format "{{.Repository}}:{{.Tag}}" | grep "${JOB_NAME}" | xargs -r docker rmi -f > /dev/null
     fi
     # Clean up dangling images generated in previous builds. Recent ones must be excluded
     # because they might be being used in other builds running simultaneously.
-    docker image prune -f --filter "until=2h" > /dev/null
+    docker image prune -af --filter "until=2h" > /dev/null
     docker system df -v
     check_and_cleanup_docker_build_cache
     set -e
@@ -358,6 +358,8 @@ function cleanup_cluster() {
 THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 GIT_CHECKOUT_DIR=${THIS_DIR}/..
 pushd "$THIS_DIR" > /dev/null
+
+source ${THIS_DIR}/jenkins/utils.sh
 
 if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
     setup_eks

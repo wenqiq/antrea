@@ -42,7 +42,7 @@ var (
 
 	testMACAddr, _ = net.ParseMAC("aa:bb:cc:dd:ee:ff")
 
-	testInvalidErr = fmt.Errorf("invalid")
+	errTestInvalid = fmt.Errorf("invalid")
 )
 
 func TestGenerateContainerInterfaceName(t *testing.T) {
@@ -210,7 +210,7 @@ func TestGetIPNetDeviceFromIP(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
@@ -221,48 +221,6 @@ func TestGetIPNetDeviceFromIP(t *testing.T) {
 			gotIPv4IPNet, gotIPv6IPNet, _, gotErr := GetIPNetDeviceFromIP(tc.localIPs, tc.ignoredInterfaces)
 			assert.Equal(t, tc.wantIPv4IPNet, gotIPv4IPNet)
 			assert.Equal(t, tc.wantIPv6IPNet, gotIPv6IPNet)
-			assert.Equal(t, tc.testNetInterfaceErr, gotErr)
-		})
-	}
-}
-
-func TestGetAllIPNetsByName(t *testing.T) {
-	tests := []struct {
-		name                 string
-		testNetInterfaceName string
-		testNetInterface     net.Interface
-		testNetInterfaceErr  error
-		wantIPNets           []*net.IPNet
-	}{
-		{
-			name:                 "IPv4",
-			testNetInterfaceName: "0",
-			wantIPNets:           []*net.IPNet{&ipv4PublicIPNet},
-		},
-		{
-			name:                 "IPv6",
-			testNetInterfaceName: "1",
-			wantIPNets: []*net.IPNet{
-				{
-					IP:   ipv6Global,
-					Mask: net.CIDRMask(128, 128),
-				},
-			},
-		},
-		{
-			name:                 "Invalid",
-			testNetInterfaceName: "0",
-			testNetInterfaceErr:  testInvalidErr,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.testNetInterface = generateNetInterface(tc.testNetInterfaceName)
-			defer mockNetInterfaceByName(&tc.testNetInterface, tc.testNetInterfaceErr)()
-			defer mockNetInterfaceAddrs(tc.testNetInterface, nil)()
-			gotIPNets, gotErr := GetAllIPNetsByName(tc.name)
-			assert.Equal(t, tc.wantIPNets, gotIPNets)
 			assert.Equal(t, tc.testNetInterfaceErr, gotErr)
 		})
 	}
@@ -293,7 +251,7 @@ func TestGetIPNetDeviceByName(t *testing.T) {
 		{
 			name:                 "Invalid",
 			testNetInterfaceName: "0",
-			testNetInterfaceErr:  testInvalidErr,
+			testNetInterfaceErr:  errTestInvalid,
 		},
 	}
 
@@ -345,7 +303,7 @@ func TestGetIPNetDeviceByCIDRs(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
@@ -484,7 +442,7 @@ func TestGetAllNodeAddresses(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
@@ -537,14 +495,14 @@ func TestGetIPNetsByLink(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			defer mockNetInterfaceAddrs(testNetInterface, tc.testNetInterfaceErr)()
-			gotIPNets, gotErr := GetIPNetsByLink(&testNetInterface)
+			gotIPNets, gotErr := getIPNetsByLink(&testNetInterface)
 			assert.Equal(t, tc.wantIPNets, gotIPNets)
 			assert.Equal(t, tc.testNetInterfaceErr, gotErr)
 		})

@@ -78,8 +78,13 @@ func newTestStatusController(initialObjects ...runtime.Object) (*StatusControlle
 	acnpInformer := antreaInformerFactory.Crd().V1beta1().ClusterNetworkPolicies()
 	annpInformer := antreaInformerFactory.Crd().V1beta1().NetworkPolicies()
 	statusController := &StatusController{
-		npControlInterface:         networkPolicyControl,
-		queue:                      workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicy"),
+		npControlInterface: networkPolicyControl,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "networkpolicy",
+			},
+		),
 		internalNetworkPolicyStore: networkPolicyStore,
 		statuses:                   map[string]map[string]*controlplane.NetworkPolicyNodeStatus{},
 		acnpListerSynced:           acnpInformer.Informer().HasSynced,
@@ -98,10 +103,8 @@ func newInternalNetworkPolicy(name string, generation int64, nodes []string, ref
 }
 
 func newNetworkPolicyStatus(name string, nodeName string, generation int64, errorMessage string) *controlplane.NetworkPolicyStatus {
-	failed := false
-	if errorMessage != "" {
-		failed = true
-	}
+	failed := errorMessage != ""
+
 	return &controlplane.NetworkPolicyStatus{
 		ObjectMeta: v1.ObjectMeta{
 			Name: name,

@@ -15,6 +15,7 @@
 package externalnode
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"reflect"
@@ -78,7 +79,7 @@ type ExternalNodeController struct {
 	externalNodeInformer     cache.SharedIndexInformer
 	externalNodeLister       enlister.ExternalNodeLister
 	externalNodeListerSynced cache.InformerSynced
-	queue                    workqueue.RateLimitingInterface
+	queue                    workqueue.TypedRateLimitingInterface[string]
 	ifaceStore               interfacestore.InterfaceStore
 	syncedExternalNode       *v1alpha1.ExternalNode
 	// externalEntityUpdateNotifier is used for notifying ExternalEntity updates to NetworkPolicyController.
@@ -91,13 +92,18 @@ type ExternalNodeController struct {
 func NewExternalNodeController(ovsBridgeClient ovsconfig.OVSBridgeClient, ofClient openflow.Client, externalNodeInformer cache.SharedIndexInformer,
 	ifaceStore interfacestore.InterfaceStore, externalEntityUpdateNotifier channel.Notifier, externalNodeNamespace string, policyBypassRules []agentConfig.PolicyBypassRule) (*ExternalNodeController, error) {
 	c := &ExternalNodeController{
-		ovsBridgeClient:              ovsBridgeClient,
-		ovsctlClient:                 ovsctl.NewClient(ovsBridgeClient.GetBridgeName()),
-		ofClient:                     ofClient,
-		externalNodeInformer:         externalNodeInformer,
-		externalNodeLister:           enlister.NewExternalNodeLister(externalNodeInformer.GetIndexer()),
-		externalNodeListerSynced:     externalNodeInformer.HasSynced,
-		queue:                        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "externalNode"),
+		ovsBridgeClient:          ovsBridgeClient,
+		ovsctlClient:             ovsctl.NewClient(ovsBridgeClient.GetBridgeName()),
+		ofClient:                 ofClient,
+		externalNodeInformer:     externalNodeInformer,
+		externalNodeLister:       enlister.NewExternalNodeLister(externalNodeInformer.GetIndexer()),
+		externalNodeListerSynced: externalNodeInformer.HasSynced,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "externalNode",
+			},
+		),
 		ifaceStore:                   ifaceStore,
 		externalEntityUpdateNotifier: externalEntityUpdateNotifier,
 		policyBypassRules:            policyBypassRules,
@@ -126,13 +132,13 @@ func (c *ExternalNodeController) Run(stopCh <-chan struct{}) {
 	klog.InfoS("Starting controller", "name", controllerName)
 	defer klog.InfoS("Shutting down controller", "name", controllerName)
 
-	if err := wait.PollImmediateUntil(5*time.Second, func() (done bool, err error) {
+	if err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), 5*time.Second, true, func(ctx context.Context) (done bool, err error) {
 		if err = c.reconcile(); err != nil {
 			klog.ErrorS(err, "ExternalNodeController failed during reconciliation")
 			return false, nil
 		}
 		return true, nil
-	}, stopCh); err != nil {
+	}); err != nil {
 		klog.Info("Stopped ExternalNodeController reconciliation")
 		return
 	}
@@ -201,7 +207,7 @@ func (c *ExternalNodeController) reconcilePolicyBypassFlows() error {
 		klog.V(2).InfoS("Installing policy bypass flows", "protocol", rule.Protocol, "CIDR", rule.CIDR, "port", rule.Port, "direction", rule.Direction)
 		protocol := parseProtocol(rule.Protocol)
 		_, ipNet, _ := net.ParseCIDR(rule.CIDR)
-		if err := c.ofClient.InstallPolicyBypassFlows(protocol, ipNet, uint16(rule.Port), rule.Direction == "ingress"); err != nil {
+		if err := c.ofClient.InstallPolicyBypassFlows(protocol, ipNet, util.PortToUint16(rule.Port), rule.Direction == "ingress"); err != nil {
 			return err
 		}
 	}
@@ -217,17 +223,13 @@ func (c *ExternalNodeController) worker() {
 }
 
 func (c *ExternalNodeController) processNextWorkItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
-	defer c.queue.Done(obj)
+	defer c.queue.Done(key)
 
-	if key, ok := obj.(string); !ok {
-		c.queue.Forget(obj)
-		klog.Errorf("Expected string type in work queue but got %#v", obj)
-		return true
-	} else if err := c.syncExternalNode(key); err == nil {
+	if err := c.syncExternalNode(key); err == nil {
 		// If no error occurs, then forget this item so it does not get queued again until
 		// another change happens.
 		c.queue.Forget(key)
@@ -600,7 +602,7 @@ func (c *ExternalNodeController) removeOVSPortsAndFlows(interfaceConfig *interfa
 	}()
 
 	// Wait until the host interface created by OVS is removed.
-	if err = wait.PollImmediate(50*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err = wait.PollUntilContextTimeout(context.TODO(), 50*time.Millisecond, 2*time.Second, true, func(ctx context.Context) (bool, error) {
 		return !hostInterfaceExists(hostIFName), nil
 	}); err != nil {
 		return fmt.Errorf("failed to wait for host interface %s deletion in 2s, err %v", hostIFName, err)
@@ -661,14 +663,14 @@ func ParseHostInterfaceConfig(ovsBridgeClient ovsconfig.OVSBridgeClient, portDat
 		entityIPs = append(entityIPs, net.ParseIP(ipStr))
 	}
 	interfaceConfig.IPs = entityIPs
-	uplinkName, _ := portData.ExternalIDs[ovsExternalIDUplinkName]
-	uplinkPortUUID, _ := portData.ExternalIDs[ovsExternalIDUplinkPort]
+	uplinkName := portData.ExternalIDs[ovsExternalIDUplinkName]
+	uplinkPortUUID := portData.ExternalIDs[ovsExternalIDUplinkPort]
 	uplinkPortData, ovsErr := ovsBridgeClient.GetPortData(uplinkPortUUID, uplinkName)
 	if ovsErr != nil {
 		return nil, ovsErr
 	}
-	entityName, _ := portData.ExternalIDs[ovsExternalIDEntityName]
-	entityNamespace, _ := portData.ExternalIDs[ovsExternalIDEntityNamespace]
+	entityName := portData.ExternalIDs[ovsExternalIDEntityName]
+	entityNamespace := portData.ExternalIDs[ovsExternalIDEntityNamespace]
 	hostUplinkConfig = &interfacestore.EntityInterfaceConfig{
 		EntityName:      entityName,
 		EntityNamespace: entityNamespace,

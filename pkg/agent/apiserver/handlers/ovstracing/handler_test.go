@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	"antrea.io/antrea/pkg/agent/apis"
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	interfacestoretest "antrea.io/antrea/pkg/agent/interfacestore/testing"
@@ -39,7 +40,7 @@ import (
 
 var (
 	testTraceResult = "tracing result"
-	testResponse    = Response{testTraceResult}
+	testResponse    = apis.OVSTracingResponse{Result: testTraceResult}
 
 	tunnelVirtualMAC, _ = net.ParseMAC("aa:bb:cc:dd:ee:ff")
 	gatewayMAC, _       = net.ParseMAC("00:00:00:00:00:01")
@@ -196,7 +197,7 @@ func TestPodFlows(t *testing.T) {
 		},
 		{
 			test:           "Flow expression",
-			query:          "?flow=in_port=3,tcp,nw_src=192.0.2.2,tcp_dst=22",
+			query:          "?flow=in_port=32770,tcp,nw_src=192.0.2.2,tcp_dst=22",
 			calledTrace:    true,
 			expectedStatus: http.StatusOK,
 		},
@@ -231,11 +232,12 @@ func TestPodFlows(t *testing.T) {
 
 		if tc.expectedStatus == http.StatusNotFound {
 			q.EXPECT().GetInterfaceStore().Return(i).Times(1)
-			if tc.port == "pod" {
+			switch tc.port {
+			case "pod":
 				i.EXPECT().GetContainerInterfacesByPod("inPod", "inNS").Return(nil).Times(1)
-			} else if tc.port == "srcPod" {
+			case "srcPod":
 				i.EXPECT().GetContainerInterfacesByPod("srcPod", "srcNS").Return([]*interfacestore.InterfaceConfig{srcPodInterface}).Times(1)
-			} else {
+			default:
 				i.EXPECT().GetInterfaceByName(tc.port).Return(nil, false).Times(1)
 			}
 		}
@@ -287,7 +289,7 @@ func runHTTPTest(t *testing.T, tc *testCase, aq querier.AgentQuerier) {
 	assert.Equal(t, tc.expectedStatus, recorder.Code, tc.test)
 
 	if tc.expectedStatus == http.StatusOK {
-		var received Response
+		var received apis.OVSTracingResponse
 		err = json.Unmarshal(recorder.Body.Bytes(), &received)
 		assert.Nil(t, err)
 		assert.Equal(t, testResponse, received)

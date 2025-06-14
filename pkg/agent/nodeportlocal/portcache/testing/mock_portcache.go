@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/agent/nodeportlocal/portcache/testing/mock_portcache.go -package testing antrea.io/antrea/pkg/agent/nodeportlocal/portcache LocalPortOpener
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -34,6 +35,7 @@ import (
 type MockLocalPortOpener struct {
 	ctrl     *gomock.Controller
 	recorder *MockLocalPortOpenerMockRecorder
+	isgomock struct{}
 }
 
 // MockLocalPortOpenerMockRecorder is the mock recorder for MockLocalPortOpener.
@@ -54,16 +56,16 @@ func (m *MockLocalPortOpener) EXPECT() *MockLocalPortOpenerMockRecorder {
 }
 
 // OpenLocalPort mocks base method.
-func (m *MockLocalPortOpener) OpenLocalPort(arg0 int, arg1 string) (io.Closer, error) {
+func (m *MockLocalPortOpener) OpenLocalPort(port int, protocol string) (io.Closer, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "OpenLocalPort", arg0, arg1)
+	ret := m.ctrl.Call(m, "OpenLocalPort", port, protocol)
 	ret0, _ := ret[0].(io.Closer)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // OpenLocalPort indicates an expected call of OpenLocalPort.
-func (mr *MockLocalPortOpenerMockRecorder) OpenLocalPort(arg0, arg1 any) *gomock.Call {
+func (mr *MockLocalPortOpenerMockRecorder) OpenLocalPort(port, protocol any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenLocalPort", reflect.TypeOf((*MockLocalPortOpener)(nil).OpenLocalPort), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenLocalPort", reflect.TypeOf((*MockLocalPortOpener)(nil).OpenLocalPort), port, protocol)
 }

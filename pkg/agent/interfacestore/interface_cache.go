@@ -84,12 +84,13 @@ func (c *interfaceCache) Initialize(interfaces []*InterfaceConfig) {
 func getInterfaceKey(obj interface{}) (string, error) {
 	interfaceConfig := obj.(*InterfaceConfig)
 	var key string
-	if interfaceConfig.Type == ContainerInterface {
-		key = util.GenerateContainerInterfaceKey(interfaceConfig.ContainerID)
-	} else if interfaceConfig.Type == IPSecTunnelInterface {
+	switch interfaceConfig.Type {
+	case ContainerInterface:
+		key = util.GenerateContainerInterfaceKey(interfaceConfig.ContainerID, interfaceConfig.IFDev)
+	case IPSecTunnelInterface:
 		// IPsec tunnel interface for a Node.
 		key = util.GenerateNodeTunnelInterfaceKey(interfaceConfig.NodeName)
-	} else {
+	default:
 		// Use the interface name as the key by default.
 		key = interfaceConfig.InterfaceName
 	}
@@ -103,6 +104,11 @@ func (c *interfaceCache) AddInterface(interfaceConfig *InterfaceConfig) {
 	if interfaceConfig.Type == ContainerInterface {
 		metrics.PodCount.Inc()
 	}
+}
+
+// UpdateInterface updates interfaceConfig into local cache.
+func (c *interfaceCache) UpdateInterface(interfaceConfig *InterfaceConfig) {
+	c.cache.Update(interfaceConfig)
 }
 
 // DeleteInterface deletes interface from local cache.
@@ -266,7 +272,8 @@ func interfaceIPIndexFunc(obj interface{}) ([]string, error) {
 
 func interfaceOFPortIndexFunc(obj interface{}) ([]string, error) {
 	interfaceConfig := obj.(*InterfaceConfig)
-	if interfaceConfig.OFPort < 0 {
+	// OVSPortConfig can be nil for a secondary SR-IOV interface.
+	if interfaceConfig.OVSPortConfig == nil || interfaceConfig.OFPort < 0 {
 		// If interfaceConfig OFport is not valid, we return empty key.
 		return []string{}, nil
 	}

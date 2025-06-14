@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -30,16 +31,22 @@ import (
 	"antrea.io/antrea/pkg/signals"
 	"antrea.io/antrea/pkg/util/cipher"
 	"antrea.io/antrea/pkg/util/podstore"
+	"antrea.io/antrea/pkg/version"
 )
 
 const informerDefaultResync = 12 * time.Hour
 
 func run(configFile string) error {
-	klog.Infof("Flow aggregator starting...")
+	klog.InfoS("Starting Flow Aggregator", "version", version.GetFullVersion())
 	// Set up signal capture: the first SIGTERM / SIGINT signal is handled gracefully and will
 	// cause the stopCh channel to be closed; if another signal is received before the program
 	// exits, we will force exit.
 	stopCh := signals.RegisterSignalHandlers()
+	// Generate a context for functions which require one (instead of stopCh).
+	// We cancel the context when the function returns, which in the normal case will be when
+	// stopCh is closed.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	log.StartLogFileNumberMonitor(stopCh)
 
@@ -52,8 +59,16 @@ func run(configFile string) error {
 	podInformer := informerFactory.Core().V1().Pods()
 	podStore := podstore.NewPodStore(podInformer.Informer())
 
+	klog.InfoS("Retrieving Antrea cluster UUID")
+	clusterUUID, err := aggregator.GetClusterUUID(ctx, k8sClient)
+	if err != nil {
+		return err
+	}
+	klog.InfoS("Retrieved Antrea cluster UUID", "clusterUUID", clusterUUID)
+
 	flowAggregator, err := aggregator.NewFlowAggregator(
 		k8sClient,
+		clusterUUID,
 		podStore,
 		configFile,
 	)
@@ -80,12 +95,12 @@ func run(configFile string) error {
 	if err != nil {
 		return fmt.Errorf("error when creating flow aggregator API server: %v", err)
 	}
-	go apiServer.Run(stopCh)
+	go apiServer.Run(ctx)
 
 	informerFactory.Start(stopCh)
 
 	<-stopCh
-	klog.InfoS("Stopping flow aggregator")
+	klog.InfoS("Stopping Flow Aggregator")
 	wg.Wait()
 	return nil
 }

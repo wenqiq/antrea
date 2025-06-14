@@ -50,7 +50,13 @@ const (
 	// flag will not take effect.
 	TopologyAwareHints featuregate.Feature = "TopologyAwareHints"
 
+	// beta: v2.2
+	// Enables trafficDistribution in AntreaProxy. If EndpointSlice is not enabled, this
+	// flag will not take effect.
+	ServiceTrafficDistribution featuregate.Feature = "ServiceTrafficDistribution"
+
 	// alpha: v1.13
+	// beta: v2.1
 	// Enable support for cleaning up stale UDP Service conntrack connections in AntreaProxy.
 	CleanupStaleUDPSvcConntrack featuregate.Feature = "CleanupStaleUDPSvcConntrack"
 
@@ -66,6 +72,10 @@ const (
 	// beta: v0.11
 	// Allows to trace path from a generated packet.
 	Traceflow featuregate.Feature = "Traceflow"
+
+	// alpha: v2.2
+	// Allows to capture packets for a flow.
+	PacketCapture featuregate.Feature = "PacketCapture"
 
 	// alpha: v0.9
 	// Flow exporter exports IPFIX flow records of Antrea flows seen in conntrack module.
@@ -110,6 +120,7 @@ const (
 	SecondaryNetwork featuregate.Feature = "SecondaryNetwork"
 
 	// alpha: v1.5
+	// beta: v2.3
 	// Enable controlling Services with ExternalIP.
 	ServiceExternalIP featuregate.Feature = "ServiceExternalIP"
 
@@ -148,6 +159,7 @@ const (
 	EgressTrafficShaping featuregate.Feature = "EgressTrafficShaping"
 
 	// alpha: v1.15
+	// beta: v2.3
 	// Allow users to allocate Egress IPs from a different subnet from the default Node subnet.
 	EgressSeparateSubnet featuregate.Feature = "EgressSeparateSubnet"
 
@@ -158,6 +170,15 @@ const (
 	// alpha: v1.15
 	// Enable layer 7 flow export on Pods and Namespaces
 	L7FlowExporter featuregate.Feature = "L7FlowExporter"
+
+	// alpha: v2.1
+	// Enable the NodeLatencyMonitor feature.
+	NodeLatencyMonitor featuregate.Feature = "NodeLatencyMonitor"
+
+	// alpha: v2.1
+	// Allow users to initiate BGP process on selected Kubernetes Nodes and advertise Service IPs, Pod IPs and Egress
+	// IPs to remote BGP peers.
+	BGPPolicy featuregate.Feature = "BGPPolicy"
 )
 
 var (
@@ -174,11 +195,14 @@ var (
 	DefaultAntreaFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 		AntreaPolicy:                {Default: true, PreRelease: featuregate.Beta},
 		AntreaProxy:                 {Default: true, PreRelease: featuregate.GA},
+		BGPPolicy:                   {Default: false, PreRelease: featuregate.Alpha},
 		Egress:                      {Default: true, PreRelease: featuregate.Beta},
 		EndpointSlice:               {Default: true, PreRelease: featuregate.GA},
 		TopologyAwareHints:          {Default: true, PreRelease: featuregate.Beta},
-		CleanupStaleUDPSvcConntrack: {Default: false, PreRelease: featuregate.Alpha},
+		ServiceTrafficDistribution:  {Default: true, PreRelease: featuregate.Beta},
+		CleanupStaleUDPSvcConntrack: {Default: true, PreRelease: featuregate.Beta},
 		Traceflow:                   {Default: true, PreRelease: featuregate.Beta},
+		PacketCapture:               {Default: false, PreRelease: featuregate.Alpha},
 		AntreaIPAM:                  {Default: false, PreRelease: featuregate.Alpha},
 		FlowExporter:                {Default: false, PreRelease: featuregate.Alpha},
 		NetworkPolicyStats:          {Default: true, PreRelease: featuregate.Beta},
@@ -187,7 +211,7 @@ var (
 		Multicast:                   {Default: true, PreRelease: featuregate.Beta},
 		Multicluster:                {Default: false, PreRelease: featuregate.Alpha},
 		SecondaryNetwork:            {Default: false, PreRelease: featuregate.Alpha},
-		ServiceExternalIP:           {Default: false, PreRelease: featuregate.Alpha},
+		ServiceExternalIP:           {Default: true, PreRelease: featuregate.Beta},
 		TrafficControl:              {Default: false, PreRelease: featuregate.Alpha},
 		IPsecCertAuth:               {Default: false, PreRelease: featuregate.Alpha},
 		ExternalNode:                {Default: false, PreRelease: featuregate.Alpha},
@@ -196,9 +220,10 @@ var (
 		LoadBalancerModeDSR:         {Default: false, PreRelease: featuregate.Alpha},
 		AdminNetworkPolicy:          {Default: false, PreRelease: featuregate.Alpha},
 		EgressTrafficShaping:        {Default: false, PreRelease: featuregate.Alpha},
-		EgressSeparateSubnet:        {Default: false, PreRelease: featuregate.Alpha},
+		EgressSeparateSubnet:        {Default: true, PreRelease: featuregate.Beta},
 		NodeNetworkPolicy:           {Default: false, PreRelease: featuregate.Alpha},
 		L7FlowExporter:              {Default: false, PreRelease: featuregate.Alpha},
+		NodeLatencyMonitor:          {Default: false, PreRelease: featuregate.Alpha},
 	}
 
 	// AgentGates consists of all known feature gates for the Antrea Agent.
@@ -207,6 +232,7 @@ var (
 		AntreaIPAM,
 		AntreaPolicy,
 		AntreaProxy,
+		BGPPolicy,
 		CleanupStaleUDPSvcConntrack,
 		Egress,
 		EndpointSlice,
@@ -221,14 +247,17 @@ var (
 		NodePortLocal,
 		SecondaryNetwork,
 		ServiceExternalIP,
+		ServiceTrafficDistribution,
 		SupportBundleCollection,
 		TopologyAwareHints,
 		Traceflow,
+		PacketCapture,
 		TrafficControl,
 		EgressTrafficShaping,
 		EgressSeparateSubnet,
 		NodeNetworkPolicy,
 		L7FlowExporter,
+		NodeLatencyMonitor,
 	)
 
 	// ControllerGates consists of all known feature gates for the Antrea Controller.
@@ -260,8 +289,11 @@ var (
 	// can have different FeatureSpecs between Linux and Windows, we should
 	// still define a separate defaultAntreaFeatureGates map for Windows.
 	unsupportedFeaturesOnWindows = map[featuregate.Feature]struct{}{
-		Egress:            {},
-		AntreaIPAM:        {},
+		Egress:     {},
+		AntreaIPAM: {},
+		// BGPPolicy feature is not validated on Windows yet. This can be removed
+		// in the future if it's fully tested on Windows.
+		BGPPolicy:         {},
 		Multicast:         {},
 		SecondaryNetwork:  {},
 		ServiceExternalIP: {},
@@ -276,6 +308,8 @@ var (
 		EgressSeparateSubnet:        {},
 		NodeNetworkPolicy:           {},
 		L7FlowExporter:              {},
+		NodeLatencyMonitor:          {},
+		PacketCapture:               {},
 	}
 	// supportedFeaturesOnExternalNode records the features supported on an external
 	// Node. Antrea Agent checks the enabled features if it is running on an

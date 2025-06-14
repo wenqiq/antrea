@@ -4,6 +4,29 @@ image:
   pullPolicy: "IfNotPresent"
   tag: ""
 
+# -- Prority class to use for the flow-aggregator Pod.
+priorityClassName: "system-cluster-critical"
+# -- Run the flow-aggregator Pod in the host network. With hostNetwork enabled, it is usually
+# necessary to set dnsPolicy to ClusterFirstWithHostNet.
+hostNetwork: false
+# -- DNS Policy for the flow-aggregator Pod. If empty, the Kubernetes default will be used.
+dnsPolicy: ""
+
+# Configuration specific to the flow-aggregator container.
+flowAggregator:
+  # -- Configure the security context for the flow-aggregator container.
+  securityContext: {}
+  # -- Resource requests and limits for the flow-aggregator container.
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "256Mi"
+
+# -- Mode in which to run the flow aggregator. Must be one of "Aggregate" or "Proxy". In Aggregate
+# mode, flow records received from source and destination are aggregated and sent as one flow
+# record. In Proxy mode, flow records are enhanced with some additional information, then sent
+# directly without buffering or aggregation.
+mode: "Aggregate"
 # -- Provide the active flow record timeout as a duration string.
 # Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
 activeFlowRecordTimeout: 60s
@@ -14,6 +37,9 @@ inactiveFlowRecordTimeout: 90s
 aggregatorTransportProtocol: "tls"
 # -- Provide an extra DNS name or IP address of flow aggregator for generating TLS certificate.
 flowAggregatorAddress: ""
+# -- Provide a clusterID to be added to records. This is only consumed by the
+# flowCollector (IPFIX) exporter.
+clusterID: ""
 # recordContents enables configuring some fields in the flow records.
 recordContents:
   # -- Determine whether source and destination Pod labels will be included in the flow records.
@@ -44,6 +70,13 @@ flowCollector:
   # -- Provide format for records sent to the configured flow collector.
   # Supported formats are IPFIX and JSON.
   recordFormat: "IPFIX"
+  # -- Template retransmission interval when using the udp protocol to export records.
+  # The value must be provided as a duration string. Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
+  templateRefreshTimeout: "600s"
+  # -- Maximum message size to use for IPFIX records. If set to 0 (recommended), a reasonable
+  # default value will be used based on the protocol (tcp or udp) used to connect to the collector.
+  # Min valid value is 512 and max valid value is 65535.
+  maxIPFIXMsgSize: 0
 # clickHouse contains ClickHouse related configuration options.
 clickHouse:
   # -- Determine whether to enable exporting flow records to ClickHouse.
@@ -127,3 +160,5 @@ testing:
   coverage: false
 # -- Log verbosity switch for Flow Aggregator.
 logVerbosity: 0
+# -- Namespace in which Antrea was installed.
+antreaNamespace: "kube-system"

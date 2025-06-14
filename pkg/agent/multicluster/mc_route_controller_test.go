@@ -63,7 +63,6 @@ func newMCDefaultRouteController(t *testing.T,
 	ciImportInformer := mcInformerFactory.Multicluster().V1alpha1().ClusterInfoImports()
 
 	multiclusterConfig := agent.MulticlusterConfig{
-		Enable:                       true,
 		EnableGateway:                true,
 		Namespace:                    "default",
 		EnableStretchedNetworkPolicy: true,
@@ -198,6 +197,7 @@ func TestMCRouteControllerAsWireGuardGateway(t *testing.T) {
 			PodIPv4CIDR: &net.IPNet{
 				IP: net.ParseIP("10.10.0.0"),
 			},
+			TunnelOFPort: config.DefaultTunOFPort,
 		},
 		networkConfig,
 		agent.WireGuardConfig{},
@@ -224,7 +224,7 @@ func TestMCRouteControllerAsWireGuardGateway(t *testing.T) {
 			&gateway4, metav1.CreateOptions{})
 		c.wireGuardClient.EXPECT().CleanUp().AnyTimes()
 		c.wireGuardClient.EXPECT().Init(net.ParseIP("10.100.0.0"), nil)
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), true).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(config.DefaultTunOFPort), true).Times(1)
 		c.processNextWorkItem()
 		c.processNextWorkItem()
 
@@ -257,7 +257,10 @@ func TestMCRouteControllerAsWireGuardGateway(t *testing.T) {
 func TestMCRouteControllerAsGateway(t *testing.T) {
 	c := newMCDefaultRouteController(
 		t,
-		&config.NodeConfig{Name: "node-1"},
+		&config.NodeConfig{
+			Name:         "node-1",
+			TunnelOFPort: config.DefaultTunOFPort,
+		},
 		&config.NetworkConfig{},
 		agent.WireGuardConfig{},
 		nil,
@@ -278,7 +281,7 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 		// Create Gateway1
 		c.mcClient.MulticlusterV1alpha1().Gateways(gateway1.GetNamespace()).Create(context.TODO(),
 			&gateway1, metav1.CreateOptions{})
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), true).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(config.DefaultTunOFPort), true).Times(1)
 		c.processNextWorkItem()
 
 		// Create two ClusterInfoImports
@@ -336,7 +339,7 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 		// Create Gateway2 as active Gateway
 		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Create(context.TODO(),
 			&gateway2, metav1.CreateOptions{})
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(config.DefaultTunOFPort), false).Times(1)
 		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name, gomock.Any(), gw2InternalIP, true).Times(1)
 		c.processNextWorkItem()
 	}()
@@ -350,7 +353,10 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 func TestMCRouteControllerAsRegularNode(t *testing.T) {
 	c := newMCDefaultRouteController(
 		t,
-		&config.NodeConfig{Name: "node-3"},
+		&config.NodeConfig{
+			Name:         "node-3",
+			TunnelOFPort: config.DefaultTunOFPort,
+		},
 		&config.NetworkConfig{},
 		agent.WireGuardConfig{},
 		nil,
@@ -373,7 +379,7 @@ func TestMCRouteControllerAsRegularNode(t *testing.T) {
 		// Create Gateway1
 		c.mcClient.MulticlusterV1alpha1().Gateways(gateway1.GetNamespace()).Create(context.TODO(),
 			&gateway1, metav1.CreateOptions{})
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(config.DefaultTunOFPort), false).Times(1)
 		c.processNextWorkItem()
 
 		// Create two ClusterInfoImports
@@ -429,7 +435,7 @@ func TestMCRouteControllerAsRegularNode(t *testing.T) {
 		// Create Gateway2 as the active Gateway
 		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Create(context.TODO(),
 			&gateway2, metav1.CreateOptions{})
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(config.DefaultTunOFPort), false).Times(1)
 		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name, gomock.Any(), peerNodeIP2, true).Times(1)
 		c.processNextWorkItem()
 	}()
@@ -541,7 +547,12 @@ func TestEnqueueGateway(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			c.queue = workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gatewayroute")
+			c.queue = workqueue.NewTypedRateLimitingQueueWithConfig(
+				workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+				workqueue.TypedRateLimitingQueueConfig[string]{
+					Name: "gatewayroute",
+				},
+			)
 			c.enqueueGateway(tt.obj, tt.isDeleted)
 			assert.Equal(t, tt.expectNum, c.queue.Len())
 		})
@@ -613,7 +624,12 @@ func TestEnqueueClusterInfoImport(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			c.queue = workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gatewayroute")
+			c.queue = workqueue.NewTypedRateLimitingQueueWithConfig(
+				workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+				workqueue.TypedRateLimitingQueueConfig[string]{
+					Name: "gatewayroute",
+				},
+			)
 			c.enqueueClusterInfoImport(tt.obj, tt.isDeleted)
 			assert.Equal(t, tt.expectNum, c.queue.Len())
 		})

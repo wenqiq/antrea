@@ -15,15 +15,16 @@
 package exporter
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path"
 	"reflect"
 	"time"
 
+	"github.com/google/uuid"
 	ipfixentities "github.com/vmware/go-ipfix/pkg/entities"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/flowaggregator/clickhouseclient"
@@ -56,13 +57,13 @@ func buildClickHouseConfig(opt *options.Options) clickhouseclient.ClickHouseConf
 	}
 }
 
-func NewClickHouseExporter(k8sClient kubernetes.Interface, opt *options.Options) (*ClickHouseExporter, error) {
+func NewClickHouseExporter(clusterUUID uuid.UUID, opt *options.Options) (*ClickHouseExporter, error) {
 	chConfig := buildClickHouseConfig(opt)
 	klog.InfoS("ClickHouse configuration", "database", chConfig.Database, "databaseURL", chConfig.DatabaseURL, "debug", chConfig.Debug,
 		"compress", *chConfig.Compress, "commitInterval", chConfig.CommitInterval, "insecureSkipVerify", chConfig.InsecureSkipVerify, "caCert", chConfig.CACert)
 	var errMessage error
 	if chConfig.CACert {
-		err := wait.Poll(DefaultInterval, Timeout, func() (bool, error) {
+		err := wait.PollUntilContextTimeout(context.TODO(), DefaultInterval, Timeout, false, func(ctx context.Context) (bool, error) {
 			caCertPath := path.Join(CertDir, CACertFile)
 			certificate, err := os.ReadFile(caCertPath)
 			if err != nil {
@@ -75,10 +76,6 @@ func NewClickHouseExporter(k8sClient kubernetes.Interface, opt *options.Options)
 		if err != nil {
 			return nil, fmt.Errorf("error when reading custom CA certificate: %v", errMessage)
 		}
-	}
-	clusterUUID, err := getClusterUUID(k8sClient)
-	if err != nil {
-		return nil, err
 	}
 	chExportProcess, err := clickhouseclient.NewClickHouseClient(chConfig, clusterUUID.String())
 	if err != nil {
@@ -124,4 +121,8 @@ func (e *ClickHouseExporter) UpdateOptions(opt *options.Options) {
 		e.chExportProcess.UpdateCH(chConfig, connect)
 	}
 	klog.InfoS("New ClickHouse configuration", "database", chConfig.Database, "databaseURL", chConfig.DatabaseURL, "debug", chConfig.Debug, "compress", *chConfig.Compress, "commitInterval", chConfig.CommitInterval)
+}
+
+func (e *ClickHouseExporter) Flush() error {
+	return nil
 }

@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 
+	"antrea.io/antrea/pkg/apis"
 	"antrea.io/antrea/pkg/apis/controlplane"
 	cpinstall "antrea.io/antrea/pkg/apis/controlplane/install"
 	apistats "antrea.io/antrea/pkg/apis/stats"
@@ -52,10 +53,12 @@ import (
 	"antrea.io/antrea/pkg/apiserver/registry/networkpolicy/groupmember"
 	"antrea.io/antrea/pkg/apiserver/registry/networkpolicy/ipgroupassociation"
 	"antrea.io/antrea/pkg/apiserver/registry/networkpolicy/networkpolicy"
+	"antrea.io/antrea/pkg/apiserver/registry/networkpolicy/networkpolicyevaluation"
 	"antrea.io/antrea/pkg/apiserver/registry/stats/antreaclusternetworkpolicystats"
 	"antrea.io/antrea/pkg/apiserver/registry/stats/antreanetworkpolicystats"
 	"antrea.io/antrea/pkg/apiserver/registry/stats/multicastgroup"
 	"antrea.io/antrea/pkg/apiserver/registry/stats/networkpolicystats"
+	"antrea.io/antrea/pkg/apiserver/registry/stats/nodelatencystats"
 	"antrea.io/antrea/pkg/apiserver/registry/system/controllerinfo"
 	"antrea.io/antrea/pkg/apiserver/registry/system/supportbundle"
 	"antrea.io/antrea/pkg/apiserver/storage"
@@ -80,13 +83,13 @@ var (
 	// ParameterCodec defines methods for serializing and deserializing url values
 	// to versioned API objects and back.
 	parameterCodec = runtime.NewParameterCodec(Scheme)
-	// #nosec G101: false positive triggered by variable name which includes "token"
-	TokenPath = "/var/run/antrea/apiserver/loopback-client-token"
 
-	// antreaServedLabel includes the labels used to select resources served by antrea-controller
-	antreaServedLabel = map[string]string{
-		"app":       "antrea",
-		"served-by": "antrea-controller",
+	// antreaServedLabelSelector selects resources served by antrea-controller.
+	antreaServedLabelSelector = &metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			"app":       "antrea",
+			"served-by": "antrea-controller",
+		},
 	}
 )
 
@@ -140,7 +143,7 @@ func (s *APIServer) Run(ctx context.Context) error {
 	}
 	go s.caCertController.Run(ctx, 1)
 
-	return s.GenericAPIServer.PrepareRun().Run(ctx.Done())
+	return s.GenericAPIServer.PrepareRun().RunWithContext(ctx)
 }
 
 type completedConfig struct {
@@ -198,6 +201,7 @@ func installAPIGroup(s *APIServer, c completedConfig) error {
 	appliedToGroupStorage := appliedtogroup.NewREST(c.extraConfig.appliedToGroupStore)
 	networkPolicyStorage := networkpolicy.NewREST(c.extraConfig.networkPolicyStore)
 	networkPolicyStatusStorage := networkpolicy.NewStatusREST(c.extraConfig.networkPolicyStatusController)
+	networkPolicyEvaluationStorage := networkpolicyevaluation.NewREST(controllernetworkpolicy.NewPolicyRuleQuerier(c.extraConfig.endpointQuerier))
 	clusterGroupMembershipStorage := clustergroupmember.NewREST(c.extraConfig.networkPolicyController)
 	groupMembershipStorage := groupmember.NewREST(c.extraConfig.networkPolicyController)
 	groupAssociationStorage := groupassociation.NewREST(c.extraConfig.networkPolicyController)
@@ -212,6 +216,7 @@ func installAPIGroup(s *APIServer, c completedConfig) error {
 	cpv1beta2Storage["appliedtogroups"] = appliedToGroupStorage
 	cpv1beta2Storage["networkpolicies"] = networkPolicyStorage
 	cpv1beta2Storage["networkpolicies/status"] = networkPolicyStatusStorage
+	cpv1beta2Storage["networkpolicyevaluation"] = networkPolicyEvaluationStorage
 	cpv1beta2Storage["nodestatssummaries"] = nodeStatsSummaryStorage
 	cpv1beta2Storage["groupassociations"] = groupAssociationStorage
 	cpv1beta2Storage["ipgroupassociations"] = ipGroupAssociationStorage
@@ -236,6 +241,7 @@ func installAPIGroup(s *APIServer, c completedConfig) error {
 	statsStorage["antreaclusternetworkpolicystats"] = antreaclusternetworkpolicystats.NewREST(c.extraConfig.statsAggregator)
 	statsStorage["antreanetworkpolicystats"] = antreanetworkpolicystats.NewREST(c.extraConfig.statsAggregator)
 	statsStorage["multicastgroups"] = multicastgroup.NewREST(c.extraConfig.statsAggregator)
+	statsStorage["nodelatencystats"] = nodelatencystats.NewREST()
 	statsGroup.VersionedResourcesStorageMap["v1alpha1"] = statsStorage
 
 	groups := []*genericapiserver.APIGroupInfo{&cpGroup, &systemGroup, &statsGroup}
@@ -275,13 +281,7 @@ func CleanupDeprecatedAPIServices(aggregatorClient clientset.Interface) error {
 	// deprecates a registered APIService, the APIService should be deleted,
 	// otherwise K8s will fail to delete an existing Namespace.
 	// Also check: https://github.com/antrea-io/antrea/issues/494
-	deprecatedAPIServices := []string{
-		"v1beta1.networking.antrea.tanzu.vmware.com",
-		"v1beta1.controlplane.antrea.tanzu.vmware.com",
-		"v1alpha1.stats.antrea.tanzu.vmware.com",
-		"v1beta1.system.antrea.tanzu.vmware.com",
-		"v1beta2.controlplane.antrea.tanzu.vmware.com",
-	}
+	deprecatedAPIServices := []string{}
 	for _, as := range deprecatedAPIServices {
 		err := aggregatorClient.ApiregistrationV1().APIServices().Delete(context.TODO(), as, metav1.DeleteOptions{})
 		if err == nil {
@@ -299,6 +299,7 @@ func installHandlers(c *ExtraConfig, s *genericapiserver.GenericAPIServer) {
 	s.Handler.NonGoRestfulMux.HandleFunc("/endpoint", endpoint.HandleFunc(c.endpointQuerier))
 	// Webhook to mutate Namespace labels and add its metadata.name as a label
 	s.Handler.NonGoRestfulMux.HandleFunc("/mutate/namespace", webhook.HandleMutationLabels())
+
 	if features.DefaultFeatureGate.Enabled(features.AntreaPolicy) {
 		// Get new NetworkPolicyMutator
 		m := controllernetworkpolicy.NewNetworkPolicyMutator(c.networkPolicyController)
@@ -318,12 +319,14 @@ func installHandlers(c *ExtraConfig, s *genericapiserver.GenericAPIServer) {
 		s.Handler.NonGoRestfulMux.HandleFunc("/validate/clustergroup", webhook.HandlerForValidateFunc(v.Validate))
 		s.Handler.NonGoRestfulMux.HandleFunc("/validate/group", webhook.HandlerForValidateFunc(v.Validate))
 
-		// Install handlers for CRD conversion between versions
-		s.Handler.NonGoRestfulMux.HandleFunc("/convert/clustergroup", webhook.HandleCRDConversion(controllernetworkpolicy.ConvertClusterGroupCRD))
-
 		// Install a post start hook to initialize Tiers on start-up
 		s.AddPostStartHook("initialize-tiers", func(context genericapiserver.PostStartHookContext) error {
-			go c.networkPolicyController.InitializeTiers()
+			go func() {
+				// context gets cancelled when the server stops.
+				if err := c.networkPolicyController.InitializeTiers(context); err != nil {
+					klog.ErrorS(err, "Failed to initialize system Tiers")
+				}
+			}()
 			return nil
 		})
 	}
@@ -336,7 +339,8 @@ func installHandlers(c *ExtraConfig, s *genericapiserver.GenericAPIServer) {
 		s.Handler.NonGoRestfulMux.HandleFunc("/validate/egress", webhook.HandlerForValidateFunc(c.egressController.ValidateEgress))
 	}
 
-	if features.DefaultFeatureGate.Enabled(features.AntreaIPAM) {
+	if features.DefaultFeatureGate.Enabled(features.AntreaIPAM) || features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
+		s.Handler.NonGoRestfulMux.HandleFunc("/convert/ippool", webhook.HandleCRDConversion(ipam.ConvertIPPool))
 		s.Handler.NonGoRestfulMux.HandleFunc("/validate/ippool", webhook.HandlerForValidateFunc(ipam.ValidateIPPool))
 	}
 
@@ -351,24 +355,17 @@ func installHandlers(c *ExtraConfig, s *genericapiserver.GenericAPIServer) {
 
 func DefaultCAConfig() *certificate.CAConfig {
 	return &certificate.CAConfig{
-		CAConfigMapName: certificate.AntreaCAConfigMapName,
-		APIServiceSelector: &metav1.LabelSelector{
-			MatchLabels: antreaServedLabel,
-		},
-		ValidatingWebhookSelector: &metav1.LabelSelector{
-			MatchLabels: antreaServedLabel,
-		},
-		MutationWebhookSelector: &metav1.LabelSelector{
-			MatchLabels: antreaServedLabel,
-		},
-		CRDConversionWebhookSelector: &metav1.LabelSelector{
-			MatchLabels: antreaServedLabel,
-		},
-		CertDir:           "/var/run/antrea/antrea-controller-tls",
-		SelfSignedCertDir: "/var/run/antrea/antrea-controller-self-signed",
-		CertReadyTimeout:  2 * time.Minute,
-		MaxRotateDuration: time.Hour * (24 * 365),
-		ServiceName:       certificate.AntreaServiceName,
-		PairName:          "antrea-controller",
+		CAConfigMapName:              apis.AntreaCAConfigMapName,
+		TLSSecretName:                apis.AntreaControllerTLSSecretName,
+		APIServiceSelector:           antreaServedLabelSelector,
+		ValidatingWebhookSelector:    antreaServedLabelSelector,
+		MutationWebhookSelector:      antreaServedLabelSelector,
+		CRDConversionWebhookSelector: antreaServedLabelSelector,
+		CertDir:                      "/var/run/antrea/antrea-controller-tls",
+		SelfSignedCertDir:            "/var/run/antrea/antrea-controller-self-signed",
+		CertReadyTimeout:             2 * time.Minute,
+		MinValidDuration:             time.Hour * 24 * 90, // Rotate the certificate 90 days in advance.
+		ServiceName:                  apis.AntreaServiceName,
+		PairName:                     "antrea-controller",
 	}
 }

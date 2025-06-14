@@ -14,7 +14,10 @@
 
 package cniserver
 
-import current "github.com/containernetworking/cni/pkg/types/100"
+import (
+	current "github.com/containernetworking/cni/pkg/types/100"
+	corev1 "k8s.io/api/core/v1"
+)
 
 // updateResultDNSConfig updates the DNS config from CNIConfig.
 func updateResultDNSConfig(result *current.Result, cniConfig *CNIConfig) {
@@ -37,8 +40,25 @@ func isInfraContainer(netNS string) bool {
 	return true
 }
 
+// validateRuntime returns nil if the container runtime is supported by Antrea.
+// Always return nil on Linux platform, because all container runtimes are supported.
+func validateRuntime(netNS string) error {
+	return nil
+}
+
 // getInfraContainer returns the sandbox container ID of a Pod.
 // On Linux, it's always the ContainerID in the request.
 func (c *CNIConfig) getInfraContainer() string {
 	return c.ContainerId
+}
+
+// filterPodsForReconcile returns Pods that should be reconciled.
+func (s *CNIServer) filterPodsForReconcile(pods *corev1.PodList) []corev1.Pod {
+	validPods := make([]corev1.Pod, 0)
+	for _, pod := range pods.Items {
+		if !pod.Spec.HostNetwork {
+			validPods = append(validPods, pod)
+		}
+	}
+	return validPods
 }

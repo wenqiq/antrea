@@ -41,10 +41,10 @@ DEFAULT_E2E_SIG_NETWORK_SKIP="\[Slow\]|\[Serial\]|\[Disruptive\]|\[GCE\]|\[Featu
 MODE="report"
 THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 KUBE_CONFORMANCE_IMAGE_VERSION_OPTION=""
-IMAGE_PULL_POLICY="Always"
+IMAGE_PULL_POLICY="IfNotPresent"
 CONFORMANCE_IMAGE_CONFIG_PATH="${THIS_DIR}/conformance-image-config.yaml"
-SONOBUOY_IMAGE="projects.registry.vmware.com/sonobuoy/sonobuoy:v0.56.16"
-SYSTEMD_LOGS_IMAGE="projects.registry.vmware.com/sonobuoy/systemd-logs:v0.4"
+SONOBUOY_IMAGE="antrea/sonobuoy:v0.56.16"
+SYSTEMD_LOGS_IMAGE="antrea/systemd-logs:v0.4"
 
 _usage="Usage: $0 [--e2e-conformance] [--e2e-network-policy] [--e2e-focus <TestRegex>] [--e2e-skip <SkipRegex>]
                   [--kubeconfig <Kubeconfig>] [--kubernetes-version <ConformanceImageVersion>]
@@ -56,7 +56,7 @@ least one failed) and 2 (internal error when running tests, not a test failure).
         --e2e-whole-conformance                                   Run whole Conformance tests.
         --e2e-network-policy                                      Run Network Policy tests.
         --e2e-sig-network                                         Run sig-network tests.
-        --e2e-all                                                 Run Conformance, Network Policy, and sig-network tests.
+        --e2e-all                                                 Run whole Conformance, Network Policy, and sig-network tests.
         --e2e-focus TestRegex                                     Run only tests matching a specific regex, this is useful to run a single tests for example.
         --e2e-skip TestRegex                                      Skip some tests matching a specific regex.
         --kubeconfig Kubeconfig                                   Explicit path to Kubeconfig file. You may also set the KUBECONFIG environment variable.
@@ -109,7 +109,7 @@ case $key in
     shift
     ;;
     --e2e-all)
-    RUN_CONFORMANCE=true
+    RUN_WHOLE_CONFORMANCE=true
     RUN_NETWORK_POLICY=true
     RUN_SIG_NETWORK=true
     shift

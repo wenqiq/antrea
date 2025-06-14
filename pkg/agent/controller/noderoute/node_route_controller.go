@@ -15,17 +15,22 @@
 package noderoute
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/containernetworking/plugins/pkg/ip"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/cache/synctrack"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
@@ -41,6 +46,7 @@ import (
 	"antrea.io/antrea/pkg/ovs/ovsctl"
 	utilip "antrea.io/antrea/pkg/util/ip"
 	"antrea.io/antrea/pkg/util/k8s"
+	utilwait "antrea.io/antrea/pkg/util/wait"
 )
 
 const (
@@ -70,16 +76,28 @@ type Controller struct {
 	nodeInformer     coreinformers.NodeInformer
 	nodeLister       corelisters.NodeLister
 	nodeListerSynced cache.InformerSynced
-	queue            workqueue.RateLimitingInterface
+	queue            workqueue.TypedRateLimitingInterface[string]
 	// installedNodes records routes and flows installation states of Nodes.
 	// The key is the host name of the Node, the value is the nodeRouteInfo of the Node.
 	// A node will be in the map after its flows and routes are installed successfully.
-	installedNodes  cache.Indexer
+	installedNodes cache.Indexer
+	// podSubnetsMutex protects access to the podSubnets set.
+	podSubnetsMutex sync.RWMutex
+	// podSubnets is a set which stores all known PodCIDRs in the cluster as masked netip.Prefix objects.
+	podSubnets      sets.Set[netip.Prefix]
+	maskSizeV4      int
+	maskSizeV6      int
 	wireGuardClient wireguard.Interface
 	// ipsecCertificateManager is useful for determining whether the ipsec certificate has been configured
 	// or not when IPsec is enabled with "cert" mode. The NodeRouteController must wait for the certificate
 	// to be configured before installing routes/flows to peer Nodes to prevent unencrypted traffic across Nodes.
 	ipsecCertificateManager ipseccertificate.Manager
+	// flowRestoreCompleteWait is to be decremented after installing flows for initial Nodes.
+	flowRestoreCompleteWait *utilwait.Group
+	// hasProcessedInitialList keeps track of whether the initial informer list has been
+	// processed by workers.
+	// See https://github.com/kubernetes/apiserver/blob/v0.30.1/pkg/admission/plugin/policy/internal/generic/controller.go
+	hasProcessedInitialList synctrack.AsyncTracker[string]
 }
 
 // NewNodeRouteController instantiates a new Controller object which will process Node events
@@ -95,37 +113,58 @@ func NewNodeRouteController(
 	nodeConfig *config.NodeConfig,
 	wireguardClient wireguard.Interface,
 	ipsecCertificateManager ipseccertificate.Manager,
+	flowRestoreCompleteWait *utilwait.Group,
 ) *Controller {
 	controller := &Controller{
-		ovsBridgeClient:         ovsBridgeClient,
-		ofClient:                client,
-		ovsCtlClient:            ovsCtlClient,
-		routeClient:             routeClient,
-		interfaceStore:          interfaceStore,
-		networkConfig:           networkConfig,
-		nodeConfig:              nodeConfig,
-		nodeInformer:            nodeInformer,
-		nodeLister:              nodeInformer.Lister(),
-		nodeListerSynced:        nodeInformer.Informer().HasSynced,
-		queue:                   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "noderoute"),
+		ovsBridgeClient:  ovsBridgeClient,
+		ofClient:         client,
+		ovsCtlClient:     ovsCtlClient,
+		routeClient:      routeClient,
+		interfaceStore:   interfaceStore,
+		networkConfig:    networkConfig,
+		nodeConfig:       nodeConfig,
+		nodeInformer:     nodeInformer,
+		nodeLister:       nodeInformer.Lister(),
+		nodeListerSynced: nodeInformer.Informer().HasSynced,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "noderoute",
+			},
+		),
 		installedNodes:          cache.NewIndexer(nodeRouteInfoKeyFunc, cache.Indexers{nodeRouteInfoPodCIDRIndexName: nodeRouteInfoPodCIDRIndexFunc}),
+		podSubnets:              sets.New[netip.Prefix](),
 		wireGuardClient:         wireguardClient,
 		ipsecCertificateManager: ipsecCertificateManager,
+		flowRestoreCompleteWait: flowRestoreCompleteWait.Increment(),
 	}
-	nodeInformer.Informer().AddEventHandlerWithResyncPeriod(
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(cur interface{}) {
-				controller.enqueueNode(cur)
+	if nodeConfig.PodIPv4CIDR != nil {
+		prefix, _ := cidrToPrefix(nodeConfig.PodIPv4CIDR)
+		controller.podSubnets.Insert(prefix)
+		controller.maskSizeV4 = prefix.Bits()
+	}
+	if nodeConfig.PodIPv6CIDR != nil {
+		prefix, _ := cidrToPrefix(nodeConfig.PodIPv6CIDR)
+		controller.podSubnets.Insert(prefix)
+		controller.maskSizeV6 = prefix.Bits()
+	}
+	registration, _ := nodeInformer.Informer().AddEventHandlerWithResyncPeriod(
+		cache.ResourceEventHandlerDetailedFuncs{
+			AddFunc: func(cur interface{}, isInInitialList bool) {
+				controller.enqueueNode(cur, isInInitialList)
 			},
 			UpdateFunc: func(old, cur interface{}) {
-				controller.enqueueNode(cur)
+				controller.enqueueNode(cur, false)
 			},
 			DeleteFunc: func(old interface{}) {
-				controller.enqueueNode(old)
+				controller.enqueueNode(old, false)
 			},
 		},
 		nodeResyncPeriod,
 	)
+	// UpstreamHasSynced is used by hasProcessedInitialList to determine whether even handlers
+	// have been called for the initial list.
+	controller.hasProcessedInitialList.UpstreamHasSynced = registration.HasSynced
 	return controller
 }
 
@@ -153,7 +192,7 @@ type nodeRouteInfo struct {
 
 // enqueueNode adds an object to the controller work queue
 // obj could be a *corev1.Node, or a DeletionFinalStateUnknown item.
-func (c *Controller) enqueueNode(obj interface{}) {
+func (c *Controller) enqueueNode(obj interface{}, isInInitialList bool) {
 	node, isNode := obj.(*corev1.Node)
 	if !isNode {
 		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -170,6 +209,9 @@ func (c *Controller) enqueueNode(obj interface{}) {
 
 	// Ignore notifications for this Node, no need to establish connectivity to itself.
 	if node.Name != c.nodeConfig.Name {
+		if isInInitialList {
+			c.hasProcessedInitialList.Start(node.Name)
+		}
 		c.queue.Add(node.Name)
 	}
 }
@@ -327,6 +369,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	// underlying network. Therefore it needs not know the routes to
 	// peer Pod CIDRs.
 	if c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
+		c.flowRestoreCompleteWait.Done()
 		<-stopCh
 		return
 	}
@@ -352,7 +395,29 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	for i := 0; i < defaultWorkers; i++ {
 		go wait.Until(c.worker, time.Second, stopCh)
 	}
+
+	go func() {
+		// When the initial list of Nodes has been processed, we decrement flowRestoreCompleteWait.
+		err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), 100*time.Millisecond, true, func(ctx context.Context) (done bool, err error) {
+			return c.HasSynced(), nil
+		})
+		// An error here means the context has been cancelled, which means that the stopCh
+		// has been closed. While it is still possible for c.hasProcessedInitialList.HasSynced
+		// to become true, as workers may not have returned yet, we should not decrement
+		// flowRestoreCompleteWait or log the message below.
+		if err != nil {
+			return
+		}
+		c.flowRestoreCompleteWait.Done()
+		klog.V(2).InfoS("Initial list of Nodes has been processed")
+	}()
+
 	<-stopCh
+}
+
+// HasSynced returns true when the initial list of Nodes has been processed by the controller.
+func (c *Controller) HasSynced() bool {
+	return c.hasProcessedInitialList.HasSynced()
 }
 
 // worker is a long-running function that will continually call the processNextWorkItem function in
@@ -369,7 +434,7 @@ func (c *Controller) worker() {
 // function returns false if and only if the work queue was shutdown (no more items will be
 // processed).
 func (c *Controller) processNextWorkItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
@@ -377,17 +442,13 @@ func (c *Controller) processNextWorkItem() bool {
 	// must remember to call Forget if we do not want this work item being re-queued. For
 	// example, we do not call Forget if a transient error occurs, instead the item is put back
 	// on the workqueue and attempted again after a back-off period.
-	defer c.queue.Done(obj)
+	defer c.queue.Done(key)
 
-	// We expect strings (Node name) to come off the workqueue.
-	if key, ok := obj.(string); !ok {
-		// As the item in the workqueue is actually invalid, we call Forget here else we'd
-		// go into a loop of attempting to process a work item that is invalid.
-		// This should not happen: enqueueNode only enqueues strings.
-		c.queue.Forget(obj)
-		klog.Errorf("Expected string in work queue but got %#v", obj)
-		return true
-	} else if err := c.syncNodeRoute(key); err == nil {
+	// We call Finished unconditionally even if this only matters for the initial list of
+	// Nodes. There is no harm in calling Finished without a corresponding call to Start.
+	defer c.hasProcessedInitialList.Finished(key)
+
+	if err := c.syncNodeRoute(key); err == nil {
 		// If no error occurs we Forget this item so it does not get queued again until
 		// another change happens.
 		c.queue.Forget(key)
@@ -446,6 +507,12 @@ func (c *Controller) deleteNodeRoute(nodeName string) error {
 		return fmt.Errorf("failed to uninstall flows to Node %s: %v", nodeName, err)
 	}
 	c.installedNodes.Delete(obj)
+	func() {
+		subnets, _ := cidrsToPrefixes(nodeRouteInfo.podCIDRs)
+		c.podSubnetsMutex.Lock()
+		defer c.podSubnetsMutex.Unlock()
+		c.podSubnets.Delete(subnets...)
+	}()
 
 	if c.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeIPSec {
 		interfaceConfig, ok := c.interfaceStore.GetNodeTunnelInterface(nodeName)
@@ -538,6 +605,13 @@ func (c *Controller) addNodeRoute(nodeName string, node *corev1.Node) error {
 		if peerGatewayIP.To4() == nil {
 			peerNodeIP = peerNodeIPs.IPv6
 		}
+
+		func() {
+			subnet, _ := cidrToPrefix(peerPodCIDR)
+			c.podSubnetsMutex.Lock()
+			defer c.podSubnetsMutex.Unlock()
+			c.podSubnets.Insert(subnet)
+		}()
 
 		klog.InfoS("Adding route and flow to Node", "Node", nodeName, "podCIDR", podCIDR,
 			"peerNodeIP", peerNodeIP)
@@ -737,40 +811,31 @@ func ParseTunnelInterfaceConfig(
 	return interfaceConfig
 }
 
-func (c *Controller) IPInPodSubnets(ip net.IP) bool {
-	var ipCIDR *net.IPNet
-	var curNodeCIDRStr string
-	if ip.To4() != nil {
-		var podIPv4CIDRMaskSize int
-		if c.nodeConfig.PodIPv4CIDR != nil {
-			curNodeCIDRStr = c.nodeConfig.PodIPv4CIDR.String()
-			podIPv4CIDRMaskSize, _ = c.nodeConfig.PodIPv4CIDR.Mask.Size()
-		} else {
-			return false
-		}
-		v4Mask := net.CIDRMask(podIPv4CIDRMaskSize, utilip.V4BitLen)
-		ipCIDR = &net.IPNet{
-			IP:   ip.Mask(v4Mask),
-			Mask: v4Mask,
-		}
-
+func (c *Controller) findPodSubnetForIP(ip netip.Addr) (netip.Prefix, bool) {
+	var maskSize int
+	if ip.Is4() {
+		maskSize = c.maskSizeV4
 	} else {
-		var podIPv6CIDRMaskSize int
-		if c.nodeConfig.PodIPv6CIDR != nil {
-			curNodeCIDRStr = c.nodeConfig.PodIPv6CIDR.String()
-			podIPv6CIDRMaskSize, _ = c.nodeConfig.PodIPv6CIDR.Mask.Size()
-		} else {
-			return false
-		}
-		v6Mask := net.CIDRMask(podIPv6CIDRMaskSize, utilip.V6BitLen)
-		ipCIDR = &net.IPNet{
-			IP:   ip.Mask(v6Mask),
-			Mask: v6Mask,
-		}
+		maskSize = c.maskSizeV6
 	}
-	ipCIDRStr := ipCIDR.String()
-	nodeInCluster, _ := c.installedNodes.ByIndex(nodeRouteInfoPodCIDRIndexName, ipCIDRStr)
-	return len(nodeInCluster) > 0 || ipCIDRStr == curNodeCIDRStr
+	if maskSize == 0 {
+		return netip.Prefix{}, false
+	}
+	prefix, _ := ip.Prefix(maskSize)
+	c.podSubnetsMutex.RLock()
+	defer c.podSubnetsMutex.RUnlock()
+	return prefix, c.podSubnets.Has(prefix)
+}
+
+// LookupIPInPodSubnets returns two boolean values. The first one indicates whether the IP can be
+// found in a PodCIDR for one of the cluster Nodes. The second one indicates whether the IP is used
+// as a gateway IP. The second boolean value can only be true if the first one is true.
+func (c *Controller) LookupIPInPodSubnets(ip netip.Addr) (bool, bool) {
+	prefix, ok := c.findPodSubnetForIP(ip)
+	if !ok {
+		return false, false
+	}
+	return ok, ip == util.GetGatewayIPForPodPrefix(prefix)
 }
 
 // getNodeMAC gets Node's br-int MAC from its annotation. It is only for Windows Noencap mode.
@@ -784,4 +849,25 @@ func getNodeMAC(node *corev1.Node) (net.HardwareAddr, error) {
 		return nil, fmt.Errorf("failed to parse MAC `%s`: %v", macStr, err)
 	}
 	return mac, nil
+}
+
+func cidrToPrefix(cidr *net.IPNet) (netip.Prefix, error) {
+	addr, ok := netip.AddrFromSlice(cidr.IP)
+	if !ok {
+		return netip.Prefix{}, fmt.Errorf("invalid IP in CIDR: %v", cidr)
+	}
+	size, _ := cidr.Mask.Size()
+	return addr.Prefix(size)
+}
+
+func cidrsToPrefixes(cidrs []*net.IPNet) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, len(cidrs))
+	for idx := range cidrs {
+		prefix, err := cidrToPrefix(cidrs[idx])
+		if err != nil {
+			return nil, err
+		}
+		prefixes[idx] = prefix
+	}
+	return prefixes, nil
 }

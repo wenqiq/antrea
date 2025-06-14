@@ -47,8 +47,8 @@ const (
 )
 
 var (
-	icmpType = int32(8)
-	icmpCode = int32(0)
+	ICMPType = int32(8)
+	ICMPCode = int32(0)
 )
 
 type vmInfo struct {
@@ -82,83 +82,43 @@ func TestVMAgent(t *testing.T) {
 	t.Run("testExternalNodeSupportBundleCollection", func(t *testing.T) { testExternalNodeSupportBundleCollection(t, data, vmList) })
 }
 
-func (data *TestData) waitForDeploymentReady(t *testing.T, namespace string, name string, timeout time.Duration) error {
-	t.Logf("Waiting for Deployment '%s/%s' to be ready", namespace, name)
-	err := wait.Poll(1*time.Second, timeout, func() (bool, error) {
-		dp, err := data.clientset.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-		return dp.Status.ObservedGeneration == dp.Generation && dp.Status.ReadyReplicas == *dp.Spec.Replicas, nil
-	})
-	if err == wait.ErrWaitTimeout {
-		_, stdout, _, _ := data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl -n %s describe pod -l app=sftp", namespace))
-		return fmt.Errorf("some replicas for Deployment '%s/%s' are not ready after %v:\n%v", namespace, name, timeout, stdout)
-	} else if err != nil {
-		return fmt.Errorf("error when waiting for Deployment '%s/%s' to be ready: %w", namespace, name, err)
-	}
-	return nil
-}
-
 func (data *TestData) waitForSupportBundleCollectionRealized(t *testing.T, name string, timeout time.Duration) error {
 	t.Logf("Waiting for SupportBundleCollection '%s' to be realized", name)
-	var sbc *crdv1alpha1.SupportBundleCollection
-	if err := wait.Poll(100*time.Millisecond, timeout, func() (bool, error) {
-		var getErr error
-		sbc, getErr = data.crdClient.CrdV1alpha1().SupportBundleCollections().Get(context.TODO(), name, metav1.GetOptions{})
-		if getErr != nil {
-			return false, getErr
-		}
-		for _, cond := range sbc.Status.Conditions {
-			if cond.Status == metav1.ConditionTrue && cond.Type == crdv1alpha1.CollectionCompleted {
-				return sbc.Status.DesiredNodes == sbc.Status.CollectedNodes, nil
-			}
-		}
-		return false, nil
-	}); err != nil {
-		if sbc != nil {
-			t.Logf("The conditions of SupportBundleCollection for the vms are %v", sbc.Status.Conditions)
-		}
-		return fmt.Errorf("error when waiting for SupportBundleCollection '%s' to be realized: %v", name, err)
+	_, err := data.waitForSupportBundleCollection(t, name, timeout, func(sbc *crdv1alpha1.SupportBundleCollection) bool {
+		cond := findSupportBundleCollectionCondition(sbc.Status.Conditions, crdv1alpha1.CollectionCompleted)
+		return cond != nil && cond.Status == metav1.ConditionTrue && sbc.Status.DesiredNodes == sbc.Status.CollectedNodes
+	})
+	if err != nil {
+		return fmt.Errorf("error when waiting for SupportBundleCollection '%s' to be realized: %w", name, err)
 	}
 	return nil
 }
 
 func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmList []vmInfo) {
-	sftpServiceYAML := "sftp-deployment.yml"
-	secretUserName := "foo"
-	secretPassword := "pass"
-	uploadFolder := "upload"
-	uploadPath := path.Join("/home", secretUserName, uploadFolder)
+	const sftpNodePort = 30010
+	deployment, _, _, err := data.deploySFTPServer(context.TODO(), 30010)
+	require.NoError(t, err, "failed to deploy SFTP server")
+	require.NoError(t, data.waitForDeploymentReady(t, deployment.Namespace, deployment.Name, defaultTimeout))
+
 	secretName := "support-bundle-secret"
-	vmNames := make([]string, 0, len(vmList))
-	for _, vm := range vmList {
-		vmNames = append(vmNames, vm.nodeName)
-	}
-	applySFTPYamlCommand := fmt.Sprintf("kubectl apply -f %s -n %s", sftpServiceYAML, data.testNamespace)
-	code, stdout, stderr, err := data.RunCommandOnNode(controlPlaneNodeName(), applySFTPYamlCommand)
-	require.NoError(t, err)
-	defer func() {
-		deleteSFTPYamlCommand := fmt.Sprintf("kubectl delete -f %s -n %s", sftpServiceYAML, data.testNamespace)
-		data.RunCommandOnNode(controlPlaneNodeName(), deleteSFTPYamlCommand)
-	}()
-	t.Logf("Stdout of the command '%s': %s", applySFTPYamlCommand, stdout)
-	if code != 0 {
-		t.Errorf("Error when applying %s: %v", sftpServiceYAML, stderr)
-	}
-	failOnError(data.waitForDeploymentReady(t, data.testNamespace, "sftp", defaultTimeout), t)
 	sec := &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: secretName,
 		},
 		Data: map[string][]byte{
-			"username": []byte(secretUserName),
-			"password": []byte(secretPassword),
+			"username": []byte(sftpUser),
+			"password": []byte(sftpPassword),
 		},
 	}
 	_, err = data.clientset.CoreV1().Secrets(namespace).Create(context.TODO(), sec, metav1.CreateOptions{})
 	require.NoError(t, err)
-	defer data.clientset.CoreV1().Secrets(namespace).Delete(context.TODO(), secretName, metav1.DeleteOptions{})
+	defer data.clientset.CoreV1().Secrets(namespace).Delete(context.TODO(), sec.Name, metav1.DeleteOptions{})
+
+	vmNames := make([]string, 0, len(vmList))
+	for _, vm := range vmList {
+		vmNames = append(vmNames, vm.nodeName)
+	}
+
 	bundleName := "support-bundle-collection-external-node"
 	sbc := &crdv1alpha1.SupportBundleCollection{
 		ObjectMeta: metav1.ObjectMeta{
@@ -172,7 +132,7 @@ func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmLis
 			},
 			ExpirationMinutes: 300,
 			FileServer: crdv1alpha1.BundleFileServer{
-				URL: fmt.Sprintf("%s:30010/upload", controlPlaneNodeIPv4()),
+				URL: fmt.Sprintf("%s:%d/%s", controlPlaneNodeIPv4(), sftpNodePort, sftpUploadDir),
 			},
 			Authentication: crdv1alpha1.BundleServerAuthConfiguration{
 				AuthType: "BasicAuthentication",
@@ -183,14 +143,15 @@ func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmLis
 			},
 		},
 	}
-	_, err = data.crdClient.CrdV1alpha1().SupportBundleCollections().Create(context.TODO(), sbc, metav1.CreateOptions{})
+	_, err = data.CRDClient.CrdV1alpha1().SupportBundleCollections().Create(context.TODO(), sbc, metav1.CreateOptions{})
 	require.NoError(t, err)
-	defer data.crdClient.CrdV1alpha1().SupportBundleCollections().Delete(context.TODO(), bundleName, metav1.DeleteOptions{})
+	defer data.CRDClient.CrdV1alpha1().SupportBundleCollections().Delete(context.TODO(), bundleName, metav1.DeleteOptions{})
 	failOnError(data.waitForSupportBundleCollectionRealized(t, bundleName, 30*time.Second), t)
 	pods, err := data.clientset.CoreV1().Pods(data.testNamespace).List(context.TODO(), metav1.ListOptions{LabelSelector: "app=sftp"})
 	require.NoError(t, err)
 	require.Len(t, pods.Items, 1)
 	pod := pods.Items[0]
+	uploadPath := path.Join("/home", sftpUser, sftpUploadDir)
 	for _, vm := range vmList {
 		extractPath := path.Join(uploadPath, vm.nodeName)
 		mkdirCommand := fmt.Sprintf("mkdir %s", extractPath)
@@ -215,14 +176,19 @@ func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmLis
 		}
 		require.NoError(t, err)
 		var expectedInfoEntries []string
-		if vm.osType == linuxOS {
-			expectedInfoEntries = []string{"address", "addressgroups", "agentinfo", "appliedtogroups", "flows", "iptables", "link", "logs", "memprofile", "networkpolicies", "ovsports", "route"}
-		} else if vm.osType == windowsOS {
-			expectedInfoEntries = []string{"addressgroups", "agentinfo", "appliedtogroups", "flows", "ipconfig", "logs\\ovs\\ovs-vswitchd.log", "logs\\ovs\\ovsdb-server.log", "memprofile", "network-adapters", "networkpolicies", "ovsports", "routes"}
+		switch vm.osType {
+		case linuxOS:
+			expectedInfoEntries = []string{"address", "addressgroups", "agentinfo", "appliedtogroups", "flows", "goroutinestacks", "groups", "iptables", "link", "logs", "memprofile", "networkpolicies", "ovsports", "route"}
+		case windowsOS:
+			expectedInfoEntries = []string{"addressgroups", "agentinfo", "appliedtogroups", "flows", "goroutinestacks", "groups", "ipconfig", "logs\\ovs\\ovs-vswitchd.log", "logs\\ovs\\ovsdb-server.log", "memprofile", "network-adapters", "networkpolicies", "ovsports", "routes"}
 		}
-		actualExpectedInfoEntries := strings.Split(strings.Trim(stdout, "\n"), "\n")
-		t.Logf("Actual files after extracting SupportBundleCollection tarball %s_%s: %v", vm.nodeName, bundleName, actualExpectedInfoEntries)
-		assert.ElementsMatch(t, expectedInfoEntries, actualExpectedInfoEntries)
+		actualInfoEntries := strings.Split(strings.Trim(stdout, "\n"), "\n")
+		t.Logf("Actual files after extracting SupportBundleCollection tarball %s_%s: %v", vm.nodeName, bundleName, actualInfoEntries)
+		// We validate that actualInfoEntries contains expectedInfoEntries instead
+		// of checking for an exact match, which would make the test too easy to break. It
+		// is recommended to update expectedInfoEntries when new elements are added to the
+		// supportbundle, but it is not a strict requirement.
+		assert.Subset(t, actualInfoEntries, expectedInfoEntries)
 	}
 }
 
@@ -236,7 +202,8 @@ func setupVMAgentTest(t *testing.T, data *TestData) ([]vmInfo, error) {
 		vms := strings.Split(testOptions.linuxVMs, " ")
 		for _, vm := range vms {
 			t.Logf("Get info for Linux VM: %s", vm)
-			tempVM := getVMInfo(t, data, vm)
+			tempVM, err := getVMInfo(t, data, vm)
+			require.NoError(t, err)
 			vmList = append(vmList, tempVM)
 		}
 	}
@@ -244,7 +211,8 @@ func setupVMAgentTest(t *testing.T, data *TestData) ([]vmInfo, error) {
 		vms := strings.Split(testOptions.windowsVMs, " ")
 		for _, vm := range vms {
 			t.Logf("Get info for Windows VM: %s", vm)
-			tempVM := getWindowsVMInfo(t, data, vm)
+			tempVM, err := getWindowsVMInfo(t, data, vm)
+			require.NoError(t, err)
 			vmList = append(vmList, tempVM)
 		}
 	}
@@ -265,13 +233,15 @@ func setupVMAgentTest(t *testing.T, data *TestData) ([]vmInfo, error) {
 // and verifies uplink configuration is restored.
 func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 	verifyUpLinkAfterCleanup := func(vm vmInfo) {
-		err := wait.PollImmediate(10*time.Second, 1*time.Minute, func() (done bool, err error) {
+		err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 			var tempVM vmInfo
+			var getVMErr error
 			if vm.osType == linuxOS {
-				tempVM = getVMInfo(t, data, vm.nodeName)
+				tempVM, getVMErr = getVMInfo(t, data, vm.nodeName)
 			} else {
-				tempVM = getWindowsVMInfo(t, data, vm.nodeName)
+				tempVM, getVMErr = getWindowsVMInfo(t, data, vm.nodeName)
 			}
+			require.NoError(t, getVMErr)
 			if vm.ifName != tempVM.ifName {
 				t.Logf("Retry, unexpected uplink interface name, expected %s, got %s", vm.ifName, tempVM.ifName)
 				return false, nil
@@ -286,7 +256,7 @@ func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 	}
 	t.Logf("TestVMAgent teardown")
 	for _, vm := range vmList {
-		err := data.crdClient.CrdV1alpha1().ExternalNodes(namespace).Delete(context.TODO(), vm.nodeName, metav1.DeleteOptions{})
+		err := data.CRDClient.CrdV1alpha1().ExternalNodes(namespace).Delete(context.TODO(), vm.nodeName, metav1.DeleteOptions{})
 		assert.NoError(t, err, "Failed to delete ExternalNode %s", vm.nodeName)
 		verifyExternalEntityExistence(t, data, vm.eeName, vm.nodeName, false)
 		verifyUpLinkAfterCleanup(vm)
@@ -294,9 +264,9 @@ func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 }
 
 func verifyExternalEntityExistence(t *testing.T, data *TestData, eeName string, vmNodeName string, expectExists bool) {
-	if err := wait.PollImmediate(10*time.Second, 1*time.Minute, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		t.Logf("Verifying ExternalEntity %s, expectExists %t", eeName, expectExists)
-		_, err = data.crdClient.CrdV1alpha2().ExternalEntities(namespace).Get(context.TODO(), eeName, metav1.GetOptions{})
+		_, err = data.CRDClient.CrdV1alpha2().ExternalEntities(namespace).Get(context.TODO(), eeName, metav1.GetOptions{})
 		if err != nil && !errors.IsNotFound(err) {
 			t.Errorf("Failed to get ExternalEntity %s by ExternalNode %s: %v", eeName, vmNodeName, err)
 			return false, err
@@ -325,19 +295,31 @@ func verifyExternalEntityExistence(t *testing.T, data *TestData, eeName string, 
 
 func testExternalNode(t *testing.T, data *TestData, vmList []vmInfo) {
 	verifyExternalNodeRealization := func(vm vmInfo) {
-		err := wait.PollImmediate(10*time.Second, 1*time.Minute, func() (done bool, err error) {
+		err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 			t.Logf("Verify host interface configuration for VM: %s", vm.nodeName)
 			exists, err := verifyInterfaceIsInOVS(t, data, vm)
 			return exists, err
 		})
-		assert.NoError(t, err, "Failed to verify host interface in OVS, vmInfo %+v", vm)
+		require.NoError(t, err, "Failed to verify host interface in OVS, vmInfo %+v", vm)
 
 		var tempVM vmInfo
-		if vm.osType == windowsOS {
-			tempVM = getWindowsVMInfo(t, data, vm.nodeName)
-		} else {
-			tempVM = getVMInfo(t, data, vm.nodeName)
-		}
+		err = wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 20*time.Second, true, func(ctx context.Context) (done bool, err error) {
+			var getVMErr error
+			if vm.osType == windowsOS {
+				tempVM, getVMErr = getWindowsVMInfo(t, data, vm.nodeName)
+			} else {
+				tempVM, getVMErr = getVMInfo(t, data, vm.nodeName)
+			}
+			if getVMErr != nil {
+				return false, getVMErr
+			}
+			vmIFs := strings.Split(tempVM.ifName, "\n")
+			if len(vmIFs) > 1 {
+				return false, nil
+			}
+			return true, nil
+		})
+		require.NoError(t, err)
 		assert.Equal(t, vm.ifName, tempVM.ifName, "Failed to verify uplink interface")
 		assert.Equal(t, vm.ip, tempVM.ip, "Failed to verify uplink IP")
 	}
@@ -349,50 +331,70 @@ func testExternalNode(t *testing.T, data *TestData, vmList []vmInfo) {
 	}
 }
 
-func getVMInfo(t *testing.T, data *TestData, nodeName string) (info vmInfo) {
-	var vm vmInfo
-	vm.nodeName = nodeName
-	var cmd string
-	cmd = "ip -o -4 route show to default | awk '{print $5}'"
-	vm.osType = linuxOS
+func getVMInfo(t *testing.T, data *TestData, nodeName string) (vmInfo, error) {
+	vm := vmInfo{nodeName: nodeName, osType: linuxOS}
+	cmd := "ip -o -4 route show to default | awk '{print $5}'"
 	rc, ifName, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
+	}
 	vm.ifName = strings.TrimSpace(ifName)
+
 	cmd = fmt.Sprintf("ifconfig %s | awk '/inet / {print $2}'| sed 's/addr://'", vm.ifName)
 	rc, ifIP, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
+	}
 	vm.ip = strings.TrimSpace(ifIP)
-	return vm
+
+	return vm, nil
 }
 
-func getWindowsVMInfo(t *testing.T, data *TestData, nodeName string) (vm vmInfo) {
+func getWindowsVMInfo(t *testing.T, data *TestData, nodeName string) (vmInfo, error) {
 	var err error
-	vm.nodeName = nodeName
-	vm.osType = windowsOS
-	cmd := fmt.Sprintf("powershell 'Get-WmiObject -Class Win32_IP4RouteTable | Where { $_.destination -eq \"0.0.0.0\" -and $_.mask -eq \"0.0.0.0\"} | Sort-Object metric1 | select interfaceindex | ft -HideTableHeaders'")
+	vm := vmInfo{nodeName: nodeName, osType: windowsOS}
+	cmd := "powershell 'Get-WmiObject -Class Win32_IP4RouteTable | Where { $_.destination -eq \"0.0.0.0\" -and $_.mask -eq \"0.0.0.0\"} | Sort-Object metric1 | select interfaceindex | ft -HideTableHeaders'"
 	rc, ifIndex, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIndex, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIndex, stderr)
+	}
 	vm.ifIndex = strings.TrimSpace(ifIndex)
+
 	cmd = fmt.Sprintf("powershell 'Get-NetAdapter -IfIndex %s | select name | ft -HideTableHeaders'", vm.ifIndex)
 	rc, ifName, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
+	}
 	vm.ifName = strings.TrimSpace(ifName)
+
 	cmd = fmt.Sprintf("powershell 'Get-NetIPAddress -AddressFamily IPv4 -ifIndex %s| select IPAddress| ft -HideTableHeaders'", vm.ifIndex)
 	rc, ifIP, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
+	}
 	vm.ip = strings.TrimSpace(ifIP)
-	return vm
 
+	return vm, nil
 }
 
 func startAntreaAgent(t *testing.T, data *TestData, vm vmInfo) {
@@ -452,7 +454,7 @@ func createExternalNodeCRD(data *TestData, nodeName string, ifName string, ip st
 	testEn.AddInterface(ifName, ipList)
 	// Add labels on the VMs.
 	testEn.AddLabels(map[string]string{externalNodeLabelKey: nodeName})
-	return data.crdClient.CrdV1alpha1().ExternalNodes(namespace).Create(context.TODO(), testEn.Get(), metav1.CreateOptions{})
+	return data.CRDClient.CrdV1alpha1().ExternalNodes(namespace).Create(context.TODO(), testEn.Get(), metav1.CreateOptions{})
 }
 
 func testExternalNodeWithANP(t *testing.T, data *TestData, vmList []vmInfo) {
@@ -485,7 +487,7 @@ func testANPOnVMs(t *testing.T, data *TestData, vmList []vmInfo, osType string) 
 	})
 	// Test FQDN rules in ANP
 	t.Run("testANPOnExternalNodeWithFQDN", func(t *testing.T) {
-		testANPWithFQDN(t, data, "anp-vmagent-fqdn", namespace, *appliedToVM, []string{"www.facebook.com"}, []string{"docs.google.com"}, []string{"github.com"})
+		testANPWithFQDN(t, data, "anp-vmagent-fqdn", namespace, *appliedToVM, []string{"docs.amazon.com"}, []string{"docs.google.com"}, []string{"github.com"})
 	})
 }
 
@@ -589,12 +591,10 @@ func createANPForExternalNode(t *testing.T, data *TestData, name, namespace stri
 		SetName(namespace, name).
 		SetPriority(1.0).
 		SetAppliedToGroup([]ANNPAppliedToSpec{{ExternalEntitySelector: eeSelector}})
-
 	ruleFunc := builder.AddIngress
 	if !ingress {
 		ruleFunc = builder.AddEgress
 	}
-
 	switch proto {
 	case ProtocolTCP:
 		fallthrough
@@ -609,13 +609,32 @@ func createANPForExternalNode(t *testing.T, data *TestData, name, namespace stri
 			peerIPCIDR := fmt.Sprintf("%s/32", peerVM.ip)
 			cidr = &peerIPCIDR
 		}
+		ipBlock := &crdv1beta1.IPBlock{
+			CIDR: *cidr,
+		}
 		port := int32(iperfPort)
-		ruleFunc(proto, &port, nil, nil, nil, nil, nil, nil, nil, cidr, nil, nil, peerLabel,
-			nil, nil, nil, nil, ruleAction, "", "")
+		ruleFunc(ANNPRuleBuilder{
+			EESelector: peerLabel,
+			BaseRuleBuilder: BaseRuleBuilder{
+				Protoc:  proto,
+				Port:    &port,
+				Action:  ruleAction,
+				IPBlock: ipBlock,
+			}})
 	case ProtocolICMP:
 		peerIPCIDR := fmt.Sprintf("%s/32", nodeIP(0))
-		ruleFunc(ProtocolICMP, nil, nil, nil, &icmpType, &icmpCode, nil, nil, nil, &peerIPCIDR, nil, nil, nil,
-			nil, nil, nil, nil, ruleAction, "", "")
+		cidr := &peerIPCIDR
+		ipBlock := &crdv1beta1.IPBlock{
+			CIDR: *cidr,
+		}
+		ruleFunc(ANNPRuleBuilder{
+			BaseRuleBuilder: BaseRuleBuilder{
+				Protoc:   ProtocolICMP,
+				ICMPType: &ICMPType,
+				ICMPCode: &ICMPCode,
+				Action:   ruleAction,
+				IPBlock:  ipBlock,
+			}})
 	}
 	anpRule := builder.Get()
 
@@ -637,7 +656,7 @@ func createANPWithFQDN(t *testing.T, data *TestData, name string, namespace stri
 	for fqdn, action := range fqdnSettings {
 		ruleName := fmt.Sprintf("name-%d", i)
 		policyPeer := []crdv1beta1.NetworkPolicyPeer{{FQDN: fqdn}}
-		ports, _ := GenPortsOrProtocols(ProtocolTCP, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		ports, _ := GenPortsOrProtocols(BaseRuleBuilder{Protoc: ProtocolTCP})
 		newRule := crdv1beta1.Rule{
 			To:     policyPeer,
 			Ports:  ports,
@@ -665,7 +684,7 @@ func runPingCommandOnVM(data *TestData, dstVM vmInfo, connected bool) error {
 	expOutput := fmt.Sprintf("%d packets transmitted, %d received", pingCount, expCount)
 	// Use master Node to run ping command.
 	pingClient := nodeName(0)
-	err := wait.PollImmediate(time.Second*5, time.Second*20, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Second*20, true, func(ctx context.Context) (done bool, err error) {
 		if err := runCommandAndCheckResult(data, pingClient, cmdStr, expOutput, ""); err != nil {
 			return false, nil
 		}
@@ -676,7 +695,7 @@ func runPingCommandOnVM(data *TestData, dstVM vmInfo, connected bool) error {
 
 func runIperfCommandOnVMs(t *testing.T, data *TestData, srcVM vmInfo, dstVM vmInfo, connected bool, isUDP bool, ruleAction crdv1beta1.RuleAction) error {
 	svrIP := net.ParseIP(dstVM.ip)
-	err := wait.PollImmediate(time.Second*5, time.Second*20, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Second*20, true, func(ctx context.Context) (done bool, err error) {
 		if err := runIperfClient(t, data, srcVM, svrIP, iperfPort, isUDP, connected, ruleAction); err != nil {
 			return false, nil
 		}
@@ -732,7 +751,7 @@ func runIperfClient(t *testing.T, data *TestData, targetVM vmInfo, svrIP net.IP,
 		}
 	}
 
-	errCh := make(chan error, 0)
+	errCh := make(chan error)
 	go func() {
 		err := runCommandAndCheckResult(data, targetVM.nodeName, cmdStr, expectedOutput, "")
 		errCh <- err
@@ -769,7 +788,7 @@ func runCurlCommandOnVM(data *TestData, targetVM vmInfo, url string, action crdv
 	case crdv1beta1.RuleActionReject:
 		expectedErr = "Connection refused"
 	}
-	err := wait.PollImmediate(time.Second*5, time.Second*20, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Second*20, true, func(ctx context.Context) (done bool, err error) {
 		if err := runCommandAndCheckResult(data, targetVM.nodeName, cmdStr, expectedOutput, expectedErr); err != nil {
 			return false, nil
 		}

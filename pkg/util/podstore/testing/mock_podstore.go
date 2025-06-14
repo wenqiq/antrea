@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/util/podstore/testing/mock_podstore.go -package testing antrea.io/antrea/pkg/util/podstore Interface
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -35,6 +36,7 @@ import (
 type MockInterface struct {
 	ctrl     *gomock.Controller
 	recorder *MockInterfaceMockRecorder
+	isgomock struct{}
 }
 
 // MockInterfaceMockRecorder is the mock recorder for MockInterface.
@@ -55,28 +57,28 @@ func (m *MockInterface) EXPECT() *MockInterfaceMockRecorder {
 }
 
 // GetPodByIPAndTime mocks base method.
-func (m *MockInterface) GetPodByIPAndTime(arg0 string, arg1 time.Time) (*v1.Pod, bool) {
+func (m *MockInterface) GetPodByIPAndTime(ip string, startTime time.Time) (*v1.Pod, bool) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetPodByIPAndTime", arg0, arg1)
+	ret := m.ctrl.Call(m, "GetPodByIPAndTime", ip, startTime)
 	ret0, _ := ret[0].(*v1.Pod)
 	ret1, _ := ret[1].(bool)
 	return ret0, ret1
 }
 
 // GetPodByIPAndTime indicates an expected call of GetPodByIPAndTime.
-func (mr *MockInterfaceMockRecorder) GetPodByIPAndTime(arg0, arg1 any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) GetPodByIPAndTime(ip, startTime any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPodByIPAndTime", reflect.TypeOf((*MockInterface)(nil).GetPodByIPAndTime), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPodByIPAndTime", reflect.TypeOf((*MockInterface)(nil).GetPodByIPAndTime), ip, startTime)
 }
 
 // Run mocks base method.
-func (m *MockInterface) Run(arg0 <-chan struct{}) {
+func (m *MockInterface) Run(stopCh <-chan struct{}) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "Run", arg0)
+	m.ctrl.Call(m, "Run", stopCh)
 }
 
 // Run indicates an expected call of Run.
-func (mr *MockInterfaceMockRecorder) Run(arg0 any) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) Run(stopCh any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Run", reflect.TypeOf((*MockInterface)(nil).Run), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Run", reflect.TypeOf((*MockInterface)(nil).Run), stopCh)
 }

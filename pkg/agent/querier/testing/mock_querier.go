@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/agent/querier/testing/mock_querier.go -package testing antrea.io/antrea/pkg/agent/querier AgentQuerier
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -43,6 +44,7 @@ import (
 type MockAgentQuerier struct {
 	ctrl     *gomock.Controller
 	recorder *MockAgentQuerierMockRecorder
+	isgomock struct{}
 }
 
 // MockAgentQuerierMockRecorder is the mock recorder for MockAgentQuerier.
@@ -63,15 +65,29 @@ func (m *MockAgentQuerier) EXPECT() *MockAgentQuerierMockRecorder {
 }
 
 // GetAgentInfo mocks base method.
-func (m *MockAgentQuerier) GetAgentInfo(arg0 *v1beta1.AntreaAgentInfo, arg1 bool) {
+func (m *MockAgentQuerier) GetAgentInfo(agentInfo *v1beta1.AntreaAgentInfo, partial bool) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "GetAgentInfo", arg0, arg1)
+	m.ctrl.Call(m, "GetAgentInfo", agentInfo, partial)
 }
 
 // GetAgentInfo indicates an expected call of GetAgentInfo.
-func (mr *MockAgentQuerierMockRecorder) GetAgentInfo(arg0, arg1 any) *gomock.Call {
+func (mr *MockAgentQuerierMockRecorder) GetAgentInfo(agentInfo, partial any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAgentInfo", reflect.TypeOf((*MockAgentQuerier)(nil).GetAgentInfo), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAgentInfo", reflect.TypeOf((*MockAgentQuerier)(nil).GetAgentInfo), agentInfo, partial)
+}
+
+// GetBGPPolicyInfoQuerier mocks base method.
+func (m *MockAgentQuerier) GetBGPPolicyInfoQuerier() querier.AgentBGPPolicyInfoQuerier {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBGPPolicyInfoQuerier")
+	ret0, _ := ret[0].(querier.AgentBGPPolicyInfoQuerier)
+	return ret0
+}
+
+// GetBGPPolicyInfoQuerier indicates an expected call of GetBGPPolicyInfoQuerier.
+func (mr *MockAgentQuerierMockRecorder) GetBGPPolicyInfoQuerier() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBGPPolicyInfoQuerier", reflect.TypeOf((*MockAgentQuerier)(nil).GetBGPPolicyInfoQuerier))
 }
 
 // GetInterfaceStore mocks base method.

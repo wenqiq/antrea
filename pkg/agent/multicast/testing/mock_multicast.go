@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 //
 //	mockgen -copyright_file hack/boilerplate/license_header.raw.txt -destination pkg/agent/multicast/testing/mock_multicast.go -package testing antrea.io/antrea/pkg/agent/multicast RouteInterface
 //
+
 // Package testing is a generated GoMock package.
 package testing
 
@@ -34,6 +35,7 @@ import (
 type MockRouteInterface struct {
 	ctrl     *gomock.Controller
 	recorder *MockRouteInterfaceMockRecorder
+	isgomock struct{}
 }
 
 // MockRouteInterfaceMockRecorder is the mock recorder for MockRouteInterface.
@@ -54,46 +56,46 @@ func (m *MockRouteInterface) EXPECT() *MockRouteInterfaceMockRecorder {
 }
 
 // AddMrouteEntry mocks base method.
-func (m *MockRouteInterface) AddMrouteEntry(arg0, arg1 net.IP, arg2 uint16, arg3 []uint16) error {
+func (m *MockRouteInterface) AddMrouteEntry(src, group net.IP, iif uint16, oifs []uint16) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddMrouteEntry", arg0, arg1, arg2, arg3)
+	ret := m.ctrl.Call(m, "AddMrouteEntry", src, group, iif, oifs)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // AddMrouteEntry indicates an expected call of AddMrouteEntry.
-func (mr *MockRouteInterfaceMockRecorder) AddMrouteEntry(arg0, arg1, arg2, arg3 any) *gomock.Call {
+func (mr *MockRouteInterfaceMockRecorder) AddMrouteEntry(src, group, iif, oifs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddMrouteEntry", reflect.TypeOf((*MockRouteInterface)(nil).AddMrouteEntry), arg0, arg1, arg2, arg3)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddMrouteEntry", reflect.TypeOf((*MockRouteInterface)(nil).AddMrouteEntry), src, group, iif, oifs)
 }
 
 // AllocateVIFs mocks base method.
-func (m *MockRouteInterface) AllocateVIFs(arg0 []string, arg1 uint16) ([]uint16, error) {
+func (m *MockRouteInterface) AllocateVIFs(interfaceNames []string, startVIF uint16) ([]uint16, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AllocateVIFs", arg0, arg1)
+	ret := m.ctrl.Call(m, "AllocateVIFs", interfaceNames, startVIF)
 	ret0, _ := ret[0].([]uint16)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AllocateVIFs indicates an expected call of AllocateVIFs.
-func (mr *MockRouteInterfaceMockRecorder) AllocateVIFs(arg0, arg1 any) *gomock.Call {
+func (mr *MockRouteInterfaceMockRecorder) AllocateVIFs(interfaceNames, startVIF any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AllocateVIFs", reflect.TypeOf((*MockRouteInterface)(nil).AllocateVIFs), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AllocateVIFs", reflect.TypeOf((*MockRouteInterface)(nil).AllocateVIFs), interfaceNames, startVIF)
 }
 
 // DelMrouteEntry mocks base method.
-func (m *MockRouteInterface) DelMrouteEntry(arg0, arg1 net.IP, arg2 uint16) error {
+func (m *MockRouteInterface) DelMrouteEntry(src, group net.IP, iif uint16) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DelMrouteEntry", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "DelMrouteEntry", src, group, iif)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // DelMrouteEntry indicates an expected call of DelMrouteEntry.
-func (mr *MockRouteInterfaceMockRecorder) DelMrouteEntry(arg0, arg1, arg2 any) *gomock.Call {
+func (mr *MockRouteInterfaceMockRecorder) DelMrouteEntry(src, group, iif any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DelMrouteEntry", reflect.TypeOf((*MockRouteInterface)(nil).DelMrouteEntry), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DelMrouteEntry", reflect.TypeOf((*MockRouteInterface)(nil).DelMrouteEntry), src, group, iif)
 }
 
 // FlushMRoute mocks base method.
@@ -122,30 +124,45 @@ func (mr *MockRouteInterfaceMockRecorder) GetFD() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFD", reflect.TypeOf((*MockRouteInterface)(nil).GetFD))
 }
 
-// MulticastInterfaceJoinMgroup mocks base method.
-func (m *MockRouteInterface) MulticastInterfaceJoinMgroup(arg0, arg1 net.IP, arg2 string) error {
+// GetMroutePacketCount mocks base method.
+func (m *MockRouteInterface) GetMroutePacketCount(src, group net.IP) (uint32, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MulticastInterfaceJoinMgroup", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "GetMroutePacketCount", src, group)
+	ret0, _ := ret[0].(uint32)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMroutePacketCount indicates an expected call of GetMroutePacketCount.
+func (mr *MockRouteInterfaceMockRecorder) GetMroutePacketCount(src, group any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMroutePacketCount", reflect.TypeOf((*MockRouteInterface)(nil).GetMroutePacketCount), src, group)
+}
+
+// MulticastInterfaceJoinMgroup mocks base method.
+func (m *MockRouteInterface) MulticastInterfaceJoinMgroup(mgroup, ifaceIP net.IP, ifaceName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MulticastInterfaceJoinMgroup", mgroup, ifaceIP, ifaceName)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // MulticastInterfaceJoinMgroup indicates an expected call of MulticastInterfaceJoinMgroup.
-func (mr *MockRouteInterfaceMockRecorder) MulticastInterfaceJoinMgroup(arg0, arg1, arg2 any) *gomock.Call {
+func (mr *MockRouteInterfaceMockRecorder) MulticastInterfaceJoinMgroup(mgroup, ifaceIP, ifaceName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MulticastInterfaceJoinMgroup", reflect.TypeOf((*MockRouteInterface)(nil).MulticastInterfaceJoinMgroup), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MulticastInterfaceJoinMgroup", reflect.TypeOf((*MockRouteInterface)(nil).MulticastInterfaceJoinMgroup), mgroup, ifaceIP, ifaceName)
 }
 
 // MulticastInterfaceLeaveMgroup mocks base method.
-func (m *MockRouteInterface) MulticastInterfaceLeaveMgroup(arg0, arg1 net.IP, arg2 string) error {
+func (m *MockRouteInterface) MulticastInterfaceLeaveMgroup(mgroup, ifaceIP net.IP, ifaceName string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MulticastInterfaceLeaveMgroup", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "MulticastInterfaceLeaveMgroup", mgroup, ifaceIP, ifaceName)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // MulticastInterfaceLeaveMgroup indicates an expected call of MulticastInterfaceLeaveMgroup.
-func (mr *MockRouteInterfaceMockRecorder) MulticastInterfaceLeaveMgroup(arg0, arg1, arg2 any) *gomock.Call {
+func (mr *MockRouteInterfaceMockRecorder) MulticastInterfaceLeaveMgroup(mgroup, ifaceIP, ifaceName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MulticastInterfaceLeaveMgroup", reflect.TypeOf((*MockRouteInterface)(nil).MulticastInterfaceLeaveMgroup), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MulticastInterfaceLeaveMgroup", reflect.TypeOf((*MockRouteInterface)(nil).MulticastInterfaceLeaveMgroup), mgroup, ifaceIP, ifaceName)
 }

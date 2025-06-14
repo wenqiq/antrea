@@ -32,23 +32,32 @@ import (
 	"time"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
+	"github.com/google/uuid"
 	netdefv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	netdefclientfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
+	"github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
+	netdefutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 
+	"antrea.io/antrea/pkg/agent/cniserver"
 	"antrea.io/antrea/pkg/agent/cniserver/ipam"
-	"antrea.io/antrea/pkg/agent/cniserver/types"
-	"antrea.io/antrea/pkg/agent/secondarynetwork/cnipodcache"
+	cnitypes "antrea.io/antrea/pkg/agent/cniserver/types"
+	"antrea.io/antrea/pkg/agent/interfacestore"
 	podwatchtesting "antrea.io/antrea/pkg/agent/secondarynetwork/podwatch/testing"
-	crdv1a2 "antrea.io/antrea/pkg/apis/crd/v1alpha2"
+	"antrea.io/antrea/pkg/agent/types"
+	crdv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
+	"antrea.io/antrea/pkg/ovs/ovsconfig"
+	ovsconfigtest "antrea.io/antrea/pkg/ovs/ovsconfig/testing"
 )
 
 const (
@@ -78,27 +87,33 @@ const (
     "vlan": {{.VLAN}}
 }`
 
-	defaultCNIVersion = "0.3.0"
-	defaultMTU        = 1500
-	sriovDeviceID     = "sriov-device-id"
-	podName           = "pod1"
-	containerID       = "container1"
-	podIP             = "1.2.3.4"
-	networkName       = "net"
-	interfaceName     = "eth2"
-	ovsPortUUID       = "12345678-e29b-41d4-a716-446655440000"
+	defaultCNIVersion  = "0.3.0"
+	defaultMTU         = 1500
+	sriovResourceName1 = "intel.com/intel_sriov_netdevice"
+	sriovResourceName2 = "mellanox.com/mlnx_connectx5"
+	sriovDeviceID11    = "sriov-device-id-11"
+	sriovDeviceID12    = "sriov-device-id-12"
+	sriovDeviceID21    = "sriov-device-id-21"
+	podName            = "pod1"
+	containerID        = "container1"
+	podIP              = "1.2.3.4"
+	networkName        = "net"
+	interfaceName      = "eth2"
 )
 
-func testNetwork(name string, networkType cnipodcache.NetworkType) *netdefv1.NetworkAttachmentDefinition {
-	return testNetworkExt(name, "", "", string(networkType), "", 0, 0, false)
+func testNetwork(name string, networkType networkType) *netdefv1.NetworkAttachmentDefinition {
+	return testNetworkExt(name, "", "", networkType, "", "", 0, 0, false)
 }
 
-func testNetworkExt(name, cniVersion, cniType, networkType, ipamType string, mtu, vlan int, noIPAM bool) *netdefv1.NetworkAttachmentDefinition {
+func testNetworkExt(name, cniVersion, cniType string, networkType networkType, resourceName, ipamType string, mtu, vlan int, noIPAM bool) *netdefv1.NetworkAttachmentDefinition {
 	if cniVersion == "" {
 		cniVersion = defaultCNIVersion
 	}
 	if cniType == "" {
 		cniType = "antrea"
+	}
+	if networkType == sriovNetworkType && resourceName == "" {
+		resourceName = sriovResourceName1
 	}
 	if ipamType == "" {
 		ipamType = ipam.AntreaIPAMType
@@ -110,7 +125,7 @@ func testNetworkExt(name, cniVersion, cniType, networkType, ipamType string, mtu
 		IPAMType    string
 		MTU         int
 		VLAN        int
-	}{cniVersion, cniType, networkType, ipamType, mtu, vlan}
+	}{cniVersion, cniType, string(networkType), ipamType, mtu, vlan}
 
 	var tmpl *template.Template
 	if !noIPAM {
@@ -120,9 +135,14 @@ func testNetworkExt(name, cniVersion, cniType, networkType, ipamType string, mtu
 	}
 	var b bytes.Buffer
 	tmpl.Execute(&b, &data)
+	annotations := make(map[string]string)
+	if resourceName != "" {
+		annotations[resourceNameAnnotationKey] = resourceName
+	}
 	return &netdefv1.NetworkAttachmentDefinition{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name:        name,
+			Annotations: annotations,
 		},
 		Spec: netdefv1.NetworkAttachmentDefinitionSpec{
 			Config: b.String(),
@@ -134,11 +154,11 @@ func containerNetNs(container string) string {
 	return fmt.Sprintf("/var/run/netns/%s", container)
 }
 
-func testPod(name string, container string, podIP string, networks ...netdefv1.NetworkSelectionElement) (*corev1.Pod, *cnipodcache.CNIConfigInfo) {
+func testPod(name string, container string, podIP string, networks ...netdefv1.NetworkSelectionElement) (*corev1.Pod, *podCNIInfo) {
 	annotations := make(map[string]string)
 	if len(networks) > 0 {
 		annotation, _ := json.Marshal(networks)
-		annotations[networkAttachDefAnnotationKey] = string(annotation)
+		annotations[netdefv1.NetworkAttachmentAnnot] = string(annotation)
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -167,32 +187,39 @@ func testPod(name string, container string, podIP string, networks ...netdefv1.N
 			},
 		}
 	}
-	cniConfig := &cnipodcache.CNIConfigInfo{
-		PodName:        name,
-		PodNamespace:   testNamespace,
-		ContainerID:    container,
-		ContainerNetNS: containerNetNs(container),
-		PodCNIDeleted:  false,
+	cniInfo := &podCNIInfo{
+		containerID: container,
+		netNS:       containerNetNs(container),
 	}
-	return pod, cniConfig
+	return pod, cniInfo
 }
 
-func testIPAMResult(cidr string) *ipam.IPAMResult {
-	_, ipNet, _ := net.ParseCIDR(cidr)
+func testIPAMResult(cidr string, vlan int) *ipam.IPAMResult {
+	ip, _, _ := net.ParseCIDR(cidr)
+	mask := net.CIDRMask(32, 32)
+	ipNet := net.IPNet{
+		IP:   ip.Mask(mask),
+		Mask: mask,
+	}
 	return &ipam.IPAMResult{
 		Result: current.Result{
 			IPs: []*current.IPConfig{
 				{
-					Address: *ipNet,
+					Address:   ipNet,
+					Interface: current.Int(1),
 				},
 			},
 		},
+		VLANID: uint16(vlan),
 	}
 }
 
 func init() {
-	getPodContainerDeviceIDsFn = func(name string, namespace string) ([]string, error) {
-		return []string{sriovDeviceID}, nil
+	getPodContainerDeviceIDsFn = func(name string, namespace string) (map[string][]string, error) {
+		return map[string][]string{
+			sriovResourceName1: {sriovDeviceID11, sriovDeviceID12},
+			sriovResourceName2: {sriovDeviceID21},
+		}, nil
 	}
 }
 
@@ -200,19 +227,21 @@ func TestPodControllerRun(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	client := fake.NewSimpleClientset()
 	netdefclient := netdefclientfake.NewSimpleClientset().K8sCniCncfIoV1()
+	mockOVSBridgeClient := ovsconfigtest.NewMockOVSBridgeClient(ctrl)
+	mockOVSBridgeClient.EXPECT().GetPortList().Return(nil, nil).AnyTimes()
+	primaryInterfaceStore := interfacestore.NewInterfaceStore()
 	informerFactory := informers.NewSharedInformerFactory(client, resyncPeriod)
-	podCache := cnipodcache.NewCNIPodInfoStore()
 	interfaceConfigurator := podwatchtesting.NewMockInterfaceConfigurator(ctrl)
 	mockIPAM := podwatchtesting.NewMockIPAMAllocator(ctrl)
 	podController, _ := NewPodController(
 		client,
 		netdefclient,
 		informerFactory.Core().V1().Pods().Informer(),
-		testNode,
-		nil, nil)
-	podController.podCache = podCache
+		nil, primaryInterfaceStore, mockOVSBridgeClient)
 	podController.interfaceConfigurator = interfaceConfigurator
 	podController.ipamAllocator = mockIPAM
+	cniCache := &podController.cniCache
+	interfaceStore := podController.interfaceStore
 
 	stopCh := make(chan struct{})
 	informerFactory.Start(stopCh)
@@ -225,12 +254,33 @@ func TestPodControllerRun(t *testing.T) {
 		podController.Run(stopCh)
 	}()
 
-	pod, cniConfig := testPod(podName, containerID, podIP, netdefv1.NetworkSelectionElement{
+	pod, cniInfo := testPod(podName, containerID, podIP, netdefv1.NetworkSelectionElement{
 		Name:             networkName,
 		InterfaceRequest: interfaceName,
 	})
+	podKey := podKeyGet(pod.Name, pod.Namespace)
 	network := testNetwork(networkName, sriovNetworkType)
-	ipamResult := testIPAMResult("148.14.24.100/24")
+	ipamResult := testIPAMResult("148.14.24.100/24", 0)
+	podOwner := &crdv1beta1.PodOwner{
+		Name:        pod.Name,
+		Namespace:   pod.Namespace,
+		ContainerID: containerID,
+		IFName:      interfaceName}
+	containerConfig := interfacestore.NewContainerInterface(interfaceName, containerID,
+		pod.Name, pod.Namespace, interfaceName, cniInfo.netNS, nil, nil, 0)
+
+	// CNI Add event.
+	event := types.PodUpdate{
+		IsAdd:        true,
+		PodName:      pod.Name,
+		PodNamespace: pod.Namespace,
+		ContainerID:  containerID,
+		NetNS:        cniInfo.netNS,
+	}
+	podController.processCNIUpdate(event)
+	cniObj, _ := cniCache.Load(podKey)
+	assert.NotNil(t, cniObj)
+	assert.Equal(t, cniInfo, cniObj.(*podCNIInfo))
 
 	var interfaceConfigured int32
 	interfaceConfigurator.EXPECT().ConfigureSriovSecondaryInterface(
@@ -240,15 +290,15 @@ func TestPodControllerRun(t *testing.T) {
 		containerNetNs(containerID),
 		interfaceName,
 		defaultMTU,
-		sriovDeviceID,
+		sriovDeviceID11,
 		&ipamResult.Result,
 	).Do(func(string, string, string, string, string, int, string, *current.Result) {
 		atomic.AddInt32(&interfaceConfigured, 1)
+		interfaceStore.AddInterface(containerConfig)
 	})
-	mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(ipamResult, nil)
+	mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(ipamResult, nil)
 
-	podCache.AddCNIConfigInfo(cniConfig)
-	// the NetworkAttachmentDefinition must be created before the Pod: if handleAddUpdatePod
+	// The NetworkAttachmentDefinition must be created before the Pod: if handleAddUpdatePod
 	// runs before the NetworkAttachmentDefinition has been created, it will return an
 	// error. The Pod will then be requeued, but the Poll below will timeout before the Pod has
 	// a chance to be processed again. Rather than increase the timeout or change the queue's
@@ -259,20 +309,70 @@ func TestPodControllerRun(t *testing.T) {
 	_, err = client.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
 	require.NoError(t, err, "error when creating test Pod")
 
-	// unfortunately, we cannot use the podcache being updated by the controller as a signal
-	// here: the podcache is not thread-safe and is only meant to be accessed by the controller
-	// event handlers (with the exception of the operations meant to be performed by the CNI server).
-	assert.NoError(t, wait.Poll(10*time.Millisecond, 1*time.Second, func() (bool, error) {
-		return atomic.LoadInt32(&interfaceConfigured) > 0, nil
-	}))
+	// Wait for ConfigureSriovSecondaryInterface to be called.
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&interfaceConfigured) == 1
+	}, 1*time.Second, 10*time.Millisecond)
+	_, exists := podController.vfDeviceIDUsageMap.Load(podKey)
+	assert.True(t, exists)
 
-	mockIPAM.EXPECT().SecondaryNetworkRelease(gomock.Any())
+	podController.processCNIUpdate(event)
+	interfaceConfigurator.EXPECT().ConfigureSriovSecondaryInterface(
+		podName,
+		testNamespace,
+		containerID,
+		containerNetNs(containerID),
+		interfaceName,
+		defaultMTU,
+		// We haven't updated the vfDeviceIDUsageMap, so a different device will be allocated.
+		sriovDeviceID12,
+		&ipamResult.Result,
+	).Do(func(string, string, string, string, string, int, string, *current.Result) {
+		atomic.AddInt32(&interfaceConfigured, 1)
+		interfaceStore.AddInterface(containerConfig)
+	})
+	mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(ipamResult, nil)
 
-	require.NotNil(t, podCache.GetCNIConfigInfoByContainerID(podName, testNamespace, containerID) == nil)
-	require.NoError(t, client.CoreV1().Pods(testNamespace).Delete(context.Background(), podName, metav1.DeleteOptions{}), "error when deleting test Pod")
-	assert.NoError(t, wait.Poll(10*time.Millisecond, 1*time.Second, func() (bool, error) {
-		return podCache.GetCNIConfigInfoByContainerID(podName, testNamespace, containerID) == nil, nil
-	}))
+	interfaceStore.DeleteInterface(containerConfig)
+	// Since interface is not saved to the interface store, interface creation should be
+	// triggered again.
+	podController.processCNIUpdate(event)
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&interfaceConfigured) == 2
+	}, 1*time.Second, 10*time.Millisecond)
+
+	interfaceConfigurator.EXPECT().DeleteSriovSecondaryInterface(containerConfig).
+		Do(func(*interfacestore.InterfaceConfig) {
+			atomic.AddInt32(&interfaceConfigured, -1)
+		})
+	mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner)
+	require.NoError(t, client.CoreV1().Pods(testNamespace).Delete(context.Background(),
+		podName, metav1.DeleteOptions{}), "error when deleting test Pod")
+
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&interfaceConfigured) == 1
+	}, 1*time.Second, 10*time.Millisecond)
+	_, exists = podController.vfDeviceIDUsageMap.Load(podKey)
+	assert.False(t, exists)
+
+	interfaceConfigurator.EXPECT().DeleteSriovSecondaryInterface(containerConfig).
+		Do(func(*interfacestore.InterfaceConfig) {
+			atomic.AddInt32(&interfaceConfigured, -1)
+		})
+	mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner)
+	// CNI Del event.
+	event.IsAdd = false
+	// Interface is not deleted from the interface store, so CNI Del should trigger interface
+	// deletion again.
+	podController.processCNIUpdate(event)
+	_, exists = cniCache.Load(podKey)
+	assert.False(t, exists)
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&interfaceConfigured) == 0
+	}, 1*time.Second, 10*time.Millisecond)
+
+	interfaceStore.DeleteInterface(containerConfig)
+	podController.processCNIUpdate(event)
 
 	close(stopCh)
 	wg.Wait()
@@ -284,37 +384,37 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 		Namespace:        testNamespace,
 		InterfaceRequest: interfaceName,
 	}
-	podOwner := &crdv1a2.PodOwner{
+	podOwner := &crdv1beta1.PodOwner{
 		Name:        podName,
 		Namespace:   testNamespace,
 		ContainerID: containerID,
 		IFName:      interfaceName,
 	}
+	primaryNetworkStatus := "[{\n    \"name\": \"eth0\",\n    \"ips\": [\n        \"192.168.1.2\"\n    ],\n    \"dns\": {}\n}]"
 
 	ctrl := gomock.NewController(t)
 
 	tests := []struct {
-		name               string
-		cniVersion         string
-		cniType            string
-		networkType        cnipodcache.NetworkType
-		ipamType           string
-		mtu                int
-		vlan               int
-		noIPAM             bool
-		doNotCreateNetwork bool
-		interfaceCreated   bool
-		expectedErr        string
-		expectedCalls      func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator)
+		name                       string
+		cniVersion                 string
+		cniType                    string
+		networkType                networkType
+		ipamType                   string
+		mtu                        int
+		vlan                       int
+		noIPAM                     bool
+		doNotCreateNetwork         bool
+		expectedNetworkStatusAnnot []netdefv1.NetworkStatus
+		expectedErr                string
+		expectedCalls              func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator)
 	}{
 		{
-			name:             "VLAN network",
-			networkType:      vlanNetworkType,
-			mtu:              1600,
-			vlan:             101,
-			interfaceCreated: true,
+			name:        "VLAN network",
+			networkType: vlanNetworkType,
+			mtu:         1600,
+			vlan:        101,
 			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
-				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
+				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 0), nil)
 				mockIC.EXPECT().ConfigureVLANSecondaryInterface(
 					podName,
 					testNamespace,
@@ -322,17 +422,22 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 					containerNetNs(containerID),
 					interfaceName,
 					1600,
-					uint16(101),
-					gomock.Any(),
-				).Return(ovsPortUUID, nil)
+					testIPAMResult("148.14.24.100/24", 101),
+				)
 			},
+			expectedNetworkStatusAnnot: []netdefv1.NetworkStatus{{
+				Name: "net",
+				IPs:  []string{"148.14.24.100"},
+				DNS:  netdefv1.DNS{},
+			}},
 		},
 		{
-			name:             "default MTU",
-			networkType:      vlanNetworkType,
-			interfaceCreated: true,
+			name:        "VLAN in IPPool",
+			networkType: vlanNetworkType,
+			vlan:        0,
 			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
-				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
+				// IPAM returns the VLAN ID in the IPPool subnet.
+				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 101), nil)
 				mockIC.EXPECT().ConfigureVLANSecondaryInterface(
 					podName,
 					testNamespace,
@@ -340,16 +445,41 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 					containerNetNs(containerID),
 					interfaceName,
 					1500,
-					uint16(0),
-					gomock.Any(),
-				).Return(ovsPortUUID, nil)
+					testIPAMResult("148.14.24.100/24", 101),
+				)
 			},
+			expectedNetworkStatusAnnot: []netdefv1.NetworkStatus{{
+				Name: "net",
+				IPs:  []string{"148.14.24.100"},
+				DNS:  netdefv1.DNS{},
+			}},
 		},
 		{
-			name:             "no IPAM",
-			networkType:      vlanNetworkType,
-			noIPAM:           true,
-			interfaceCreated: true,
+			name:        "network VLAN overrides IPPool VLAN",
+			networkType: vlanNetworkType,
+			vlan:        101,
+			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
+				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 102), nil)
+				mockIC.EXPECT().ConfigureVLANSecondaryInterface(
+					podName,
+					testNamespace,
+					containerID,
+					containerNetNs(containerID),
+					interfaceName,
+					1500,
+					testIPAMResult("148.14.24.100/24", 101),
+				)
+			},
+			expectedNetworkStatusAnnot: []netdefv1.NetworkStatus{{
+				Name: "net",
+				IPs:  []string{"148.14.24.100"},
+				DNS:  netdefv1.DNS{},
+			}},
+		},
+		{
+			name:        "no IPAM",
+			networkType: vlanNetworkType,
+			noIPAM:      true,
 			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
 				mockIC.EXPECT().ConfigureVLANSecondaryInterface(
 					podName,
@@ -358,18 +488,20 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 					containerNetNs(containerID),
 					interfaceName,
 					1500,
-					uint16(0),
-					gomock.Any(),
-				).Return(ovsPortUUID, nil)
+					&ipam.IPAMResult{},
+				)
 			},
+			expectedNetworkStatusAnnot: []netdefv1.NetworkStatus{{
+				Name: "net",
+				DNS:  netdefv1.DNS{},
+			}},
 		},
 		{
-			name:             "SRIOV network",
-			networkType:      sriovNetworkType,
-			mtu:              1500,
-			interfaceCreated: true,
+			name:        "SRIOV network",
+			networkType: sriovNetworkType,
+			mtu:         1500,
 			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
-				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
+				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 0), nil)
 				mockIC.EXPECT().ConfigureSriovSecondaryInterface(
 					podName,
 					testNamespace,
@@ -377,10 +509,15 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 					containerNetNs(containerID),
 					interfaceName,
 					1500,
-					sriovDeviceID,
-					gomock.Any(),
-				).Return(nil)
+					sriovDeviceID11,
+					&testIPAMResult("148.14.24.100/24", 0).Result,
+				)
 			},
+			expectedNetworkStatusAnnot: []netdefv1.NetworkStatus{{
+				Name: "net",
+				IPs:  []string{"148.14.24.100"},
+				DNS:  netdefv1.DNS{},
+			}},
 		},
 		{
 			name:               "network not found",
@@ -388,7 +525,7 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 			mtu:                1500,
 			vlan:               100,
 			doNotCreateNetwork: true,
-			expectedErr:        "failed to get NetworkAttachmentDefinition:",
+			expectedErr:        "\"net\" not found",
 		},
 		{
 			name:        "unsupported CNI version",
@@ -433,7 +570,7 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 			networkType: sriovNetworkType,
 			mtu:         1500,
 			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
-				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), errors.New("failure"))
+				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 0), errors.New("failure"))
 			},
 			expectedErr: "secondary network IPAM failed",
 		},
@@ -443,7 +580,7 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 			mtu:         1600,
 			vlan:        101,
 			expectedCalls: func(mockIPAM *podwatchtesting.MockIPAMAllocator, mockIC *podwatchtesting.MockInterfaceConfigurator) {
-				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
+				mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner, gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 0), nil)
 				mockIC.EXPECT().ConfigureVLANSecondaryInterface(
 					podName,
 					testNamespace,
@@ -451,10 +588,9 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 					containerNetNs(containerID),
 					interfaceName,
 					1600,
-					uint16(101),
-					gomock.Any(),
-				).Return("", errors.New("interface creation failure"))
-				mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner).Return(nil)
+					testIPAMResult("148.14.24.100/24", 101),
+				).Return(errors.New("interface creation failure"))
+				mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner)
 			},
 			expectedErr: "interface creation failure",
 		},
@@ -470,9 +606,8 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 					containerNetNs(containerID),
 					interfaceName,
 					1500,
-					uint16(0),
-					gomock.Any(),
-				).Return("", errors.New("interface creation failure"))
+					&ipam.IPAMResult{},
+				).Return(errors.New("interface creation failure"))
 			},
 			expectedErr: "interface creation failure",
 		},
@@ -480,58 +615,141 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			pod, cniConfigInfo := testPod(podName, containerID, podIP, element1)
-			pc, mockIPAM, interfaceConfigurator := testPodController(ctrl)
-			savedCNIConfig := *cniConfigInfo
+			pod, cniInfo := testPod(podName, containerID, podIP, element1)
+			pc, mockIPAM, interfaceConfigurator := testPodControllerStart(ctrl)
+			pod.Annotations[netdefv1.NetworkStatusAnnot] = primaryNetworkStatus
+			_, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+			require.NoError(t, err)
 
-			network1 := testNetworkExt(networkName, tc.cniVersion, tc.cniType, string(tc.networkType), tc.ipamType, tc.mtu, tc.vlan, tc.noIPAM)
 			if !tc.doNotCreateNetwork {
-				pc.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network1, metav1.CreateOptions{})
+				network1 := testNetworkExt(networkName, tc.cniVersion, tc.cniType,
+					tc.networkType, "", tc.ipamType, tc.mtu, tc.vlan, tc.noIPAM)
+				pc.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+					network1, metav1.CreateOptions{})
 			}
 			if tc.expectedCalls != nil {
 				tc.expectedCalls(mockIPAM, interfaceConfigurator)
 			}
-			err := pc.configurePodSecondaryNetwork(pod, []*netdefv1.NetworkSelectionElement{&element1}, cniConfigInfo)
+			err = pc.configurePodSecondaryNetwork(pod, []*netdefv1.NetworkSelectionElement{&element1}, cniInfo)
 			if tc.expectedErr == "" {
-				assert.Nil(t, err)
+				assert.NoError(t, err)
 			} else {
 				assert.True(t, strings.Contains(err.Error(), tc.expectedErr))
 			}
-
-			if tc.interfaceCreated {
-				info := cnipodcache.InterfaceInfo{
-					NetworkType: tc.networkType,
-				}
-				if tc.networkType == vlanNetworkType {
-					info.OVSPortUUID = ovsPortUUID
-				}
-				savedCNIConfig.Interfaces = map[string]*cnipodcache.InterfaceInfo{interfaceName: &info}
-			}
-			assert.Equal(t, &savedCNIConfig, cniConfigInfo)
+			updatedPod, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+			require.NoError(t, err)
+			networkStatusAnnot, err := utils.GetNetworkStatus(updatedPod)
+			assert.NoError(t, err)
+			assert.Subset(t, networkStatusAnnot, tc.expectedNetworkStatusAnnot)
 		})
 	}
+}
 
+func TestConfigurePodSecondaryNetworkMultipleSriovDevices(t *testing.T) {
+	ctx := context.Background()
+	element1 := netdefv1.NetworkSelectionElement{
+		Namespace:        testNamespace,
+		Name:             "net1",
+		InterfaceRequest: "eth10",
+	}
+	element2 := netdefv1.NetworkSelectionElement{
+		Namespace:        testNamespace,
+		Name:             "net2",
+		InterfaceRequest: "eth11",
+	}
+	pod, cniInfo := testPod(podName, containerID, podIP, element1, element2)
+	ctrl := gomock.NewController(t)
+	pc, _, interfaceConfigurator := testPodControllerStart(ctrl)
+
+	primaryNetworkStatus := "[{\n    \"name\": \"eth0\",\n    \"ips\": [\n        \"192.168.1.2\"\n    ],\n    \"dns\": {}\n}]"
+	pod.Annotations[netdefv1.NetworkStatusAnnot] = primaryNetworkStatus
+
+	_, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	network1 := testNetworkExt("net1", "", "", sriovNetworkType, sriovResourceName1, "", 1500, 0, true /* noIPAM */)
+	pc.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(ctx, network1, metav1.CreateOptions{})
+	network2 := testNetworkExt("net2", "", "", sriovNetworkType, sriovResourceName2, "", 1500, 0, true /* noIPAM */)
+	pc.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(ctx, network2, metav1.CreateOptions{})
+
+	gomock.InOrder(
+		interfaceConfigurator.EXPECT().ConfigureSriovSecondaryInterface(
+			podName,
+			testNamespace,
+			containerID,
+			containerNetNs(containerID),
+			element2.InterfaceRequest,
+			1500,
+			sriovDeviceID21,
+			gomock.Any(),
+		),
+		interfaceConfigurator.EXPECT().ConfigureSriovSecondaryInterface(
+			podName,
+			testNamespace,
+			containerID,
+			containerNetNs(containerID),
+			element1.InterfaceRequest,
+			1500,
+			sriovDeviceID11,
+			gomock.Any(),
+		),
+	)
+	assert.NoError(t, pc.configurePodSecondaryNetwork(pod, []*netdefv1.NetworkSelectionElement{&element2, &element1}, cniInfo))
+
+	podKey := podKeyGet(pod.Name, pod.Namespace)
+	deviceCache, ok := pc.vfDeviceIDUsageMap.Load(podKey)
+	require.True(t, ok)
+	expectedDeviceCache := []podSriovVFDeviceIDInfo{
+		{
+			resourceName: sriovResourceName1,
+			vfDeviceID:   sriovDeviceID11,
+			ifName:       element1.InterfaceRequest,
+		},
+		{
+			resourceName: sriovResourceName1,
+			vfDeviceID:   sriovDeviceID12,
+			ifName:       "",
+		},
+		{
+			resourceName: sriovResourceName2,
+			vfDeviceID:   sriovDeviceID21,
+			ifName:       element2.InterfaceRequest,
+		},
+	}
+	assert.ElementsMatch(t, expectedDeviceCache, deviceCache.([]podSriovVFDeviceIDInfo))
 }
 
 func TestPodControllerAddPod(t *testing.T) {
-	pod, cniConfig := testPod(podName, containerID, podIP, netdefv1.NetworkSelectionElement{
+	pod, _ := testPod(podName, containerID, podIP, netdefv1.NetworkSelectionElement{
 		Name:             networkName,
 		InterfaceRequest: interfaceName,
 	})
+	podKey := podKeyGet(podName, testNamespace)
 
-	t.Run("missing network", func(t *testing.T) {
-		ctrl := gomock.NewController(t)
-		podController, _, _ := testPodController(ctrl)
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
+	// Create Pod and wait for Informer cache updated.
+	createPodFn := func(pc *PodController, pod *corev1.Pod) {
+		primaryNetworkStatus := "[{\n    \"name\": \"eth0\",\n    \"ips\": [\n        \"192.168.1.2\"\n    ],\n    \"dns\": {}\n}]"
+		pod.Annotations[netdefv1.NetworkStatusAnnot] = primaryNetworkStatus
+		_, err := pc.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(),
+			pod, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test Pod")
-		assert.Error(t, podController.handleAddUpdatePod(pod))
-	})
+		assert.Eventually(t, func() bool {
+			_, ok, err := pc.podInformer.GetIndexer().GetByKey(podKey)
+			return ok == true && err == nil
+		}, 1*time.Second, 10*time.Millisecond)
+	}
+	deletePodFn := func(pc *PodController, podName string) {
+		require.NoError(t, pc.kubeClient.CoreV1().Pods(testNamespace).Delete(context.Background(),
+			podName, metav1.DeleteOptions{}), "error when deleting test Pod")
+		assert.Eventually(t, func() bool {
+			_, ok, err := pc.podInformer.GetIndexer().GetByKey(podKey)
+			return !ok && err == nil
+		}, 1*time.Second, 10*time.Millisecond)
+	}
 
 	t.Run("multiple network interfaces", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, mockIPAM, interfaceConfigurator := testPodController(ctrl)
-
+		podController, mockIPAM, interfaceConfigurator := testPodControllerStart(ctrl)
 		pod, cniConfig := testPod(
 			podName,
 			containerID,
@@ -545,27 +763,39 @@ func TestPodControllerAddPod(t *testing.T) {
 				InterfaceRequest: "eth11",
 			},
 		)
-		savedCNIConfig := *cniConfig
 		network1 := testNetwork("net1", sriovNetworkType)
 		testVLAN := 100
-		network2 := testNetworkExt("net2", "", "", string(vlanNetworkType), "", defaultMTU, testVLAN, false)
+		network2 := testNetworkExt("net2", "", "", vlanNetworkType, "", "", defaultMTU, testVLAN, false)
+		netNS := containerNetNs(containerID)
 
-		podOwner1 := &crdv1a2.PodOwner{
-			Name:        podName,
-			Namespace:   testNamespace,
-			ContainerID: containerID,
-			IFName:      "eth10"}
-		podOwner2 := &crdv1a2.PodOwner{
-			Name:        podName,
-			Namespace:   testNamespace,
-			ContainerID: containerID,
-			IFName:      "eth11"}
-		networkConfig1 := types.NetworkConfig{
+		podOwner1 := &crdv1beta1.PodOwner{Name: podName, Namespace: testNamespace,
+			ContainerID: containerID, IFName: "eth10"}
+		podOwner2 := &crdv1beta1.PodOwner{Name: podName, Namespace: testNamespace,
+			ContainerID: containerID, IFName: "eth11"}
+		containerConfig1 := interfacestore.NewContainerInterface("interface1", containerID,
+			pod.Name, pod.Namespace, "eth10", netNS, nil, nil, 0)
+		containerConfig2 := interfacestore.NewContainerInterface("interface2", containerID,
+			pod.Name, pod.Namespace, "eth11", netNS, nil, nil, 0)
+		// VLAN interface should have OVSPortConfig.
+		containerConfig2.OVSPortConfig = &interfacestore.OVSPortConfig{}
+
+		staleContainerID := containerID + "-stale"
+		stalePodOwner1 := &crdv1beta1.PodOwner{Name: podName, Namespace: testNamespace,
+			ContainerID: staleContainerID, IFName: "eth1"}
+		stalePodOwner2 := &crdv1beta1.PodOwner{Name: podName, Namespace: testNamespace,
+			ContainerID: staleContainerID, IFName: "eth2"}
+		staleConfig1 := interfacestore.NewContainerInterface("interface1", staleContainerID,
+			pod.Name, pod.Namespace, "eth1", containerNetNs(staleContainerID), nil, nil, 0)
+		staleConfig2 := interfacestore.NewContainerInterface("interface2", staleContainerID,
+			pod.Name, pod.Namespace, "eth2", containerNetNs(staleContainerID), nil, nil, 0)
+		staleConfig1.OVSPortConfig = &interfacestore.OVSPortConfig{}
+
+		networkConfig1 := cnitypes.NetworkConfig{
 			CNIVersion: "0.3.0",
 			Name:       "net1",
 			Type:       "antrea",
 			MTU:        1500,
-			IPAM: &types.IPAMConfig{
+			IPAM: &cnitypes.IPAMConfig{
 				Type:    "antrea",
 				IPPools: []string{"ipv4-pool-1", "ipv6-pool-1"},
 			},
@@ -573,107 +803,100 @@ func TestPodControllerAddPod(t *testing.T) {
 		networkConfig2 := networkConfig1
 		networkConfig2.Name = "net2"
 
+		podController.interfaceStore.AddInterface(staleConfig1)
+		podController.interfaceStore.AddInterface(staleConfig2)
+		// Stale interfaces in the interface store should be deleted first.
+		mockIPAM.EXPECT().SecondaryNetworkRelease(stalePodOwner1)
+		mockIPAM.EXPECT().SecondaryNetworkRelease(stalePodOwner2)
+		interfaceConfigurator.EXPECT().DeleteVLANSecondaryInterface(staleConfig1)
+		interfaceConfigurator.EXPECT().DeleteSriovSecondaryInterface(staleConfig2)
+
+		podController.cniCache.Store(podKey, cniConfig)
+		createPodFn(podController, pod)
+		assert.NoError(t, podController.syncPod(podKey))
+		podController.interfaceStore.DeleteInterface(staleConfig1)
+		podController.interfaceStore.DeleteInterface(staleConfig2)
+
 		interfaceConfigurator.EXPECT().ConfigureSriovSecondaryInterface(
 			podName,
 			testNamespace,
 			containerID,
-			containerNetNs(containerID),
+			netNS,
 			"eth10",
 			interfaceDefaultMTU,
 			gomock.Any(),
-			gomock.Any(),
+			&testIPAMResult("148.14.24.100/24", 0).Result,
 		)
 		interfaceConfigurator.EXPECT().ConfigureVLANSecondaryInterface(
 			podName,
 			testNamespace,
 			containerID,
-			containerNetNs(containerID),
+			netNS,
 			"eth11",
 			defaultMTU,
-			uint16(testVLAN),
-			gomock.Any(),
-		).Return(ovsPortUUID, nil)
+			testIPAMResult("148.14.24.101/24", 100),
+		)
+		mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner1, &networkConfig1).Return(testIPAMResult("148.14.24.100/24", 0), nil)
+		mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner2, &networkConfig2).Return(testIPAMResult("148.14.24.101/24", 0), nil)
 
-		mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner1, &networkConfig1).Return(testIPAMResult("148.14.24.100/24"), nil)
-		mockIPAM.EXPECT().SecondaryNetworkAllocate(podOwner2, &networkConfig2).Return(testIPAMResult("148.14.24.101/24"), nil)
-
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network1, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network1, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network2, metav1.CreateOptions{})
+		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network2, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
+		assert.NoError(t, podController.syncPod(podKey))
 
-		infos := podController.podCache.GetAllCNIConfigInfoPerPod(podName, testNamespace)
-		assert.Equal(t, 1, len(infos))
-		savedCNIConfig.Interfaces = map[string]*cnipodcache.InterfaceInfo{
-			"eth10": {
-				NetworkType: sriovNetworkType,
-			},
-			"eth11": {
-				OVSPortUUID: ovsPortUUID,
-				NetworkType: vlanNetworkType,
-			},
-		}
-		assert.Equal(t, &savedCNIConfig, infos[0])
+		podController.interfaceStore.AddInterface(containerConfig1)
+		podController.interfaceStore.AddInterface(containerConfig2)
+		mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner1)
+		mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner2)
+		interfaceConfigurator.EXPECT().DeleteSriovSecondaryInterface(containerConfig1)
+		interfaceConfigurator.EXPECT().DeleteVLANSecondaryInterface(containerConfig2)
 
-		mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner1).Return(nil)
-		mockIPAM.EXPECT().SecondaryNetworkRelease(podOwner2).Return(nil)
-		interfaceConfigurator.EXPECT().DeleteVLANSecondaryInterface(
-			containerID,
-			gomock.Any(),
-			ovsPortUUID).Return(nil)
-		assert.NoError(t, podController.handleRemovePod(testNamespace+"/"+podName))
-		infos = podController.podCache.GetAllCNIConfigInfoPerPod(podName, testNamespace)
-		assert.Equal(t, 0, len(infos))
+		deletePodFn(podController, pod.Name)
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
 	t.Run("no network interfaces", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, _, _ := testPodController(ctrl)
-
+		podController, _, _ := testPodControllerStart(ctrl)
 		pod, cniConfig := testPod(podName, containerID, podIP)
 
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
+		podController.cniCache.Store(podKey, cniConfig)
+		createPodFn(podController, pod)
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
-	t.Run("missing podcache entry", func(t *testing.T) {
+	t.Run("missing CNI cache entry", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, _, _ := testPodController(ctrl)
-
+		podController, _, _ := testPodControllerStart(ctrl)
 		network := testNetwork(networkName, sriovNetworkType)
 
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
+		createPodFn(podController, pod)
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
 	t.Run("missing Status.PodIPs", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, _, _ := testPodController(ctrl)
-
+		podController, _, _ := testPodControllerStart(ctrl)
 		pod, cniConfig := testPod(podName, containerID, "")
 		network := testNetwork(networkName, sriovNetworkType)
 
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
+		createPodFn(podController, pod)
+		podController.cniCache.Store(podKey, cniConfig)
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
 	t.Run("different Namespace for Pod and NetworkAttachmentDefinition", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, mockIPAM, interfaceConfigurator := testPodController(ctrl)
-
+		podController, mockIPAM, interfaceConfigurator := testPodControllerStart(ctrl)
 		networkNamespace := "nsB"
 		network := testNetwork(networkName, sriovNetworkType)
 		network.Namespace = networkNamespace
@@ -691,23 +914,22 @@ func TestPodControllerAddPod(t *testing.T) {
 			containerNetNs(containerID),
 			interfaceName,
 			defaultMTU,
-			sriovDeviceID,
+			sriovDeviceID11,
 			gomock.Any(),
 		)
-		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
+		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 0), nil)
 
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(networkNamespace).Create(context.Background(), network, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(networkNamespace).Create(context.Background(),
+			network, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
+		createPodFn(podController, pod)
+		podController.cniCache.Store(podKey, cniConfig)
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
 	t.Run("no interface name", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, mockIPAM, interfaceConfigurator := testPodController(ctrl)
-
+		podController, mockIPAM, interfaceConfigurator := testPodControllerStart(ctrl)
 		pod, cniConfig := testPod(
 			podName,
 			containerID,
@@ -744,49 +966,20 @@ func TestPodControllerAddPod(t *testing.T) {
 			gomock.Any(),
 		)
 
-		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
-		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.101/24"), nil)
+		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.100/24", 0), nil)
+		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.101/24", 0), nil)
 
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
-	})
-
-	t.Run("error when creating interface", func(t *testing.T) {
-		ctrl := gomock.NewController(t)
-		podController, mockIPAM, interfaceConfigurator := testPodController(ctrl)
-
-		network := testNetwork(networkName, sriovNetworkType)
-
-		interfaceConfigurator.EXPECT().ConfigureSriovSecondaryInterface(
-			podName,
-			testNamespace,
-			containerID,
-			containerNetNs(containerID),
-			interfaceName,
-			defaultMTU,
-			gomock.Any(),
-			gomock.Any(),
-		).Return(fmt.Errorf("error when creating interface"))
-
-		mockIPAM.EXPECT().SecondaryNetworkAllocate(gomock.Any(), gomock.Any()).Return(testIPAMResult("148.14.24.100/24"), nil)
-		mockIPAM.EXPECT().SecondaryNetworkRelease(gomock.Any())
-
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		assert.Error(t, podController.handleAddUpdatePod(pod))
+		createPodFn(podController, pod)
+		podController.cniCache.Store(podKey, cniConfig)
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
 	t.Run("invalid CNI config", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, _, _ := testPodController(ctrl)
-
+		podController, _, _ := testPodControllerStart(ctrl)
 		pod, cniConfig := testPod(
 			podName,
 			containerID,
@@ -805,69 +998,364 @@ func TestPodControllerAddPod(t *testing.T) {
 			},
 		}
 
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		// we don't expect an error here, no requeueing
-		assert.Error(t, podController.handleAddUpdatePod(pod))
+		createPodFn(podController, pod)
+		podController.cniCache.Store(podKey, cniConfig)
+		// We don't expect an error here, no requeueing.
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
 	t.Run("invalid networks annotation", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		podController, _, _ := testPodController(ctrl)
-
+		podController, _, _ := testPodControllerStart(ctrl)
 		pod, cniConfig := testPod(podName, containerID, podIP)
 		pod.Annotations = map[string]string{
-			networkAttachDefAnnotationKey: "<invalid>",
+			netdefv1.NetworkAttachmentAnnot: "<invalid>",
 		}
 		network := testNetwork(networkName, sriovNetworkType)
 
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
+		_, err := podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(),
+			network, metav1.CreateOptions{})
 		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-		// we don't expect an error here, no requeueing
-		assert.NoError(t, podController.handleAddUpdatePod(pod))
+		createPodFn(podController, pod)
+		podController.cniCache.Store(podKey, cniConfig)
+		// We don't expect an error here, no requeueing.
+		assert.NoError(t, podController.syncPod(podKey))
 	})
 
-	t.Run("Error when adding VF deviceID cache per Pod", func(t *testing.T) {
+	t.Run("updating deviceID cache per Pod", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
-		network := testNetwork(networkName, sriovNetworkType)
-		podController, _, _ := testPodController(ctrl)
-		podController.podCache.AddCNIConfigInfo(cniConfig)
-		_, err := podController.kubeClient.CoreV1().Pods(testNamespace).Create(context.Background(), pod, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test Pod")
-		_, err = podController.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(context.Background(), network, metav1.CreateOptions{})
-		require.NoError(t, err, "error when creating test NetworkAttachmentDefinition")
-
-		_, err = podController.assignUnusedSriovVFDeviceIDPerPod(podName, testNamespace, interfaceName)
+		podController, _, _, _ := testPodController(ctrl)
+		_, err := podController.assignUnusedSriovVFDeviceID(podName, testNamespace, sriovResourceName1, interfaceName)
+		_, exists := podController.vfDeviceIDUsageMap.Load(podKey)
+		assert.True(t, exists)
 		require.NoError(t, err, "error while assigning unused VfDevice ID")
-
+		podController.releaseSriovVFDeviceID(podName, testNamespace, interfaceName)
+		_, exists = podController.vfDeviceIDUsageMap.Load(podKey)
+		assert.True(t, exists)
 		podController.deleteVFDeviceIDListPerPod(podName, testNamespace)
-		require.NoError(t, err, "error deleting cache")
-
+		_, exists = podController.vfDeviceIDUsageMap.Load(podKey)
+		assert.False(t, exists)
 	})
 }
 
-func testPodController(ctrl *gomock.Controller) (*PodController, *podwatchtesting.MockIPAMAllocator, *podwatchtesting.MockInterfaceConfigurator) {
+func testPodController(ctrl *gomock.Controller) (
+	*PodController, *podwatchtesting.MockIPAMAllocator,
+	*podwatchtesting.MockInterfaceConfigurator, *ovsconfigtest.MockOVSBridgeClient) {
 	client := fake.NewSimpleClientset()
 	netdefclient := netdefclientfake.NewSimpleClientset().K8sCniCncfIoV1()
 	informerFactory := informers.NewSharedInformerFactory(client, resyncPeriod)
-	podCache := cnipodcache.NewCNIPodInfoStore()
 	interfaceConfigurator := podwatchtesting.NewMockInterfaceConfigurator(ctrl)
 	mockIPAM := podwatchtesting.NewMockIPAMAllocator(ctrl)
-	// PodController object without event handlers
+	mockOVSBridgeClient := ovsconfigtest.NewMockOVSBridgeClient(ctrl)
+
+	// PodController without event handlers.
 	return &PodController{
-		kubeClient:            client,
-		netAttachDefClient:    netdefclient,
-		queue:                 workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "podcontroller"),
+		kubeClient:         client,
+		ovsBridgeClient:    mockOVSBridgeClient,
+		netAttachDefClient: netdefclient,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "podcontroller",
+			},
+		),
 		podInformer:           informerFactory.Core().V1().Pods().Informer(),
-		nodeName:              testNode,
-		podCache:              podCache,
 		interfaceConfigurator: interfaceConfigurator,
 		ipamAllocator:         mockIPAM,
-	}, mockIPAM, interfaceConfigurator
+		interfaceStore:        interfacestore.NewInterfaceStore(),
+	}, mockIPAM, interfaceConfigurator, mockOVSBridgeClient
+}
+
+// Create a test PodController and start informerFactory.
+func testPodControllerStart(ctrl *gomock.Controller) (
+	*PodController, *podwatchtesting.MockIPAMAllocator,
+	*podwatchtesting.MockInterfaceConfigurator) {
+	podController, mockIPAM, interfaceConfigurator, _ := testPodController(ctrl)
+	informerFactory := informers.NewSharedInformerFactory(podController.kubeClient, resyncPeriod)
+	podController.podInformer = informerFactory.Core().V1().Pods().Informer()
+	stopCh := make(chan struct{})
+	informerFactory.Start(stopCh)
+	informerFactory.WaitForCacheSync(stopCh)
+	return podController, mockIPAM, interfaceConfigurator
+}
+
+func convertExternalIDMap(in map[string]interface{}) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v.(string)
+	}
+	return out
+}
+
+func createTestInterfaces() (map[string]string, []ovsconfig.OVSPortData, []*interfacestore.InterfaceConfig) {
+	uuid1 := uuid.New().String()
+	uuid2 := uuid.New().String()
+	uuid3 := uuid.New().String()
+	uuid4 := uuid.New().String()
+
+	p1MAC, p1IP := "11:22:33:44:55:66", "192.168.1.10"
+	p2MAC, p2IP := "11:22:33:44:55:77", "192.168.1.11"
+
+	p1NetMAC, _ := net.ParseMAC(p1MAC)
+	p1NetIP := net.ParseIP(p1IP)
+	p2NetMAC, _ := net.ParseMAC(p2MAC)
+	p2NetIP := net.ParseIP(p2IP)
+
+	// Create InterfaceConfig objects directly
+	containerConfig1 := interfacestore.NewContainerInterface("p1", uuid1, "Pod1", "nsA", "eth0", "netns1", p1NetMAC, []net.IP{p1NetIP}, 100)
+	containerConfig1.OVSPortConfig = &interfacestore.OVSPortConfig{
+		OFPort: 11,
+	}
+	containerConfig2 := interfacestore.NewContainerInterface("p2", uuid2, "Pod2", "nsA", "eth0", "netns2", p2NetMAC, []net.IP{p2NetIP}, 100)
+	containerConfig2.OVSPortConfig = &interfacestore.OVSPortConfig{
+		OFPort: 12,
+	}
+	containerConfig3 := interfacestore.NewContainerInterface("p3", uuid3, "Pod3", "nsA", "eth0", "netns3", p2NetMAC, []net.IP{p2NetIP}, 100)
+	containerConfig3.OVSPortConfig = &interfacestore.OVSPortConfig{
+		OFPort: -1,
+	}
+
+	ovsPort1 := ovsconfig.OVSPortData{
+		UUID: uuid1, Name: "p1", OFPort: 11,
+		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
+			containerConfig1))}
+
+	ovsPort2 := ovsconfig.OVSPortData{
+		UUID: uuid2, Name: "p2", OFPort: 12,
+		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
+			containerConfig2))}
+
+	ovsPort3 := ovsconfig.OVSPortData{
+		UUID: uuid3, Name: "p3", OFPort: -1,
+		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
+			containerConfig3))}
+
+	ovsPort4 := ovsconfig.OVSPortData{
+		UUID:   uuid4,
+		Name:   "unknownIface",
+		OFPort: 20,
+		ExternalIDs: map[string]string{
+			"unknownKey": "unknownValue"}}
+
+	return map[string]string{"uuid1": uuid1, "uuid2": uuid2, "uuid3": uuid3, "uuid4": uuid4}, []ovsconfig.OVSPortData{ovsPort1, ovsPort2, ovsPort3, ovsPort4}, []*interfacestore.InterfaceConfig{containerConfig1, containerConfig2, containerConfig3}
+}
+
+func TestInitializeSecondaryInterfaceStore(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	pc, _, _, mockOVSBridgeClient := testPodController(ctrl)
+	uuids, ovsPorts, _ := createTestInterfaces()
+	mockOVSBridgeClient.EXPECT().GetPortList().Return(ovsPorts, nil)
+
+	err := pc.initializeSecondaryInterfaceStore()
+	require.NoError(t, err, "OVS ports list successfully")
+
+	// Validate stored interfaces
+	require.Equal(t, 3, pc.interfaceStore.Len(), "Only valid interfaces should be stored")
+
+	_, found1 := pc.interfaceStore.GetContainerInterface(uuids["uuid1"])
+	assert.True(t, found1, "Interface 1 should be stored")
+
+	_, found2 := pc.interfaceStore.GetContainerInterface(uuids["uuid2"])
+	assert.True(t, found2, "Interface 2 should be stored")
+
+	_, found3 := pc.interfaceStore.GetContainerInterface(uuids["uuid3"])
+	assert.True(t, found3, "Interface 3 should be stored")
+
+	_, found4 := pc.interfaceStore.GetContainerInterface(uuids["uuid4"])
+	assert.False(t, found4, "Unknown interface type should not be stored")
+}
+
+func TestReconcileSecondaryInterfaces(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	pc, mockIPAM, interfaceConfigurator, _ := testPodController(ctrl)
+	primaryStore := interfacestore.NewInterfaceStore()
+	_, _, containerConfigs := createTestInterfaces()
+
+	// Add interfaces to primary store
+	primaryStore.AddInterface(containerConfigs[0])
+	primaryStore.AddInterface(containerConfigs[1])
+
+	// Add interfaces to controller secondaryInterfaceStore
+	pc.interfaceStore.AddInterface(containerConfigs[0])
+	pc.interfaceStore.AddInterface(containerConfigs[1])
+	// Case when OFPort == -1
+	pc.interfaceStore.AddInterface(containerConfigs[2])
+
+	interfaceConfigurator.EXPECT().DeleteVLANSecondaryInterface(gomock.Any()).Return(nil).Times(1)
+	mockIPAM.EXPECT().SecondaryNetworkRelease(gomock.Any()).Return(nil).Times(1)
+
+	err := pc.reconcileSecondaryInterfaces(primaryStore)
+	require.NoError(t, err)
+
+	// Check CNI Cache
+	podCount := 0
+	pc.cniCache.Range(func(key, value interface{}) bool {
+		podCount++
+		return true
+	})
+	assert.Equal(t, 2, podCount, "CNI cache should contain two Pods")
+
+	checkPodCNIInfo := func(t *testing.T, config *interfacestore.InterfaceConfig) {
+		t.Helper()
+		key := fmt.Sprintf("%s/%s", config.PodNamespace, config.PodName)
+		value, foundPod := pc.cniCache.Load(key)
+		podCNIInfo := value.(*podCNIInfo)
+		assert.True(t, foundPod, "CNI cache should contain "+key)
+		assert.Equal(t, config.ContainerID, podCNIInfo.containerID)
+		assert.Equal(t, config.NetNS, podCNIInfo.netNS)
+	}
+	checkPodCNIInfo(t, containerConfigs[0])
+	checkPodCNIInfo(t, containerConfigs[1])
+
+	// Ensure stale interfaces are removed
+	_, foundPod3 := pc.cniCache.Load("nsA/Pod3")
+	assert.False(t, foundPod3, "Stale interface should have been removed")
+}
+
+func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
+	ctx := context.Background()
+	podName := "test-pod"
+	podNamespace := "default"
+	testPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: podNamespace,
+		},
+	}
+	testCases := []struct {
+		name                   string
+		podAnnot               map[string]string
+		netStatus              []netdefv1.NetworkStatus
+		isPrimary              bool
+		getPodErr              error
+		getNetworkStatusCalled bool
+		getStatusErr           error
+		setNetworkStatusCalled bool
+		setStatusErr           error
+		expectErrStr           string
+		expectStatus           []netdefv1.NetworkStatus
+	}{
+		{
+			name:         "empty status skips update",
+			netStatus:    nil,
+			expectErrStr: "context deadline exceeded",
+		},
+		{
+			name:         "get pod failure",
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth1"}},
+			getPodErr:    errors.New("api down"),
+			expectErrStr: "api down",
+		},
+		{
+			name:                   "get status failure",
+			netStatus:              []netdefv1.NetworkStatus{{Name: "eth1"}},
+			getNetworkStatusCalled: true,
+			getStatusErr:           errors.New("parse error"),
+			expectStatus:           []netdefv1.NetworkStatus{{Name: "eth1"}},
+		},
+		{
+			name: "set status failure",
+			podAnnot: map[string]string{"k8s.v1.cni.cncf.io/network-status": `[{
+    "name": "eth0",
+    "ips": [
+        "192.168.1.2"
+    ],
+    "dns": {}
+}]`},
+			netStatus:              []netdefv1.NetworkStatus{{Name: "eth1"}},
+			setNetworkStatusCalled: true,
+			setStatusErr:           errors.New("update conflict"),
+		},
+		{
+			name:         "primary update with Pod nil annotation",
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
+			isPrimary:    true,
+			expectErrStr: "skipping network status update for the Pod annotation is nil",
+		},
+		{
+			name:         "primary update without Pod k8s.v1.cni.cncf.io/networks annotation",
+			podAnnot:     map[string]string{"fake-anno": "fake-value"},
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
+			isPrimary:    true,
+			expectErrStr: "skipping network status update as the Pod without annotation k8s.v1.cni.cncf.io/networks",
+		},
+		{
+			name: "primary update replaces existing",
+			podAnnot: map[string]string{
+				netdefv1.NetworkAttachmentAnnot: `[{"name": "sriov-net1", "namespace": "default", "interface": "eth1"}]`,
+				netdefv1.NetworkStatusAnnot: `[{
+    "name": "eth0",
+    "ips": [
+        "192.168.1.2"
+    ],
+    "dns": {}
+}]`,
+			},
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
+			isPrimary:    true,
+			expectStatus: []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
+		},
+		{
+			name: "secondary update appends",
+			podAnnot: map[string]string{
+				netdefv1.NetworkAttachmentAnnot: `[{"name": "sriov-net1", "namespace": "default", "interface": "eth1"}]`,
+				netdefv1.NetworkStatusAnnot: `[{
+    "name": "eth0",
+    "ips": [
+        "192.168.1.2"
+    ],
+    "dns": {}
+}]`,
+			},
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth1"}},
+			isPrimary:    false,
+			expectStatus: []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}, {Name: "eth1"}},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			testPod.Annotations = tc.podAnnot
+			client := fake.NewSimpleClientset(testPod.DeepCopy())
+
+			var getNetworkStatusCalled bool
+			var setNetworkStatusCalled bool
+			defer mockNetdefutilsSetNetworkStatus(tc.setStatusErr, &setNetworkStatusCalled)()
+
+			if tc.getPodErr != nil {
+				client.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, tc.getPodErr
+				})
+			}
+
+			err := updatePodNetworkStatusAnnotation(client, ctx, tc.netStatus, "test-pod", "default")
+			if err != nil {
+				assert.Contains(t, err.Error(), tc.expectErrStr)
+			}
+			assert.Equal(t, tc.getNetworkStatusCalled, getNetworkStatusCalled)
+			assert.Equal(t, tc.setNetworkStatusCalled, setNetworkStatusCalled)
+			if err == nil {
+				podItem, err := client.CoreV1().Pods(podNamespace).Get(ctx, podName, metav1.GetOptions{})
+				assert.NoError(t, err)
+				networkStatus, _ := netdefutils.GetNetworkStatus(podItem)
+				assert.ElementsMatch(t, tc.expectStatus, networkStatus)
+			}
+		})
+	}
+}
+
+func mockNetdefutilsSetNetworkStatus(err error, called *bool) func() {
+	origSetStatus := netdefutils.SetNetworkStatus
+	if err != nil {
+		netdefutilsSetNetworkStatus = func(client clientset.Interface, pod *corev1.Pod, status []netdefv1.NetworkStatus) error {
+			*called = true
+			return err
+		}
+	}
+	return func() {
+		netdefutilsSetNetworkStatus = origSetStatus
+	}
 }

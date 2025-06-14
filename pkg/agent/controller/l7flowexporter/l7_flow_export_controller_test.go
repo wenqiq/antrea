@@ -17,6 +17,7 @@ package l7flowexporter
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,13 +29,11 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 
-	"antrea.io/antrea/pkg/agent/controller/networkpolicy/l7engine"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	openflowtest "antrea.io/antrea/pkg/agent/openflow/testing"
 	"antrea.io/antrea/pkg/agent/types"
@@ -76,6 +75,7 @@ type fakeController struct {
 	client           *fake.Clientset
 	informerFactory  informers.SharedInformerFactory
 	localPodInformer cache.SharedIndexInformer
+	suricataStarted  *atomic.Bool
 }
 
 func (c *fakeController) startInformers(stopCh chan struct{}) {
@@ -109,8 +109,11 @@ func newFakeControllerAndWatcher(t *testing.T, objects []runtime.Object, interfa
 		ifaceStore.AddInterface(itf)
 	}
 
-	l7Reconciler := l7engine.NewReconciler()
-	l7w := NewL7FlowExporterController(mockOFClient, ifaceStore, localPodInformer, nsInformer, l7Reconciler)
+	var suricataStarted atomic.Bool
+	l7w := NewL7FlowExporterController(mockOFClient, ifaceStore, localPodInformer, nsInformer, func() error {
+		suricataStarted.Store(true)
+		return nil
+	})
 
 	return &fakeController{
 		L7FlowExporterController: l7w,
@@ -118,6 +121,7 @@ func newFakeControllerAndWatcher(t *testing.T, objects []runtime.Object, interfa
 		client:                   client,
 		informerFactory:          informerFactory,
 		localPodInformer:         localPodInformer,
+		suricataStarted:          &suricataStarted,
 	}
 }
 
@@ -159,9 +163,9 @@ func newPodInterface(podName, podNamespace string, ofPort int32) *interfacestore
 }
 
 func waitEvents(t *testing.T, expectedEvents int, c *fakeController) {
-	require.NoError(t, wait.Poll(10*time.Millisecond, 5*time.Second, func() (done bool, err error) {
-		return c.queue.Len() == expectedEvents, nil
-	}))
+	require.Eventually(t, func() bool {
+		return c.queue.Len() == expectedEvents
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestPodAdd(t *testing.T) {
@@ -177,6 +181,7 @@ func TestPodAdd(t *testing.T) {
 		name                      string
 		addedPod                  *v1.Pod
 		expectedPodToDirectionMap map[string]v1alpha2.Direction
+		expectedSuricataStarted   bool
 		expectedCalls             func(mockOFClient *openflowtest.MockClient)
 		expectedError             error
 	}{
@@ -186,6 +191,7 @@ func TestPodAdd(t *testing.T) {
 			expectedPodToDirectionMap: map[string]v1alpha2.Direction{
 				pod1NN: v1alpha2.DirectionIngress,
 			},
+			expectedSuricataStarted: true,
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(fmt.Sprintf("tcl7:%s", pod1NN), []uint32{uint32(podInterface1.OFPort)}, targetPort, v1alpha2.DirectionIngress, v1alpha2.ActionMirror, types.TrafficControlFlowPriorityLow)
 			},
@@ -211,7 +217,8 @@ func TestPodAdd(t *testing.T) {
 			waitEvents(t, 1, c)
 			item, _ := c.queue.Get()
 			tt.expectedCalls(c.mockOFClient)
-			err := c.syncPod(item.(string))
+			err := c.syncPod(item)
+			assert.Equal(t, tt.expectedSuricataStarted, c.suricataStarted.Load())
 			if tt.expectedError != nil {
 				assert.ErrorContains(t, err, tt.expectedError.Error())
 			} else {
@@ -240,6 +247,7 @@ func TestPodUpdate(t *testing.T) {
 		name                      string
 		updatedPod                *v1.Pod
 		expectedPodToDirectionMap map[string]v1alpha2.Direction
+		expectedSuricataStarted   bool
 		expectedCalls             func(mockOFClient *openflowtest.MockClient)
 	}{
 		{
@@ -248,6 +256,7 @@ func TestPodUpdate(t *testing.T) {
 			expectedPodToDirectionMap: map[string]v1alpha2.Direction{
 				pod1NN: v1alpha2.DirectionEgress,
 			},
+			expectedSuricataStarted: true,
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(fmt.Sprintf("tcl7:%s", pod1NN), []uint32{uint32(podInterface1.OFPort)}, targetPort, v1alpha2.DirectionEgress, v1alpha2.ActionMirror, types.TrafficControlFlowPriorityLow)
 			},
@@ -257,6 +266,7 @@ func TestPodUpdate(t *testing.T) {
 			expectedPodToDirectionMap: map[string]v1alpha2.Direction{
 				pod2NN: v1alpha2.DirectionBoth,
 			},
+			expectedSuricataStarted: true,
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(fmt.Sprintf("tcl7:%s", pod2NN), []uint32{uint32(podInterface2.OFPort)}, targetPort, v1alpha2.DirectionBoth, v1alpha2.ActionMirror, types.TrafficControlFlowPriorityLow)
 			},
@@ -266,6 +276,7 @@ func TestPodUpdate(t *testing.T) {
 			expectedPodToDirectionMap: map[string]v1alpha2.Direction{
 				pod3NN: v1alpha2.DirectionIngress,
 			},
+			expectedSuricataStarted: true,
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(fmt.Sprintf("tcl7:%s", pod3NN), []uint32{uint32(podInterface3.OFPort)}, targetPort, v1alpha2.DirectionIngress, v1alpha2.ActionMirror, types.TrafficControlFlowPriorityLow)
 			},
@@ -275,6 +286,7 @@ func TestPodUpdate(t *testing.T) {
 			expectedPodToDirectionMap: map[string]v1alpha2.Direction{
 				pod4NN: v1alpha2.DirectionEgress,
 			},
+			expectedSuricataStarted: true,
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(fmt.Sprintf("tcl7:%s", pod4NN), []uint32{uint32(podInterface4.OFPort)}, targetPort, v1alpha2.DirectionEgress, v1alpha2.ActionMirror, types.TrafficControlFlowPriorityLow)
 			},
@@ -309,7 +321,8 @@ func TestPodUpdate(t *testing.T) {
 
 			waitEvents(t, 1, c)
 			item, _ := c.queue.Get()
-			require.NoError(t, c.syncPod(item.(string)))
+			require.NoError(t, c.syncPod(item))
+			assert.Equal(t, tt.expectedSuricataStarted, c.suricataStarted.Load())
 			assert.Equal(t, tt.expectedPodToDirectionMap, c.podToDirectionMap)
 			c.queue.Done(item)
 		})
@@ -368,7 +381,7 @@ func TestPodUpdateRemoveFlows(t *testing.T) {
 			waitEvents(t, 2, c)
 			for i := 0; i < 2; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncPod(item.(string)))
+				require.NoError(t, c.syncPod(item))
 				c.queue.Done(item)
 			}
 			if tt.deletePod {
@@ -385,7 +398,7 @@ func TestPodUpdateRemoveFlows(t *testing.T) {
 
 			waitEvents(t, 1, c)
 			item, _ := c.queue.Get()
-			require.NoError(t, c.syncPod(item.(string)))
+			require.NoError(t, c.syncPod(item))
 			assert.Equal(t, tt.expectedL7PodNNDirAfterFlowRemoved, c.podToDirectionMap)
 			c.queue.Done(item)
 		})
@@ -410,6 +423,7 @@ func TestNamespaceUpdate(t *testing.T) {
 		name                      string
 		updatedNS                 *v1.Namespace
 		expectedCalls             func(mockOFClient *openflowtest.MockClient)
+		expectedSuricataStarted   bool
 		expectedPodToDirectionMap map[string]v1alpha2.Direction
 		expectedPodsCount         int
 	}{
@@ -424,7 +438,8 @@ func TestNamespaceUpdate(t *testing.T) {
 				pod1NN: v1alpha2.DirectionEgress,
 				pod2NN: v1alpha2.DirectionEgress,
 			},
-			expectedPodsCount: 2,
+			expectedSuricataStarted: true,
+			expectedPodsCount:       2,
 		}, {
 			name:      "Update namespace to have annotations containing pod with annotation",
 			updatedNS: newNamespaceObject("test-ns2", annotationsCorrectEgress),
@@ -434,7 +449,8 @@ func TestNamespaceUpdate(t *testing.T) {
 			expectedPodToDirectionMap: map[string]v1alpha2.Direction{
 				pod3NN: v1alpha2.DirectionEgress,
 			},
-			expectedPodsCount: 1,
+			expectedSuricataStarted: true,
+			expectedPodsCount:       1,
 		},
 	}
 	for _, tt := range testcases {
@@ -458,9 +474,10 @@ func TestNamespaceUpdate(t *testing.T) {
 			waitEvents(t, tt.expectedPodsCount, c)
 			for i := 0; i < tt.expectedPodsCount; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncPod(item.(string)))
+				require.NoError(t, c.syncPod(item))
 				c.queue.Done(item)
 			}
+			assert.Equal(t, tt.expectedSuricataStarted, c.suricataStarted.Load())
 			assert.Equal(t, tt.expectedPodToDirectionMap, c.podToDirectionMap)
 		})
 	}
@@ -519,7 +536,7 @@ func TestNSUpdateRemoveFlows(t *testing.T) {
 			waitEvents(t, 2, c)
 			for i := 0; i < 2; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncPod(item.(string)))
+				require.NoError(t, c.syncPod(item))
 				c.queue.Done(item)
 			}
 			// Update Pods with no annotations
@@ -530,7 +547,7 @@ func TestNSUpdateRemoveFlows(t *testing.T) {
 			waitEvents(t, tt.expectedQueueLen, c)
 			for i := 0; i < tt.expectedQueueLen; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncPod(item.(string)))
+				require.NoError(t, c.syncPod(item))
 				c.queue.Done(item)
 			}
 			assert.Equal(t, tt.expectedL7PodNNDirMapAfterFlowRemoved, c.podToDirectionMap)

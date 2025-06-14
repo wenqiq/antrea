@@ -15,6 +15,7 @@
 package apiserver
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,16 +26,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	k8sversion "k8s.io/apimachinery/pkg/version"
+	genericopenapi "k8s.io/apiserver/pkg/endpoints/openapi"
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/healthz"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
+	apiserverversion "k8s.io/apiserver/pkg/util/version"
 
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/addressgroup"
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/agentinfo"
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/appliedtogroup"
+	"antrea.io/antrea/pkg/agent/apiserver/handlers/bgppeer"
+	"antrea.io/antrea/pkg/agent/apiserver/handlers/bgppolicy"
+	"antrea.io/antrea/pkg/agent/apiserver/handlers/bgproute"
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/featuregates"
+	"antrea.io/antrea/pkg/agent/apiserver/handlers/fqdncache"
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/memberlist"
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/multicast"
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/networkpolicy"
@@ -45,7 +51,9 @@ import (
 	agentquerier "antrea.io/antrea/pkg/agent/querier"
 	systeminstall "antrea.io/antrea/pkg/apis/system/install"
 	systemv1beta1 "antrea.io/antrea/pkg/apis/system/v1beta1"
+	"antrea.io/antrea/pkg/apiserver"
 	"antrea.io/antrea/pkg/apiserver/handlers/loglevel"
+	"antrea.io/antrea/pkg/apiserver/openapi"
 	"antrea.io/antrea/pkg/apiserver/registry/system/supportbundle"
 	"antrea.io/antrea/pkg/ovs/ovsctl"
 	"antrea.io/antrea/pkg/querier"
@@ -57,8 +65,6 @@ const CertPairName = "antrea-agent-api"
 var (
 	scheme = runtime.NewScheme()
 	codecs = serializer.NewCodecFactory(scheme)
-	// #nosec G101: false positive triggered by variable name which includes "token"
-	TokenPath = "/var/run/antrea/apiserver/loopback-client-token"
 )
 
 func init() {
@@ -70,8 +76,8 @@ type agentAPIServer struct {
 	GenericAPIServer *genericapiserver.GenericAPIServer
 }
 
-func (s *agentAPIServer) Run(stopCh <-chan struct{}) error {
-	return s.GenericAPIServer.PrepareRun().Run(stopCh)
+func (s *agentAPIServer) Run(ctx context.Context) error {
+	return s.GenericAPIServer.PrepareRun().RunWithContext(ctx)
 }
 
 func (s *agentAPIServer) GetCertData() []byte {
@@ -83,7 +89,7 @@ func (s *agentAPIServer) GetCertData() []byte {
 	return cert
 }
 
-func installHandlers(aq agentquerier.AgentQuerier, npq querier.AgentNetworkPolicyInfoQuerier, mq querier.AgentMulticastInfoQuerier, seipq querier.ServiceExternalIPStatusQuerier, s *genericapiserver.GenericAPIServer) {
+func installHandlers(aq agentquerier.AgentQuerier, npq querier.AgentNetworkPolicyInfoQuerier, mq querier.AgentMulticastInfoQuerier, seipq querier.ServiceExternalIPStatusQuerier, s *genericapiserver.GenericAPIServer, bgpq querier.AgentBGPPolicyInfoQuerier) {
 	s.Handler.NonGoRestfulMux.HandleFunc("/loglevel", loglevel.HandleFunc())
 	s.Handler.NonGoRestfulMux.HandleFunc("/podmulticaststats", multicast.HandleFunc(mq))
 	s.Handler.NonGoRestfulMux.HandleFunc("/featuregates", featuregates.HandleFunc())
@@ -96,6 +102,10 @@ func installHandlers(aq agentquerier.AgentQuerier, npq querier.AgentNetworkPolic
 	s.Handler.NonGoRestfulMux.HandleFunc("/ovstracing", ovstracing.HandleFunc(aq))
 	s.Handler.NonGoRestfulMux.HandleFunc("/serviceexternalip", serviceexternalip.HandleFunc(seipq))
 	s.Handler.NonGoRestfulMux.HandleFunc("/memberlist", memberlist.HandleFunc(aq))
+	s.Handler.NonGoRestfulMux.HandleFunc("/bgppolicy", bgppolicy.HandleFunc(bgpq))
+	s.Handler.NonGoRestfulMux.HandleFunc("/bgppeers", bgppeer.HandleFunc(bgpq))
+	s.Handler.NonGoRestfulMux.HandleFunc("/bgproutes", bgproute.HandleFunc(bgpq))
+	s.Handler.NonGoRestfulMux.HandleFunc("/fqdncache", fqdncache.HandleFunc(npq))
 }
 
 func installAPIGroup(s *genericapiserver.GenericAPIServer, aq agentquerier.AgentQuerier, npq querier.AgentNetworkPolicyInfoQuerier, v4Enabled, v6Enabled bool) error {
@@ -113,15 +123,17 @@ func New(aq agentquerier.AgentQuerier,
 	npq querier.AgentNetworkPolicyInfoQuerier,
 	mq querier.AgentMulticastInfoQuerier,
 	seipq querier.ServiceExternalIPStatusQuerier,
+	bgpq querier.AgentBGPPolicyInfoQuerier,
 	secureServing *genericoptions.SecureServingOptionsWithLoopback,
 	authentication *genericoptions.DelegatingAuthenticationOptions,
 	authorization *genericoptions.DelegatingAuthorizationOptions,
 	enableMetrics bool,
 	kubeconfig string,
+	loopbackClientTokenPath string,
 	v4Enabled,
 	v6Enabled bool,
 ) (*agentAPIServer, error) {
-	cfg, err := newConfig(aq, npq, secureServing, authentication, authorization, enableMetrics, kubeconfig)
+	cfg, err := newConfig(aq, npq, secureServing, authentication, authorization, enableMetrics, kubeconfig, loopbackClientTokenPath)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +144,7 @@ func New(aq agentquerier.AgentQuerier,
 	if err := installAPIGroup(s, aq, npq, v4Enabled, v6Enabled); err != nil {
 		return nil, err
 	}
-	installHandlers(aq, npq, mq, seipq, s)
+	installHandlers(aq, npq, mq, seipq, s, bgpq)
 	return &agentAPIServer{GenericAPIServer: s}, nil
 }
 
@@ -143,6 +155,7 @@ func newConfig(aq agentquerier.AgentQuerier,
 	authorization *genericoptions.DelegatingAuthorizationOptions,
 	enableMetrics bool,
 	kubeconfig string,
+	loopbackClientTokenPath string,
 ) (*genericapiserver.CompletedConfig, error) {
 	// kubeconfig file is useful when antrea-agent isn't running as a Pod.
 	if len(kubeconfig) > 0 {
@@ -167,20 +180,13 @@ func newConfig(aq agentquerier.AgentQuerier,
 	if err := authorization.ApplyTo(&serverConfig.Authorization); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(path.Dir(TokenPath), os.ModeDir); err != nil {
+	if err := os.MkdirAll(path.Dir(loopbackClientTokenPath), os.ModeDir); err != nil {
 		return nil, fmt.Errorf("error when creating dirs of token file: %v", err)
 	}
-	if err := os.WriteFile(TokenPath, []byte(serverConfig.LoopbackClientConfig.BearerToken), 0600); err != nil {
+	if err := os.WriteFile(loopbackClientTokenPath, []byte(serverConfig.LoopbackClientConfig.BearerToken), 0600); err != nil {
 		return nil, fmt.Errorf("error when writing loopback access token to file: %v", err)
 	}
-	v := antreaversion.GetVersion()
-	serverConfig.Version = &k8sversion.Info{
-		Major:        fmt.Sprint(v.Major),
-		Minor:        fmt.Sprint(v.Minor),
-		GitVersion:   v.String(),
-		GitTreeState: antreaversion.GitTreeState,
-		GitCommit:    antreaversion.GetGitSHA(),
-	}
+	serverConfig.EffectiveVersion = apiserverversion.NewEffectiveVersion(antreaversion.GetFullVersion())
 	serverConfig.EnableMetrics = enableMetrics
 	// Add readiness probe to check the status of watchers.
 	watcherCheck := healthz.NamedCheck("watcher", func(_ *http.Request) error {
@@ -199,6 +205,9 @@ func newConfig(aq agentquerier.AgentQuerier,
 		return fmt.Errorf("disconnected from OFSwitch")
 	})
 	serverConfig.LivezChecks = append(serverConfig.LivezChecks, ovsConnCheck)
+	serverConfig.OpenAPIV3Config = genericapiserver.DefaultOpenAPIV3Config(
+		openapi.GetOpenAPIDefinitions,
+		genericopenapi.NewDefinitionNamer(apiserver.Scheme))
 
 	completedServerCfg := serverConfig.Complete(nil)
 	return &completedServerCfg, nil

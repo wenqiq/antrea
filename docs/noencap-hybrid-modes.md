@@ -9,10 +9,10 @@ are in different subnets, but does not encapsulate when the source and the
 destination Nodes are in the same subnet. This document describes how to
 configure Antrea with the `NoEncap` and `Hybrid` modes.
 
-The NoEncap and Hybrid traffic modes require AntreaProxy to support correct
-NetworkPolicy enforcement, which is why trying to disable AntreaProxy in these
+The NoEncap and Hybrid traffic modes require Antrea Proxy to support correct
+NetworkPolicy enforcement, which is why trying to disable Antrea Proxy in these
 modes will normally cause the Antrea Agent to fail. It is possible to override
-this behavior and force AntreaProxy to be disabled by setting the
+this behavior and force Antrea Proxy to be disabled by setting the
 ALLOW_NO_ENCAP_WITHOUT_ANTREA_PROXY environment variable to true for the Antrea
 Agent in the [Antrea deployment yaml](../build/yamls/antrea.yml).
 For example:
@@ -33,6 +33,13 @@ spec:
             - name: ALLOW_NO_ENCAP_WITHOUT_ANTREA_PROXY
               value: "true"
 ```
+
+Note that changing the traffic mode in an existing cluster, where Antrea is
+currently installed or was previously installed, may require restarting existing
+workloads. In particular, the choice of traffic mode has an impact on the MTU
+value used for Pod network interfaces. When changing the traffic mode from
+`NoEncap` to `Encap`, existing workloads should be restarted, so that new
+network interfaces with a lower MTU value can be created.
 
 ## Hybrid Mode
 
@@ -87,7 +94,7 @@ network is able to route Pod traffic between Nodes. This Route Controller
 functionality is supported by the Cloud Provider implementations of the major
 clouds, including: [AWS](https://github.com/kubernetes/cloud-provider-aws),
 [Azure](https://github.com/kubernetes-sigs/cloud-provider-azure),
-[GCE](https://github.com/kubernetes/kubernetes/tree/master/staging/src/k8s.io/legacy-cloud-providers/gce),
+[GCP](https://github.com/kubernetes/cloud-provider-gcp),
 and [vSphere (with NSX-T)](https://github.com/kubernetes/cloud-provider-vsphere).
 
 * Run a routing protocol or even manually configure routers to add routes to

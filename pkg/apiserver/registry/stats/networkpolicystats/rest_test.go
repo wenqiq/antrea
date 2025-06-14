@@ -45,7 +45,7 @@ func (p *fakeStatsProvider) ListNetworkPolicyStats(namespace string) []statsv1al
 			}
 		}
 	} else {
-		m1, _ := p.stats[namespace]
+		m1 := p.stats[namespace]
 		for _, m2 := range m1 {
 			list = append(list, m2)
 		}
@@ -126,7 +126,7 @@ func TestRESTGet(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.NetworkPolicyStats, tt.networkPolicyStatsEnabled)()
+			featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.NetworkPolicyStats, tt.networkPolicyStatsEnabled)
 
 			r := &REST{
 				statsProvider: &fakeStatsProvider{stats: tt.stats},
@@ -292,7 +292,7 @@ func TestRESTList(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.NetworkPolicyStats, tt.networkPolicyStatsEnabled)()
+			featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.NetworkPolicyStats, tt.networkPolicyStatsEnabled)
 
 			r := &REST{
 				statsProvider: &fakeStatsProvider{stats: tt.stats},

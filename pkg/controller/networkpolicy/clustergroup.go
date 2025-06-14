@@ -131,10 +131,8 @@ func (c *NetworkPolicyController) processClusterGroup(cg *crdv1beta1.ClusterGrou
 		for i := range cg.Spec.IPBlocks {
 			ipb, _ := toAntreaIPBlockForCRD(&cg.Spec.IPBlocks[i])
 			internalGroup.IPBlocks = append(internalGroup.IPBlocks, *ipb)
-			// CIDR format is already validated by the webhook
-			_, ipNet, _ := net.ParseCIDR(cg.Spec.IPBlocks[i].CIDR)
-			internalGroup.IPNets = append(internalGroup.IPNets, *ipNet)
 		}
+		internalGroup.IPNets = computeEffectiveIPNetForIPBlocks(cg.Spec.IPBlocks)
 		return &internalGroup
 	}
 	svcSelector := cg.Spec.ServiceReference
@@ -187,8 +185,7 @@ func (c *NetworkPolicyController) processNextInternalGroupWorkItem() bool {
 	}
 	defer c.internalGroupQueue.Done(key)
 
-	err := c.syncInternalGroup(key.(string))
-	if err != nil {
+	if err := c.syncInternalGroup(key); err != nil {
 		// Put the item back in the workqueue to handle any transient errors.
 		c.internalGroupQueue.AddRateLimited(key)
 		klog.Errorf("Failed to sync internal Group %s: %v", key, err)
@@ -281,17 +278,17 @@ func (c *NetworkPolicyController) triggerParentGroupUpdates(grp string) {
 
 // triggerDerivedGroupUpdates triggers processing of AppliedToGroup and AddressGroup derived from the provided group.
 func (c *NetworkPolicyController) triggerDerivedGroupUpdates(grp string) {
-	_, exists, _ := c.appliedToGroupStore.Get(grp)
-	if exists {
+	groups, _ := c.appliedToGroupStore.GetByIndex(store.SourceGroupIndex, grp)
+	for _, group := range groups {
 		// It's fine if the group is deleted after checking its existence as syncAppliedToGroup will do nothing when it
 		// doesn't find the group.
-		c.enqueueAppliedToGroup(grp)
+		c.enqueueAppliedToGroup(group.(*antreatypes.AppliedToGroup).Name)
 	}
-	_, exists, _ = c.addressGroupStore.Get(grp)
-	if exists {
+	groups, _ = c.addressGroupStore.GetByIndex(store.SourceGroupIndex, grp)
+	for _, group := range groups {
 		// It's fine if the group is deleted after checking its existence as syncAddressGroup will do nothing when it
 		// doesn't find the group.
-		c.enqueueAddressGroup(grp)
+		c.enqueueAddressGroup(group.(*antreatypes.AddressGroup).Name)
 	}
 }
 
@@ -440,7 +437,7 @@ func (c *NetworkPolicyController) GetAssociatedIPBlockGroups(ip net.IP) []antrea
 	for _, obj := range ipBlockGroupObjs {
 		group := obj.(*antreatypes.Group)
 		for _, ipNet := range group.IPNets {
-			if ipNet.Contains(ip) {
+			if ipNet != nil && ipNet.Contains(ip) {
 				matchedGroups = append(matchedGroups, *group)
 				// Append all parent groups to matchedGroups
 				parentGroups := c.getParentGroups(group.SourceReference.ToGroupName())

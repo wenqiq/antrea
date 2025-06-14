@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors
+// Copyright 2024 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package secondarynetwork
 
 import (
 	"fmt"
-	"net"
 
 	"github.com/TomCodeLV/OVSDB-golang-lib/pkg/ovsdb"
 	netdefclient "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/typed/k8s.cni.cncf.io/v1"
@@ -34,84 +33,53 @@ import (
 )
 
 var (
-	// Funcs which will be orridden with mock funcs in tests.
-	interfaceByNameFn = net.InterfaceByName
-	newOVSBridgeFn    = ovsconfig.NewOVSBridge
+	newOVSBridgeFn = ovsconfig.NewOVSBridge
 )
 
-// Initialize sets up OVS bridges and starts the Pod controller for secondary networks.
-func Initialize(
+type Controller struct {
+	ovsBridgeClient ovsconfig.OVSBridgeClient
+	secNetConfig    *agentconfig.SecondaryNetworkConfig
+	podController   *podwatch.PodController
+}
+
+func NewController(
 	clientConnectionConfig componentbaseconfig.ClientConnectionConfiguration,
 	kubeAPIServerOverride string,
 	k8sClient clientset.Interface,
 	podInformer cache.SharedIndexInformer,
-	nodeName string,
 	podUpdateSubscriber channel.Subscriber,
-	stopCh <-chan struct{},
-	config *agentconfig.SecondaryNetworkConfig, ovsdb *ovsdb.OVSDB) error {
-
-	ovsBridgeClient, err := createOVSBridge(config.OVSBridges, ovsdb)
+	primaryInterfaceStore interfacestore.InterfaceStore,
+	secNetConfig *agentconfig.SecondaryNetworkConfig, ovsdb *ovsdb.OVSDB,
+) (*Controller, error) {
+	ovsBridgeClient, err := createOVSBridge(secNetConfig.OVSBridges, ovsdb)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Create the NetworkAttachmentDefinition client, which handles access to secondary network object
 	// definition from the API Server.
 	netAttachDefClient, err := createNetworkAttachDefClient(clientConnectionConfig, kubeAPIServerOverride)
 	if err != nil {
-		return fmt.Errorf("NetworkAttachmentDefinition client creation failed: %v", err)
+		return nil, fmt.Errorf("NetworkAttachmentDefinition client creation failed: %v", err)
 	}
 
 	// Create podController to handle secondary network configuration for Pods with
 	// k8s.v1.cni.cncf.io/networks Annotation defined.
-	if podWatchController, err := podwatch.NewPodController(
+	podWatchController, err := podwatch.NewPodController(
 		k8sClient, netAttachDefClient, podInformer,
-		nodeName, podUpdateSubscriber, ovsBridgeClient); err != nil {
-		return err
-	} else {
-		go podWatchController.Run(stopCh)
+		podUpdateSubscriber, primaryInterfaceStore, ovsBridgeClient)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return &Controller{
+		ovsBridgeClient: ovsBridgeClient,
+		secNetConfig:    secNetConfig,
+		podController:   podWatchController}, nil
 }
 
-// TODO: check and update bridge configuration.
-func createOVSBridge(bridges []agentconfig.OVSBridgeConfig, ovsdb *ovsdb.OVSDB) (ovsconfig.OVSBridgeClient, error) {
-	if len(bridges) == 0 {
-		return nil, nil
-	}
-	// Only one OVS bridge is supported.
-	bridgeConfig := bridges[0]
-
-	phyInterface := ""
-	if len(bridgeConfig.PhysicalInterfaces) > 0 {
-		phyInterface = bridgeConfig.PhysicalInterfaces[0]
-		if _, err := interfaceByNameFn(phyInterface); err != nil {
-			return nil, fmt.Errorf("failed to get interface %s: %v", phyInterface, err)
-		}
-	}
-
-	ovsBridgeClient := newOVSBridgeFn(bridgeConfig.BridgeName, ovsconfig.OVSDatapathSystem, ovsdb)
-	if err := ovsBridgeClient.Create(); err != nil {
-		return nil, fmt.Errorf("failed to create OVS bridge %s: %v", bridgeConfig.BridgeName, err)
-	}
-	klog.InfoS("OVS bridge created", "bridge", bridgeConfig.BridgeName)
-
-	if phyInterface == "" {
-		return ovsBridgeClient, nil
-	}
-
-	if _, err := ovsBridgeClient.GetOFPort(phyInterface, false); err == nil {
-		klog.V(2).InfoS("Physical interface already connected to OVS bridge, skip the configuration", "device", phyInterface, "bridge", bridgeConfig.BridgeName)
-		return ovsBridgeClient, nil
-	}
-
-	_, err := ovsBridgeClient.CreateUplinkPort(phyInterface, 0, map[string]interface{}{interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaUplink})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OVS uplink port %s: %v", phyInterface, err)
-	}
-	klog.InfoS("Physical interface added to OVS bridge", "device", phyInterface, "bridge", bridgeConfig.BridgeName)
-
-	return ovsBridgeClient, nil
+// Run starts the Pod controller for secondary networks.
+func (c *Controller) Run(stopCh <-chan struct{}) {
+	c.podController.Run(stopCh)
 }
 
 // CreateNetworkAttachDefClient creates net-attach-def client handle from the given config.
@@ -126,4 +94,22 @@ func createNetworkAttachDefClient(config componentbaseconfig.ClientConnectionCon
 		return nil, err
 	}
 	return netAttachDefClient, nil
+}
+
+func createOVSBridge(bridges []agentconfig.OVSBridgeConfig, ovsdb *ovsdb.OVSDB) (ovsconfig.OVSBridgeClient, error) {
+	if len(bridges) == 0 {
+		return nil, nil
+	}
+	// Only one OVS bridge is supported.
+	bridgeConfig := bridges[0]
+	var options []ovsconfig.OVSBridgeOption
+	if bridgeConfig.EnableMulticastSnooping {
+		options = append(options, ovsconfig.WithMcastSnooping())
+	}
+	ovsBridgeClient := newOVSBridgeFn(bridgeConfig.BridgeName, ovsconfig.OVSDatapathSystem, ovsdb, options...)
+	if err := ovsBridgeClient.Create(); err != nil {
+		return nil, fmt.Errorf("failed to create OVS bridge %s: %v", bridgeConfig.BridgeName, err)
+	}
+	klog.InfoS("OVS bridge created", "bridge", bridgeConfig.BridgeName)
+	return ovsBridgeClient, nil
 }

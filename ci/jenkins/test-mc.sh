@@ -134,9 +134,9 @@ function clean_tmp() {
 }
 
 function clean_images() {
-    docker images | grep -E 'mc-controller|antrea-ubuntu' | awk '{print $3}' | xargs -r docker rmi -f || true
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep -E 'mc-controller|antrea-ubuntu' | xargs -r docker rmi -f || true
     # Clean up dangling images generated in previous builds.
-    docker image prune -f --filter "until=24h" || true > /dev/null
+    docker image prune -af --filter "until=24h" || true > /dev/null
     check_and_cleanup_docker_build_cache
 }
 
@@ -258,7 +258,7 @@ function run_codecov { (set -e
     shasum -a 256 -c codecov.SHA256SUM
 
     chmod +x codecov
-    ./codecov -c -t ${CODECOV_TOKEN} -F ${flag} -f ${file} -s ${dir} -C ${GIT_COMMIT} -r antrea-io/antrea
+    ./codecov -c -t "${CODECOV_TOKEN}" -F "${flag}" -f "${file}" -s "${dir}" -C "${GIT_COMMIT}" -r "antrea-io/antrea"
 
     rm -f trustedkeys.gpg codecov
 )}
@@ -444,7 +444,7 @@ function run_multicluster_e2e {
     fi
 
     set -x
-    go test -v antrea.io/antrea/multicluster/test/e2e --logs-export-dir `pwd`/antrea-multicluster-test-logs $options
+    go test -v -timeout=15m antrea.io/antrea/multicluster/test/e2e --logs-export-dir `pwd`/antrea-multicluster-test-logs $options
     if [[ "$?" != "0" ]]; then
         TEST_FAILURE=true
     fi
@@ -466,7 +466,14 @@ function collect_coverage {
       mc_controller_pod_name="$(kubectl get pods --selector=app=antrea,component=antrea-mc-controller -n ${namespace} --no-headers=true ${kubeconfig} | awk '{ print $1 }')"
       controller_pid="$(kubectl exec -i $mc_controller_pod_name -n ${namespace} ${kubeconfig} -- pgrep antrea)"
       kubectl exec -i $mc_controller_pod_name -n ${namespace} ${kubeconfig} -- kill -SIGINT $controller_pid
-      kubectl cp ${namespace}/$mc_controller_pod_name:antrea-mc-controller.cov.out ${COVERAGE_DIR}/$mc_controller_pod_name-$timestamp ${kubeconfig}
+      cov_dir="${COVERAGE_DIR}/$mc_controller_pod_name-$timestamp"
+      mkdir -p $cov_dir
+      files=(`kubectl exec $mc_controller_pod_name -n ${namespace} ${kubeconfig} -- ls /tmp/coverage/`)
+      for file in "${files[@]}"; do
+          kubectl cp ${namespace}/$mc_controller_pod_name:/tmp/coverage/$file $cov_dir/$file ${kubeconfig}
+      done
+      go tool covdata textfmt -i="${cov_dir}" -o "${cov_dir}.cov.out"
+      rm -rf "${cov_dir}"
     done
 }
 

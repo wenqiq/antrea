@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,20 +27,24 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/featuregate"
 
+	"antrea.io/antrea/pkg/apiserver/apis"
 	"antrea.io/antrea/pkg/features"
 	"antrea.io/antrea/pkg/util/runtime"
 )
 
 var (
-	egressStatus    string
-	multicastStatus string
+	egressStatus                      string
+	multicastStatus                   string
+	cleanupStaleUDPSvcConntrackStatus string
+	serviceExternalIPStatus           string
+	egressSeparateSubnetStatus        string
 )
 
 func Test_getGatesResponse(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  *Config
-		want []Response
+		want []apis.FeatureGateResponse
 	}{
 		{
 			name: "mutated AntreaPolicy feature gate, agent mode",
@@ -50,13 +53,14 @@ func Test_getGatesResponse(t *testing.T) {
 					"AntreaPolicy": false,
 				},
 			},
-			want: []Response{
+			want: []apis.FeatureGateResponse{
 				{Component: "agent", Name: "AntreaIPAM", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "AntreaPolicy", Status: "Disabled", Version: "BETA"},
 				{Component: "agent", Name: "AntreaProxy", Status: "Enabled", Version: "GA"},
-				{Component: "agent", Name: "CleanupStaleUDPSvcConntrack", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent", Name: "BGPPolicy", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent", Name: "CleanupStaleUDPSvcConntrack", Status: cleanupStaleUDPSvcConntrackStatus, Version: "BETA"},
 				{Component: "agent", Name: "Egress", Status: egressStatus, Version: "BETA"},
-				{Component: "agent", Name: "EgressSeparateSubnet", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent", Name: "EgressSeparateSubnet", Status: egressSeparateSubnetStatus, Version: "BETA"},
 				{Component: "agent", Name: "EgressTrafficShaping", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "EndpointSlice", Status: "Enabled", Version: "GA"},
 				{Component: "agent", Name: "ExternalNode", Status: "Disabled", Version: "ALPHA"},
@@ -68,10 +72,13 @@ func Test_getGatesResponse(t *testing.T) {
 				{Component: "agent", Name: "Multicast", Status: multicastStatus, Version: "BETA"},
 				{Component: "agent", Name: "Multicluster", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "NetworkPolicyStats", Status: "Enabled", Version: "BETA"},
+				{Component: "agent", Name: "NodeLatencyMonitor", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "NodeNetworkPolicy", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "NodePortLocal", Status: "Enabled", Version: "GA"},
+				{Component: "agent", Name: "PacketCapture", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "SecondaryNetwork", Status: "Disabled", Version: "ALPHA"},
-				{Component: "agent", Name: "ServiceExternalIP", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent", Name: "ServiceExternalIP", Status: serviceExternalIPStatus, Version: "BETA"},
+				{Component: "agent", Name: "ServiceTrafficDistribution", Status: "Enabled", Version: "BETA"},
 				{Component: "agent", Name: "SupportBundleCollection", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "TopologyAwareHints", Status: "Enabled", Version: "BETA"},
 				{Component: "agent", Name: "Traceflow", Status: "Enabled", Version: "BETA"},
@@ -91,7 +98,7 @@ func Test_getGatesWindowsResponse(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  *Config
-		want []Response
+		want []apis.FeatureGateResponse
 	}{
 		{
 			name: "mutated AntreaPolicy feature gate, agent windows mode",
@@ -100,7 +107,7 @@ func Test_getGatesWindowsResponse(t *testing.T) {
 					"AntreaPolicy": false,
 				},
 			},
-			want: []Response{
+			want: []apis.FeatureGateResponse{
 				{Component: "agent-windows", Name: "AntreaPolicy", Status: "Disabled", Version: "BETA"},
 				{Component: "agent-windows", Name: "AntreaProxy", Status: "Enabled", Version: "GA"},
 				{Component: "agent-windows", Name: "EndpointSlice", Status: "Enabled", Version: "GA"},
@@ -108,6 +115,7 @@ func Test_getGatesWindowsResponse(t *testing.T) {
 				{Component: "agent-windows", Name: "FlowExporter", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent-windows", Name: "NetworkPolicyStats", Status: "Enabled", Version: "BETA"},
 				{Component: "agent-windows", Name: "NodePortLocal", Status: "Enabled", Version: "GA"},
+				{Component: "agent-windows", Name: "ServiceTrafficDistribution", Status: "Enabled", Version: "BETA"},
 				{Component: "agent-windows", Name: "SupportBundleCollection", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent-windows", Name: "TopologyAwareHints", Status: "Enabled", Version: "BETA"},
 				{Component: "agent-windows", Name: "Traceflow", Status: "Enabled", Version: "BETA"},
@@ -160,8 +168,8 @@ func TestHandleFunc(t *testing.T) {
 		},
 	)
 
-	os.Setenv("POD_NAME", "antrea-controller-wotqiwth")
-	os.Setenv("ANTREA_CONFIG_MAP_NAME", "antrea-config-aswieut")
+	t.Setenv("POD_NAME", "antrea-controller-wotqiwth")
+	t.Setenv("ANTREA_CONFIG_MAP_NAME", "antrea-config-aswieut")
 
 	handler := HandleFunc(fakeClient)
 	req, err := http.NewRequest(http.MethodGet, "", nil)
@@ -171,7 +179,7 @@ func TestHandleFunc(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 	require.Equal(t, http.StatusOK, recorder.Code)
 
-	var resp []Response
+	var resp []apis.FeatureGateResponse
 	err = json.Unmarshal(recorder.Body.Bytes(), &resp)
 	require.Nil(t, err)
 
@@ -186,11 +194,11 @@ func TestHandleFunc(t *testing.T) {
 func Test_getControllerGatesResponse(t *testing.T) {
 	tests := []struct {
 		name string
-		want []Response
+		want []apis.FeatureGateResponse
 	}{
 		{
 			name: "good path",
-			want: []Response{
+			want: []apis.FeatureGateResponse{
 				{Component: "controller", Name: "AdminNetworkPolicy", Status: "Disabled", Version: "ALPHA"},
 				{Component: "controller", Name: "AntreaIPAM", Status: "Disabled", Version: "ALPHA"},
 				{Component: "controller", Name: "AntreaPolicy", Status: "Enabled", Version: "BETA"},
@@ -201,7 +209,7 @@ func Test_getControllerGatesResponse(t *testing.T) {
 				{Component: "controller", Name: "Multicluster", Status: "Disabled", Version: "ALPHA"},
 				{Component: "controller", Name: "NetworkPolicyStats", Status: "Enabled", Version: "BETA"},
 				{Component: "controller", Name: "NodeIPAM", Status: "Enabled", Version: "BETA"},
-				{Component: "controller", Name: "ServiceExternalIP", Status: "Disabled", Version: "ALPHA"},
+				{Component: "controller", Name: "ServiceExternalIP", Status: serviceExternalIPStatus, Version: "BETA"},
 				{Component: "controller", Name: "SupportBundleCollection", Status: "Disabled", Version: "ALPHA"},
 				{Component: "controller", Name: "Traceflow", Status: "Enabled", Version: "BETA"},
 			},
@@ -217,9 +225,15 @@ func Test_getControllerGatesResponse(t *testing.T) {
 
 func init() {
 	egressStatus = "Enabled"
+	egressSeparateSubnetStatus = "Enabled"
 	multicastStatus = "Enabled"
+	cleanupStaleUDPSvcConntrackStatus = "Enabled"
+	serviceExternalIPStatus = "Enabled"
 	if runtime.IsWindowsPlatform() {
 		egressStatus = "Disabled"
+		egressSeparateSubnetStatus = "Disabled"
 		multicastStatus = "Disabled"
+		cleanupStaleUDPSvcConntrackStatus = "Disabled"
+		serviceExternalIPStatus = "Disabled"
 	}
 }

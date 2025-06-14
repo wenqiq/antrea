@@ -28,21 +28,21 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/openflow"
 	crdv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 )
 
-var skipTraceflowUpdateErr = errors.New("skip Traceflow update")
+var errSkipTraceflowUpdate = errors.New("skip Traceflow update")
 
 func (c *Controller) HandlePacketIn(pktIn *ofctrl.PacketIn) error {
 	if !c.traceflowListerSynced() {
 		return errors.New("Traceflow controller is not started")
 	}
 	oldTf, nodeResult, packet, err := c.parsePacketIn(pktIn)
-	if err == skipTraceflowUpdateErr {
+	if err == errSkipTraceflowUpdate {
 		return nil
 	}
 	if err != nil {
@@ -85,7 +85,8 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 	if err := etherData.UnmarshalBinary(pktIn.Data.(*util.Buffer).Bytes()); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse Ethernet packet from packet-in message: %v", err)
 	}
-	if etherData.Ethertype == protocol.IPv4_MSG {
+	switch etherData.Ethertype {
+	case protocol.IPv4_MSG:
 		ipPacket, ok := etherData.Data.(*protocol.IPv4)
 		if !ok {
 			return nil, nil, nil, errors.New("invalid traceflow IPv4 packet")
@@ -101,7 +102,7 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		}
 		ipDst = ipPacket.NWDst.String()
 		ipSrc = ipPacket.NWSrc.String()
-	} else if etherData.Ethertype == protocol.IPv6_MSG {
+	case protocol.IPv6_MSG:
 		ipv6Packet, ok := etherData.Data.(*protocol.IPv6)
 		if !ok {
 			return nil, nil, nil, errors.New("invalid traceflow IPv6 packet")
@@ -117,7 +118,7 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		}
 		ipDst = ipv6Packet.NWDst.String()
 		ipSrc = ipv6Packet.NWSrc.String()
-	} else {
+	default:
 		return nil, nil, nil, fmt.Errorf("unsupported traceflow packet Ethertype: %d", etherData.Ethertype)
 	}
 
@@ -145,7 +146,7 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		// request does not specify source / destination ports.
 		if !firstPacket {
 			klog.InfoS("An additional Traceflow packet was received unexpectedly for Live Traceflow, ignoring it")
-			return nil, nil, nil, skipTraceflowUpdateErr
+			return nil, nil, nil, errSkipTraceflowUpdate
 		}
 		// Uninstall the OVS flows after receiving the first packet, to
 		// avoid capturing too many matched packets.
@@ -173,6 +174,17 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		ob := new(crdv1beta1.Observation)
 		ob.Component = crdv1beta1.ComponentSpoofGuard
 		ob.Action = crdv1beta1.ActionForwarded
+		// For SNATed packet(hairpin), ipSrc and ctNwSrc are different.
+		// We noticed that ctNwSrc is invalid for ICMPv6 packets: it should contain
+		// the original src Pod IP but it is always empty due to an issue in OVS.
+		// https://github.com/openvswitch/ovs-issues/issues/327
+		if isValidCtNw(ctNwSrc) {
+			ob.SrcPodIP = ctNwSrc
+		} else {
+			// In the case of ICMPv6, since ctNwSrc is invalid, we can use ipSrc as
+			// hairpin is not applicable, so ipSrc always contains src pod IP.
+			ob.SrcPodIP = ipSrc
+		}
 		obs = append(obs, *ob)
 	} else {
 		ob := new(crdv1beta1.Observation)
@@ -292,11 +304,11 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 				}
 			}
 			if isRemoteEgress == 1 { // an Egress packet, currently on source Node and forwarded to Egress Node.
-				egress, _, err := c.egressQuerier.GetEgress(ns, srcPod)
+				egressName, egressIP, egressNode, err := c.egressQuerier.GetEgress(ns, srcPod)
 				if err != nil {
 					return nil, nil, nil, err
 				}
-				obEgress := getEgressObservation(false, tunnelDstIP, egress)
+				obEgress := getEgressObservation(false, egressIP, egressName, egressNode)
 				obs = append(obs, *obEgress)
 			}
 			ob.TunnelDstIP = tunnelDstIP
@@ -312,18 +324,19 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 				}
 			}
 			if pktMark != 0 { // Egress packet on Egress Node
-				egressIP, err := c.egressQuerier.GetEgressIPByMark(pktMark)
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				egress := ""
+				egressName, egressIP, egressNode := "", "", ""
 				if tunnelDstIP == "" { // Egress Node is Source Node of this Egress packet
-					egress, _, err = c.egressQuerier.GetEgress(ns, srcPod)
+					egressName, egressIP, egressNode, err = c.egressQuerier.GetEgress(ns, srcPod)
+					if err != nil {
+						return nil, nil, nil, err
+					}
+				} else {
+					egressIP, err = c.egressQuerier.GetEgressIPByMark(pktMark)
 					if err != nil {
 						return nil, nil, nil, err
 					}
 				}
-				obEgress := getEgressObservation(true, egressIP, egress)
+				obEgress := getEgressObservation(true, egressIP, egressName, egressNode)
 				obs = append(obs, *obEgress)
 			}
 			ob.Action = crdv1beta1.ActionForwardedOutOfOverlay
@@ -460,10 +473,7 @@ func isValidCtNw(ipStr string) bool {
 	}
 	// Reserved by IETF [RFC3513][RFC4291]
 	_, cidr, _ := net.ParseCIDR("0000::/8")
-	if cidr.Contains(ip) {
-		return false
-	}
-	return true
+	return !cidr.Contains(ip)
 }
 
 func parseCapturedPacket(pktIn *ofctrl.PacketIn) *crdv1beta1.Packet {
@@ -475,21 +485,23 @@ func parseCapturedPacket(pktIn *ofctrl.PacketIn) *crdv1beta1.Packet {
 	} else {
 		capturedPacket.IPHeader = &crdv1beta1.IPHeader{Protocol: int32(pkt.IPProto), TTL: int32(pkt.TTL), Flags: int32(pkt.IPFlags)}
 	}
-	if pkt.IPProto == protocol.Type_TCP {
-		capturedPacket.TransportHeader.TCP = &crdv1beta1.TCPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort), Flags: pointer.Int32(int32(pkt.TCPFlags))}
-	} else if pkt.IPProto == protocol.Type_UDP {
+	switch pkt.IPProto {
+	case protocol.Type_TCP:
+		capturedPacket.TransportHeader.TCP = &crdv1beta1.TCPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort), Flags: ptr.To(int32(pkt.TCPFlags))}
+	case protocol.Type_UDP:
 		capturedPacket.TransportHeader.UDP = &crdv1beta1.UDPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort)}
-	} else if pkt.IPProto == protocol.Type_ICMP || pkt.IPProto == protocol.Type_IPv6ICMP {
+	case protocol.Type_ICMP, protocol.Type_IPv6ICMP:
 		capturedPacket.TransportHeader.ICMP = &crdv1beta1.ICMPEchoRequestHeader{ID: int32(pkt.ICMPEchoID), Sequence: int32(pkt.ICMPEchoSeq)}
 	}
 	return &capturedPacket
 }
 
-func getEgressObservation(isEgressNode bool, egressIP, egressName string) *crdv1beta1.Observation {
+func getEgressObservation(isEgressNode bool, egressIP, egressName, egressNode string) *crdv1beta1.Observation {
 	ob := new(crdv1beta1.Observation)
 	ob.Component = crdv1beta1.ComponentEgress
 	ob.EgressIP = egressIP
 	ob.Egress = egressName
+	ob.EgressNode = egressNode
 	if isEgressNode {
 		ob.Action = crdv1beta1.ActionMarkedForSNAT
 	} else {

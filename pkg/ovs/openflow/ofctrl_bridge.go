@@ -202,9 +202,14 @@ type OFBridge struct {
 	// pktConsumers is a map from PacketIn category to the channel that is used to publish the PacketIn message.
 	pktConsumers sync.Map
 
+	// portStatusConsumerCh is a channel to notify agent a PortStatus message is received
+	portStatusConsumerCh chan *openflow15.PortStatus
+	// portStatusMutex is to guard the access on portStatusConsumerCh.
+	portStatusMutex sync.RWMutex
+
 	mpReplyChsMutex sync.RWMutex
 	mpReplyChs      map[uint32]chan *openflow15.MultipartReply
-	// tunMetadataLengthMap is used to store the tlv-map settings on the OVS bridge. Key is the index of tunnel metedata,
+	// tunMetadataLengthMap is used to store the tlv-map settings on the OVS bridge. Key is the index of tunnel metadata,
 	// and value is the length configured in this tunnel metadata.
 	tunMetadataLengthMap map[uint16]uint8
 }
@@ -308,7 +313,13 @@ func (b *OFBridge) DumpTableStatus() []TableStatus {
 
 // PacketRcvd is a callback when a packetIn is received on ofctrl.OFSwitch.
 func (b *OFBridge) PacketRcvd(sw *ofctrl.OFSwitch, packet *ofctrl.PacketIn) {
-	klog.V(2).InfoS("Received packetIn", "packet", packet)
+	// Correspond to MessageStream.outbound log level.
+	if klog.V(7).Enabled() {
+		klog.InfoS("Received packetIn", "packet", packet)
+	} else {
+		klog.V(4).InfoS("Received packetIn")
+	}
+
 	if len(packet.UserData) == 0 {
 		klog.Info("Received packetIn without packetIn category in userdata")
 		return
@@ -641,12 +652,22 @@ func (b *OFBridge) AddOFEntriesInBundle(addEntries []OFEntry, modEntries []OFEnt
 }
 
 type PacketInQueue struct {
-	rateLimiter *rate.Limiter
-	packetsCh   chan *ofctrl.PacketIn
+	// category is used only for logging, to help distinguish the purpose of packets.
+	category       uint8
+	pktRateLimiter *rate.Limiter
+	pktDrops       int64
+	logRateLimiter *rate.Limiter
+	packetsCh      chan *ofctrl.PacketIn
 }
 
-func NewPacketInQueue(size int, r rate.Limit) *PacketInQueue {
-	return &PacketInQueue{rateLimiter: rate.NewLimiter(r, size), packetsCh: make(chan *ofctrl.PacketIn, size)}
+func NewPacketInQueue(category uint8, size int, r rate.Limit) *PacketInQueue {
+	return &PacketInQueue{
+		category:       category,
+		pktRateLimiter: rate.NewLimiter(r, size),
+		// Throttle packet drop logs to once per minute.
+		logRateLimiter: rate.NewLimiter(rate.Every(time.Minute), 1),
+		packetsCh:      make(chan *ofctrl.PacketIn, size),
+	}
 }
 
 func (q *PacketInQueue) AddOrDrop(packet *ofctrl.PacketIn) bool {
@@ -655,12 +676,16 @@ func (q *PacketInQueue) AddOrDrop(packet *ofctrl.PacketIn) bool {
 		return true
 	default:
 		// Channel is full.
+		q.pktDrops++
+		if q.logRateLimiter.Allow() {
+			klog.ErrorS(nil, "Failed to dispatch PacketIn event due to full channel", "category", q.category, "pktDrops", q.pktDrops)
+		}
 		return false
 	}
 }
 
 func (q *PacketInQueue) GetRateLimited(stopCh <-chan struct{}) *ofctrl.PacketIn {
-	when := q.rateLimiter.Reserve().Delay()
+	when := q.pktRateLimiter.Reserve().Delay()
 	t := time.NewTimer(when)
 	defer t.Stop()
 
@@ -712,6 +737,31 @@ func (b *OFBridge) RetryInterval() time.Duration {
 	return b.retryInterval
 }
 
+func (b *OFBridge) PortStatusRcvd(status *openflow15.PortStatus) {
+	b.portStatusMutex.RLock()
+	defer b.portStatusMutex.RUnlock()
+	if b.portStatusConsumerCh == nil {
+		return
+	}
+	// Correspond to MessageStream.outbound log level.
+	if klog.V(7).Enabled() {
+		klog.InfoS("Received PortStatus", "portStatus", status)
+	} else {
+		klog.V(4).InfoS("Received PortStatus")
+	}
+	switch status.Reason {
+	// We only process add/modified status for now.
+	case openflow15.PR_ADD, openflow15.PR_MODIFY:
+		b.portStatusConsumerCh <- status
+	}
+}
+
+func (b *OFBridge) SubscribePortStatusConsumer(statusCh chan *openflow15.PortStatus) {
+	b.portStatusMutex.Lock()
+	defer b.portStatusMutex.Unlock()
+	b.portStatusConsumerCh = statusCh
+}
+
 func (b *OFBridge) setPacketInFormatTo2() {
 	b.ofSwitch.SetPacketInFormat(openflow15.OFPUTIL_PACKET_IN_NXT2)
 }
@@ -744,33 +794,31 @@ func (b *OFBridge) processTableFeatures(ch chan *openflow15.MultipartReply) {
 	// features in the reply. Here we complete the loop after we receive all the reply messages, while the reply message
 	// is configured with Flags=0.
 	for {
-		select {
-		case rpl := <-ch:
-			request := &openflow15.MultipartRequest{
-				Header: header,
-				Type:   openflow15.MultipartType_TableFeatures,
-				Flags:  rpl.Flags,
+		rpl := <-ch
+		request := &openflow15.MultipartRequest{
+			Header: header,
+			Type:   openflow15.MultipartType_TableFeatures,
+			Flags:  rpl.Flags,
+		}
+		// A MultipartReply message may have one or many OFPTableFeatures messages, and MultipartReply.Body is a
+		// slice of these messages.
+		for _, body := range rpl.Body {
+			tableFeature := body.(*openflow15.TableFeatures)
+			// Modify table name if the table is in the pipeline, otherwise use the default table features.
+			// OVS doesn't allow to skip any table except the hidden table (always the last table) in a table_features
+			// request. So use the existing table features for the tables that Antrea doesn't define in the pipeline.
+			if t, ok := b.tableCache[tableFeature.TableID]; ok {
+				// Set table name with the configured value.
+				copy(tableFeature.Name[0:], t.name)
 			}
-			// A MultipartReply message may have one or many OFPTableFeatures messages, and MultipartReply.Body is a
-			// slice of these messages.
-			for _, body := range rpl.Body {
-				tableFeature := body.(*openflow15.TableFeatures)
-				// Modify table name if the table is in the pipeline, otherwise use the default table features.
-				// OVS doesn't allow to skip any table except the hidden table (always the last table) in a table_features
-				// request. So use the existing table features for the tables that Antrea doesn't define in the pipeline.
-				if t, ok := b.tableCache[tableFeature.TableID]; ok {
-					// Set table name with the configured value.
-					copy(tableFeature.Name[0:], t.name)
-				}
-				request.Body = append(request.Body, tableFeature)
-			}
-			request.Length = request.Len()
-			b.ofSwitch.Send(request)
-			// OVS uses "Flags=0" in the last MultipartReply message to indicate all tables' features have been sent.
-			// Here use this mark to identify all related messages are received and complete the loop.
-			if rpl.Flags == 0 {
-				break
-			}
+			request.Body = append(request.Body, tableFeature)
+		}
+		request.Length = request.Len()
+		b.ofSwitch.Send(request)
+		// OVS uses "Flags=0" in the last MultipartReply message to indicate all tables' features have been sent.
+		// Here use this mark to identify all related messages are received and complete the loop.
+		if rpl.Flags == 0 {
+			break
 		}
 	}
 }

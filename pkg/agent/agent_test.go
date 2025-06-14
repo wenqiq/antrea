@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +63,7 @@ func convertExternalIDMap(in map[string]interface{}) map[string]string {
 	return out
 }
 
-func TestInitstore(t *testing.T) {
+func TestInitInterfaceStore(t *testing.T) {
 	controller := mock.NewController(t)
 	mockOVSBridgeClient := ovsconfigtest.NewMockOVSBridgeClient(controller)
 
@@ -91,10 +90,12 @@ func TestInitstore(t *testing.T) {
 
 	ovsPort1 := ovsconfig.OVSPortData{UUID: uuid1, Name: "p1", IFName: "p1", OFPort: 11,
 		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
-			interfacestore.NewContainerInterface("p1", uuid1, "pod1", "ns1", p1NetMAC, []net.IP{p1NetIP}, 0)))}
+			interfacestore.NewContainerInterface("p1", uuid1, "pod1", "ns1", "eth0", "netns1", p1NetMAC, []net.IP{p1NetIP}, 0)))}
 	ovsPort2 := ovsconfig.OVSPortData{UUID: uuid2, Name: "p2", IFName: "p2", OFPort: 12,
 		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
-			interfacestore.NewContainerInterface("p2", uuid2, "pod2", "ns2", p2NetMAC, []net.IP{p2NetIP}, 0)))}
+			interfacestore.NewContainerInterface("p2", uuid2, "pod2", "ns2", "eth0", "netns2", p2NetMAC, []net.IP{p2NetIP}, 0),
+		)),
+	}
 	initOVSPorts := []ovsconfig.OVSPortData{ovsPort1, ovsPort2}
 
 	mockOVSBridgeClient.EXPECT().GetPortList().Return(initOVSPorts, ovsconfig.NewTransactionError(fmt.Errorf("Failed to list OVS ports"), true))
@@ -111,30 +112,14 @@ func TestInitstore(t *testing.T) {
 	container1, found1 := store.GetContainerInterface(uuid1)
 	if !found1 {
 		t.Errorf("Failed to load OVS port into local store")
-	} else if container1.OFPort != 11 || len(container1.IPs) == 0 || container1.IPs[0].String() != p1IP || container1.MAC.String() != p1MAC || container1.InterfaceName != "p1" {
+	} else if container1.OFPort != 11 || len(container1.IPs) == 0 || container1.IPs[0].String() != p1IP || container1.MAC.String() != p1MAC ||
+		container1.InterfaceName != "p1" || container1.NetNS != "netns1" {
 		t.Errorf("Failed to load OVS port configuration into local store")
 	}
 	_, found2 := store.GetContainerInterface(uuid2)
 	if !found2 {
 		t.Errorf("Failed to load OVS port into local store")
 	}
-
-	// OVS port external_ids should be updated to set AntreaInterfaceTypeKey if it doesn't exist in OVSPortData.
-	delete(ovsPort1.ExternalIDs, interfacestore.AntreaInterfaceTypeKey)
-	delete(ovsPort2.ExternalIDs, interfacestore.AntreaInterfaceTypeKey)
-	initOVSPorts2 := []ovsconfig.OVSPortData{ovsPort1, ovsPort2}
-	mockOVSBridgeClient.EXPECT().GetPortList().Return(initOVSPorts2, nil)
-	updateExtIDsFunc := func(p ovsconfig.OVSPortData) map[string]interface{} {
-		extIDs := make(map[string]interface{})
-		for k, v := range p.ExternalIDs {
-			extIDs[k] = v
-		}
-		extIDs[interfacestore.AntreaInterfaceTypeKey] = interfacestore.AntreaContainer
-		return extIDs
-	}
-	mockOVSBridgeClient.EXPECT().SetPortExternalIDs(ovsPort1.Name, updateExtIDsFunc(ovsPort1)).Return(nil)
-	mockOVSBridgeClient.EXPECT().SetPortExternalIDs(ovsPort2.Name, updateExtIDsFunc(ovsPort2)).Return(nil)
-	initializer.initInterfaceStore()
 }
 
 func TestPersistRoundNum(t *testing.T) {
@@ -451,8 +436,9 @@ func TestInitK8sNodeLocalConfig(t *testing.T) {
 				expectedNodeConfig.NodeTransportIPv6Addr = tt.transportInterface.ipV6Net
 				mockGetIPNetDeviceByCIDRs(t, tt.transportInterface.ipV4Net, tt.transportInterface.ipV6Net, tt.transportInterface.iface)
 			}
+
+			t.Setenv(env.NodeNameEnvKey, nodeName)
 			mockGetIPNetDeviceFromIP(t, nodeIPNet, ipDevice)
-			mockNodeNameEnv(t, nodeName)
 			mockGetNodeTimeout(t, 100*time.Millisecond)
 
 			err := initializer.initK8sNodeLocalConfig(nodeName)
@@ -475,11 +461,6 @@ func mockGetIPNetDeviceFromIP(t *testing.T, ipNet *net.IPNet, ipDevice *net.Inte
 		return ipNet, nil, ipDevice, nil
 	}
 	t.Cleanup(func() { getIPNetDeviceFromIP = prevGetIPNetDeviceFromIP })
-}
-
-func mockNodeNameEnv(t *testing.T, name string) {
-	_ = os.Setenv(env.NodeNameEnvKey, name)
-	t.Cleanup(func() { os.Unsetenv(env.NodeNameEnvKey) })
 }
 
 func mockGetNodeTimeout(t *testing.T, timeout time.Duration) {
@@ -555,14 +536,14 @@ func TestSetupDefaultTunnelInterface(t *testing.T) {
 				TunnelType:       ovsconfig.GeneveTunnel,
 				TunnelCsum:       false,
 			},
-			existingTunnelInterface: interfacestore.NewTunnelInterface(defaultTunInterfaceName, ovsconfig.GeneveTunnel, 0, tunnelPortLocalIP, true, &interfacestore.OVSPortConfig{OFPort: 1}),
+			existingTunnelInterface: interfacestore.NewTunnelInterface(defaultTunInterfaceName, ovsconfig.GeneveTunnel, 0, tunnelPortLocalIP, true, &interfacestore.OVSPortConfig{OFPort: config.DefaultTunOFPort}),
 			expectedOVSCalls: func(client *ovsconfigtest.MockOVSBridgeClientMockRecorder) {
 				client.GetInterfaceOptions(defaultTunInterfaceName).Return(map[string]string{"csum": "true"}, nil)
 				client.SetInterfaceOptions(defaultTunInterfaceName, map[string]interface{}{"csum": "false"})
 			},
 		},
 		{
-			name: "update tunnel type and port",
+			name: "update tunnel type",
 			nodeConfig: &config.NodeConfig{
 				DefaultTunName:        defaultTunInterfaceName,
 				NodeTransportIPv4Addr: nodeIPNet,
@@ -574,7 +555,7 @@ func TestSetupDefaultTunnelInterface(t *testing.T) {
 			},
 			existingTunnelInterface: interfacestore.NewTunnelInterface(defaultTunInterfaceName, ovsconfig.GeneveTunnel, 0, tunnelPortLocalIP, true, &interfacestore.OVSPortConfig{
 				PortUUID: "foo",
-				OFPort:   1,
+				OFPort:   config.DefaultTunOFPort,
 			}),
 			expectedOVSCalls: func(client *ovsconfigtest.MockOVSBridgeClientMockRecorder) {
 				client.DeletePort("foo")
@@ -602,7 +583,23 @@ func TestSetupDefaultTunnelInterface(t *testing.T) {
 				TunnelType:       ovsconfig.GeneveTunnel,
 				TunnelCsum:       false,
 			},
-			existingTunnelInterface: interfacestore.NewTunnelInterface(defaultTunInterfaceName, ovsconfig.GeneveTunnel, 0, tunnelPortLocalIP, false, &interfacestore.OVSPortConfig{OFPort: 1}),
+			existingTunnelInterface: interfacestore.NewTunnelInterface(defaultTunInterfaceName, ovsconfig.GeneveTunnel, 0, tunnelPortLocalIP, false, &interfacestore.OVSPortConfig{OFPort: config.DefaultTunOFPort}),
+			expectedOVSCalls:        func(client *ovsconfigtest.MockOVSBridgeClientMockRecorder) {},
+		},
+		{
+			name: "no change if ofport is not default",
+			nodeConfig: &config.NodeConfig{
+				DefaultTunName:        defaultTunInterfaceName,
+				NodeTransportIPv4Addr: nodeIPNet,
+			},
+			networkConfig: &config.NetworkConfig{
+				TrafficEncapMode: config.TrafficEncapModeEncap,
+				TunnelType:       ovsconfig.GeneveTunnel,
+				TunnelCsum:       false,
+			},
+			// port already exists with an ofport value (123) which is not the default
+			// (config.DefaultTunOFPort). In this case, we keep the port as is.
+			existingTunnelInterface: interfacestore.NewTunnelInterface(defaultTunInterfaceName, ovsconfig.GeneveTunnel, 0, tunnelPortLocalIP, false, &interfacestore.OVSPortConfig{OFPort: 123}),
 			expectedOVSCalls:        func(client *ovsconfigtest.MockOVSBridgeClientMockRecorder) {},
 		},
 	}
@@ -670,7 +667,7 @@ func TestSetupGatewayInterface(t *testing.T) {
 	}
 	close(stopCh)
 	portUUID := "123456780a"
-	ofport := int32(config.HostGatewayOFPort)
+	ofport := int32(config.DefaultHostGatewayOFPort)
 	mockOVSBridgeClient.EXPECT().CreateInternalPort(initializer.hostGateway, ofport, mock.Any(), mock.Any()).Return(portUUID, nil)
 	mockOVSBridgeClient.EXPECT().SetInterfaceMAC(initializer.hostGateway, fakeMAC).Return(nil)
 	mockOVSBridgeClient.EXPECT().GetOFPort(initializer.hostGateway, false).Return(ofport, nil)
@@ -824,11 +821,6 @@ func TestSetOVSDatapath(t *testing.T) {
 	}
 }
 
-func mockIPsecPSKEnv(t *testing.T, name string) {
-	os.Setenv(ipsecPSKEnvKey, name)
-	t.Cleanup(func() { os.Unsetenv(ipsecPSKEnvKey) })
-}
-
 func TestReadIPSecPSK(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -853,7 +845,7 @@ func TestReadIPSecPSK(t *testing.T) {
 				},
 			}
 			if tt.isIPsecPSK {
-				mockIPsecPSKEnv(t, "key")
+				t.Setenv(ipsecPSKEnvKey, "key")
 			}
 
 			err := initializer.readIPSecPSK()
@@ -949,7 +941,7 @@ func TestInitVMLocalConfig(t *testing.T) {
 			name:        "provided external Node unavailable",
 			nodeName:    "testNode",
 			crdClient:   fakeversioned.NewSimpleClientset(),
-			expectedErr: "timed out waiting for the condition",
+			expectedErr: "context canceled",
 		},
 	}
 

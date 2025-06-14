@@ -94,6 +94,11 @@ type AntreaAgentInfoList struct {
 	Items []AntreaAgentInfo `json:"items"`
 }
 
+const (
+	// AntreaControllerInfoResourceName is the name of the sole AntreaControllerInfo resource.
+	AntreaControllerInfoResourceName = "antrea-controller"
+)
+
 // +genclient
 // +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -155,6 +160,15 @@ type ControllerCondition struct {
 	// Human readable message indicating details
 	Message string `json:"message,omitempty"`
 }
+
+const (
+	// DefaultTierPriority maintains the priority for the system generated default Tier.
+	// This is the lowest priority for tiers that will be enforced before K8s NetworkPolicies.
+	DefaultTierPriority = int32(250)
+	// BaselineTierPriority maintains the priority for the system generated baseline Tier.
+	// This is the tier that will be enforced after K8s NetworkPolicies.
+	BaselineTierPriority = int32(253)
+)
 
 // +genclient
 // +genclient:nonNamespaced
@@ -256,6 +270,87 @@ type IPPoolUsage struct {
 	Total int `json:"total"`
 	// Number of allocated IPs.
 	Used int `json:"used"`
+}
+
+// +genclient
+// +genclient:nonNamespaced
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// IPPool defines one or multiple IP sets that can be used for flexible IPAM feature. For instance, the IPs can be
+// allocated to Pods according to IP pool specified in the Deployment annotation.
+type IPPool struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// Standard metadata of the object.
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Specification of the IPPool.
+	Spec IPPoolSpec `json:"spec"`
+
+	// Most recently observed status of the pool.
+	Status IPPoolStatus `json:"status"`
+}
+
+type IPPoolSpec struct {
+	// The IP ranges of this IP pool, e.g. 10.10.0.0/24, 10.10.10.2-10.10.10.20, 10.10.10.30-10.10.10.30.
+	IPRanges []IPRange `json:"ipRanges"`
+	// The Subnet info of this IP pool. All the IP ranges in the IP pool should share the same subnet attributes.
+	SubnetInfo SubnetInfo `json:"subnetInfo"`
+}
+
+type IPPoolStatus struct {
+	IPAddresses []IPAddressState `json:"ipAddresses,omitempty"`
+	Usage       IPPoolUsage      `json:"usage,omitempty"`
+}
+
+type IPAddressPhase string
+
+const (
+	IPAddressPhaseAllocated    IPAddressPhase = "Allocated"
+	IPAddressPhasePreallocated IPAddressPhase = "Preallocated"
+	IPAddressPhaseReserved     IPAddressPhase = "Reserved"
+)
+
+type IPAddressState struct {
+	// IP Address this entry is tracking
+	IPAddress string `json:"ipAddress"`
+	// Allocation state - either Allocated or Preallocated
+	Phase IPAddressPhase `json:"phase"`
+	// Owner this IP Address is allocated to
+	Owner IPAddressOwner `json:"owner"`
+	// TODO: add usage statistics (consistent with ExternalIPPool status)
+}
+
+type IPAddressOwner struct {
+	Pod         *PodOwner         `json:"pod,omitempty"`
+	StatefulSet *StatefulSetOwner `json:"statefulSet,omitempty"`
+}
+
+// Pod owner
+type PodOwner struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	ContainerID string `json:"containerID"`
+	// Network interface name. Used when the IP is allocated for a secondary network interface
+	// of the Pod.
+	IFName string `json:"ifName,omitempty"`
+}
+
+// StatefulSet owner
+type StatefulSetOwner struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Index     int    `json:"index"`
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type IPPoolList struct {
+	metav1.TypeMeta `json:",inline"`
+	// +optional
+	metav1.ListMeta `json:"metadata,omitempty"`
+
+	Items []IPPool `json:"items"`
 }
 
 // +genclient
@@ -562,8 +657,8 @@ type NetworkPolicyPeer struct {
 	// by name or by wildcard match patterns. This field can only be set for
 	// NetworkPolicyPeer of egress rules.
 	// Supported formats are:
-	//  Exact FQDNs, i.e. "google.com", "db-svc.default.svc.cluster.local"
-	//  Wildcard expressions, i.e. "*wayfair.com".
+	//  Exact FQDNs such as "google.com".
+	//  Wildcard expressions such as "*wayfair.com".
 	FQDN string `json:"fqdn,omitempty"`
 	// Select all Pods with the ServiceAccount matched by this field, as
 	// workloads in To/From fields.
@@ -626,8 +721,14 @@ type AppliedTo struct {
 	NodeSelector *metav1.LabelSelector `json:"nodeSelector,omitempty"`
 }
 
+// PeerNamespaces describes criteria for selecting Pod/ExternalEntity
+// from matched Namespaces. Only one of the criteria can be set.
 type PeerNamespaces struct {
+	// Selects from the same Namespace of the appliedTo workloads.
 	Match NamespaceMatchType `json:"match,omitempty"`
+	// Selects Namespaces that share the same values for the given set of label keys
+	// with the appliedTo Namespace. Namespaces must have all the label keys.
+	SameLabels []string `json:"sameLabels,omitempty"`
 }
 
 // NamespaceMatchType describes Namespace matching strategy.
@@ -644,12 +745,17 @@ const (
 	ScopeClusterSet PeerScope = "ClusterSet"
 )
 
-// IPBlock describes a particular CIDR (Ex. "192.168.1.1/24") that is allowed
+// IPBlock describes a particular CIDR (Ex. "192.168.1.0/24") that is allowed
 // or denied to/from the workloads matched by a Spec.AppliedTo.
 type IPBlock struct {
 	// CIDR is a string representing the IP Block
-	// Valid examples are "192.168.1.1/24".
+	// Valid examples are "192.168.1.0/24".
 	CIDR string `json:"cidr"`
+	// except is a slice of CIDRs that should not be included within an IPBlock
+	// Valid examples are "192.168.1.0/28" or "2001:db8::/64"
+	// Except values will be rejected if they are outside the cidr range
+	// +optional
+	Except []string `json:"except,omitempty"`
 }
 
 // NetworkPolicyPort describes the port and protocol to match in a rule.
@@ -1165,6 +1271,10 @@ type Observation struct {
 	// TunnelDstIP is the tunnel destination IP.
 	TunnelDstIP string `json:"tunnelDstIP,omitempty" yaml:"tunnelDstIP,omitempty"`
 	EgressIP    string `json:"egressIP,omitempty" yaml:"egressIP,omitempty"`
+	// EgressNode is the name of the Egress Node.
+	EgressNode string `json:"egressNode,omitempty" yaml:"egressNode,omitempty"`
+	// SrcPodIP is the IP of source Pod.
+	SrcPodIP string `json:"srcPodIP,omitempty" yaml:"srcPodIP,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

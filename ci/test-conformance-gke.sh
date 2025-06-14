@@ -29,8 +29,10 @@ MODE="report"
 RUN_ALL=true
 RUN_SETUP_ONLY=false
 RUN_CLEANUP_ONLY=false
+SKIP_IAM_POLICY_BINDING=false
 TEST_SCRIPT_RC=0
 KUBE_CONFORMANCE_IMAGE_VERSION=auto
+SHARED_NETWORK=false
 
 _usage="Usage: $0 [--cluster-name <GKEClusterNameToUse>]  [--kubeconfig <KubeconfigSavePath>] [--k8s-version <ClusterVersion>] \
                   [--svc-account <Name>] [--user <Name>] [--gke-project <Project>] [--gke-zone <Zone>] [--log-mode <SonobuoyResultLogLevel>] \
@@ -46,12 +48,15 @@ and create the project to be used for cluster with \`gcloud projects create\`.
         --svc-account         Service acount name if logged in with service account. Use --user instead if logged in with gcloud auth login.
         --user                Email address if logged in with user account. Use --svc-account instead if logged in with service account.
         --gke-project         The GKE project to be used. Needs to be pre-created before running the script.
+        --gke-network         The GKE network to be used. Required when using a shared network.
+        --gke-subnet          The GKE subnetwork to be used. Required when using a shared network.
         --gke-zone            The GKE zone where the cluster will be initiated. Defaults to us-west1-a.
         --svc-cidr            The service CIDR to be used for cluster. Defaults to 10.94.0.0/16.
         --host-type           The host type of worker node. Defaults to UBUNTU.
         --machine-type        The machine type of worker node. Defaults to e2-standard-4.
         --gcloud-sdk-path     The path of gcloud installation. Only need to be explicitly set for Jenkins environments.
         --log-mode            Use the flag to set either 'report', 'detail', or 'dump' level data for sonobuoy results.
+        --shared-network      Create the GKE cluster using a shared network.
         --setup-only          Only perform setting up the cluster and run test.
         --cleanup-only        Only perform cleaning up the cluster."
 
@@ -81,6 +86,14 @@ case $key in
     GKE_PROJECT="$2"
     shift 2
     ;;
+    --gke-network)
+    GKE_NETWORK="$2"
+    shift 2
+    ;;
+    --gke-subnet)
+    GKE_SUBNET="$2"
+    shift 2
+    ;;
     --svc-account)
     SVC_ACCOUNT_NAME="$2"
     shift 2
@@ -88,6 +101,10 @@ case $key in
     --user)
     USER_EMAIL="$2"
     shift 2
+    ;;
+    --skip-iam-policy-binding)
+    SKIP_IAM_POLICY_BINDING=true
+    shift
     ;;
     --gke-zone)
     GKE_ZONE="$2"
@@ -112,6 +129,10 @@ case $key in
    --log-mode)
     MODE="$2"
     shift 2
+    ;;
+    --shared-network)
+    SHARED_NETWORK=true
+    shift
     ;;
     --setup-only)
     RUN_SETUP_ONLY=true
@@ -143,10 +164,19 @@ if ! [ -x "$(command -v gcloud)" ]; then
     exit 1
 fi
 
+if [ "$SHARED_NETWORK" == true ]; then
+  if [ -z "$GKE_PROJECT" ] || [ -z "$GKE_NETWORK" ]; then
+    echoerr "When --shared-network is enabled, both --gke-project and --gke-network must be specified."
+    exit 1
+  fi
+fi
+
 # ensures that the script can be run from anywhere
 THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 GIT_CHECKOUT_DIR=${THIS_DIR}/..
 pushd "$THIS_DIR" > /dev/null
+
+source ${THIS_DIR}/jenkins/utils.sh
 
 # disable gcloud prompts, e.g., when deleting resources
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
@@ -171,11 +201,24 @@ function setup_gke() {
     which kubectl
 
     echo '=== Creating a cluster in GKE ==='
-    gcloud container clusters create ${CLUSTER} \
-        --image-type ${GKE_HOST} --machine-type ${MACHINE_TYPE} \
-        --cluster-version ${K8S_VERSION} --zone ${GKE_ZONE} \
-        --enable-ip-alias \
-        --no-enable-autoupgrade
+    if [[ "$SHARED_NETWORK" == true ]]; then
+        gcloud container clusters create ${CLUSTER} \
+            --image-type ${GKE_HOST} --machine-type ${MACHINE_TYPE} \
+            --cluster-version ${K8S_VERSION} --zone ${GKE_ZONE} \
+            --enable-ip-alias \
+            --no-enable-autoupgrade \
+            --network ${GKE_NETWORK} \
+            --subnetwork ${GKE_SUBNET} \
+            --cluster-secondary-range-name pods \
+            --cluster-secondary-range-name services
+    else
+        gcloud container clusters create ${CLUSTER} \
+            --image-type ${GKE_HOST} --machine-type ${MACHINE_TYPE} \
+            --cluster-version ${K8S_VERSION} --zone ${GKE_ZONE} \
+            --enable-ip-alias \
+            --no-enable-autoupgrade
+    fi
+
     if [[ $? -ne 0 ]]; then
         echo "=== Failed to deploy GKE cluster! ==="
         exit 1
@@ -205,11 +248,11 @@ function deliver_antrea_to_gke() {
     # The cleanup and stats are best-effort.
     set +e
     if [[ -n ${JOB_NAME+x} ]]; then
-        docker images | grep "${JOB_NAME}" | awk '{print $3}' | xargs -r docker rmi -f > /dev/null
+        docker images --format "{{.Repository}}:{{.Tag}}" | grep "${JOB_NAME}" | xargs -r docker rmi -f > /dev/null
     fi
     # Clean up dangling images generated in previous builds. Recent ones must be excluded
     # because they might be being used in other builds running simultaneously.
-    docker image prune -f --filter "until=2h" > /dev/null
+    docker image prune -af --filter "until=2h" > /dev/null
     docker system df -v
     check_and_cleanup_docker_build_cache
     set -e
@@ -230,18 +273,19 @@ function deliver_antrea_to_gke() {
 
     node_names=$(kubectl get nodes -o wide --no-headers=true | awk '{print $1}')
     for node_name in ${node_names}; do
-        gcloud compute scp ${antrea_images_tar} ubuntu@${node_name}:~ --zone ${GKE_ZONE}
-        gcloud compute ssh ubuntu@${node_name} --command="sudo ctr -n=k8s.io images import ~/${antrea_images_tar} ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_AGENT_IMG_NAME}:latest ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_CONTROLLER_IMG_NAME}:latest" --zone ${GKE_ZONE}
+        gcloud compute scp --internal-ip ${antrea_images_tar} ubuntu@${node_name}:~ --zone ${GKE_ZONE}
+        gcloud compute ssh --internal-ip ubuntu@${node_name} --command="sudo ctr -n=k8s.io images import ~/${antrea_images_tar} ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_AGENT_IMG_NAME}:latest ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_CONTROLLER_IMG_NAME}:latest" --zone ${GKE_ZONE}
     done
     rm ${antrea_images_tar}
 
     echo "=== Configuring Antrea for cluster ==="
     if [[ -n ${SVC_ACCOUNT_NAME+x} ]]; then
-        gcloud projects add-iam-policy-binding ${GKE_PROJECT} --member serviceAccount:${SVC_ACCOUNT_NAME} --role roles/container.admin
         kubectl create clusterrolebinding cluster-admin-binding --clusterrole cluster-admin --user ${SVC_ACCOUNT_NAME}
     elif [[ -n ${USER_EMAIL+x} ]]; then
         gcloud projects add-iam-policy-binding ${GKE_PROJECT} --member user:${USER_EMAIL} --role roles/container.admin
         kubectl create clusterrolebinding cluster-admin-binding --clusterrole cluster-admin --user ${USER_EMAIL}
+    elif [[ "$SKIP_IAM_POLICY_BINDING" == true ]]; then
+        echo "Skipping the IAM Policy Binding for Cluster Management."
     else
         echo "Neither service account or user email info is set, cannot create cluster-admin-binding!"
         echo "Please refer to --help for more information."
@@ -268,8 +312,10 @@ function deliver_antrea_to_gke() {
 function run_conformance() {
     echo "=== Running Antrea Conformance and Network Policy Tests ==="
 
-    # Allow nodeport traffic by external IP
-    gcloud compute firewall-rules create allow-nodeport --allow tcp:30000-32767
+    # Allow nodeport traffic by external IP, but this is not supported in a shared network.
+    if [[ "$SHARED_NETWORK" == false ]]; then
+        gcloud compute firewall-rules create allow-nodeport --allow tcp:30000-32767
+    fi
 
     ${GIT_CHECKOUT_DIR}/ci/run-k8s-e2e-tests.sh --e2e-conformance \
       --kubernetes-version ${KUBE_CONFORMANCE_IMAGE_VERSION} \
@@ -291,7 +337,9 @@ function run_conformance() {
         echo "=== FAILURE !!! ==="
     fi
 
-    gcloud compute firewall-rules delete allow-nodeport
+    if [[ "$SHARED_NETWORK" == false ]]; then
+        gcloud compute firewall-rules delete allow-nodeport
+    fi
 
     echo "=== Cleanup Antrea Installation ==="
     kubectl delete -f ${GIT_CHECKOUT_DIR}/build/yamls/antrea-gke.yml --ignore-not-found=true || true

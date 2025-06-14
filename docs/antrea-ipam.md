@@ -24,7 +24,6 @@
     * [CNI IPAM configuration](#cni-ipam-configuration)
     * [Configuration with `NetworkAttachmentDefinition` CRD](#configuration-with-networkattachmentdefinition-crd)
   * [`IPPool` CRD](#ippool-crd)
-    * [Secondary Network creation with Multus](#secondary-network-creation-with-multus)
 <!-- TOC -->
 
 ## Running NodeIPAM within Antrea Controller
@@ -161,18 +160,18 @@ enableBridgingMode=true,featureGates.AntreaIPAM=true,trafficEncapMode=noEncap,no
 The following example YAML manifest creates an IPPool CR.
 
 ```yaml
-apiVersion: "crd.antrea.io/v1alpha2"
+apiVersion: "crd.antrea.io/v1beta1"
 kind: IPPool
 metadata:
   name: pool1
 spec:
-  ipVersion: 4
   ipRanges:
   - start: "10.2.0.12"
     end: "10.2.0.20"
+  subnetInfo:
     gateway: "10.2.0.1"
     prefixLength: 24
-    vlan: 2              # Default is 0 (untagged). Valid value is 0~4095.
+    vlan: 2              # Default is 0 (untagged). Valid value is 0~4094.
 ```
 
 #### IPPool Annotations on Namespace
@@ -279,8 +278,8 @@ where the underlay router will route the traffic to the destination VLAN.
 ### Requirements for this Feature
 
 As of now, this feature is supported on Linux Nodes, with IPv4, `system` OVS datapath
-type, `noEncap`, `noSNAT` traffic mode, and `AntreaProxy` feature enabled. Configuration
-with `ProxyAll` feature enabled is not verified.
+type, `noEncap`, `noSNAT` traffic mode, and Antrea Proxy enabled. Configuration
+with `proxyAll` enabled is not verified.
 
 The IPs in the `IPPools` without VLAN must be in the same underlay subnet as the Node
 IP, because inter-Node traffic of AntreaIPAM Pods is forwarded by the Node network.
@@ -321,10 +320,9 @@ will get same IP after recreated.
 
 ## IPAM for Secondary Network
 
-With the AntreaIPAM feature, Antrea can allocate IPs for Pod secondary networks. At the
-moment, AntreaIPAM supports secondary networks managed by [Multus](https://github.com/k8snetworkplumbingwg/multus-cni),
-we will add support for [secondary networks managed by Antrea](feature-gates.md#secondarynetwork)
-in the future.
+With the AntreaIPAM feature, Antrea can allocate IPs for Pod secondary networks,
+including both [secondary networks managed by Antrea](secondary-network.md) and
+secondary networks managed by [Multus](cookbooks/multus).
 
 ### Prerequisites
 
@@ -441,42 +439,81 @@ spec:
 ## `IPPool` CRD
 
 Antrea IP pools are defined with the `IPPool` CRD. The following two examples
-define an IPv4 and an IPv6 IP pool respectively.
+define an IPv4 and an IPv6 IP pool respectively. The first example (IPv4) uses a
+CIDR to define the range of allocatable IPs, while the second example uses a
+"range", with a start and end IP address. When using a CIDR, it is important to
+keep in mind that the first IP in the CIDR will be excluded and will never be
+allocated. When the CIDR represents a traditional subnet, the first IP is
+typically the "network IP". Additionally, for IPv4, when the `prefixLength`
+matches the CIDR mask size, the last IP in the CIDR, which traditionally
+represents the "broadcast IP", will also be excluded. The provided gateway IP
+will of course always be excluded. On the other hand, when using a range with a
+start and end IP address, both of these IPs will be allocatable (except if one
+of them corresponds to the gateway).
 
 ```yaml
-apiVersion: "crd.antrea.io/v1alpha2"
+apiVersion: "crd.antrea.io/v1beta1"
 kind: IPPool
 metadata:
   name: ipv4-pool-1
 spec:
-  ipVersion: 4
   ipRanges:
+  # 61 different IPs can be allocated from this pool: 64 (2^6) - 3 (network IP, broadcast IP, gateway IP).
   - cidr: "10.10.1.0/26"
+  subnetInfo:
     gateway: "10.10.1.1"
-    prefixLength: 24
+    prefixLength: 26
 ```
 
 ```yaml
-apiVersion: "crd.antrea.io/v1alpha2"
+apiVersion: "crd.antrea.io/v1beta1"
 kind: IPPool
 metadata:
   name: ipv6-pool-1
 spec:
-  ipVersion: 6
   ipRanges:
+  # 257 different IPs can be allocated from this pool: 0x200 - 0x100 + 1.
   - start: "3ffe:ffff:1:01ff::0100"
     end: "3ffe:ffff:1:01ff::0200"
+  subnetInfo:
     gateway: "3ffe:ffff:1:01ff::1"
     prefixLength: 64
 ```
 
-VLAN ID in the IP range subnet definition of `IPPool` CRD is not supported for
-secondary network IPAM.
+When used for Antrea secondary VLAN network, the VLAN set in an `IPPool` IP
+range will be passed to the VLAN interface configuration. For example:
 
-### Secondary Network creation with Multus
+```yaml
+apiVersion: "crd.antrea.io/v1beta1"
+kind: IPPool
+metadata:
+  name: ipv4-pool-1
+spec:
+  ipRanges:
+  - cidr: "10.10.1.0/26"
+  subnetInfo:
+    gateway: "10.10.1.1"
+    prefixLength: 24
+    vlan: 100
 
-To leverage Antrea for secondary network IPAM, Antrea must be used as the CNI
-for the Pods' primary network, while the secondary networks are implemented by
-other CNIs which are managed by Multus. The [Antrea + Multus guide](cookbooks/multus)
-talks about how to use Antrea with Multus, including the option of using Antrea
-IPAM for secondary networks.
+---
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ipv4-net-1
+spec:
+  {
+      "cniVersion": "0.3.0",
+      "type": "antrea",
+      "networkType": "vlan",
+      "ipam": {
+          "type": "antrea",
+          "ippools": [ "ipv4-pool-1" ]
+      }
+  }
+```
+
+You can refer to the [Antrea secondary network document](secondary-network.md)
+for more information about Antrea secondary VLAN network configuration.
+
+For other network types, the VLAN field in the `IPPool` will be ignored.

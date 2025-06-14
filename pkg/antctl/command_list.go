@@ -64,7 +64,8 @@ func (cl *commandList) applyToRootCommand(root *cobra.Command, client AntctlClie
 			(runtime.Mode == runtime.ModeController && cmd.supportController) ||
 			(runtime.Mode == runtime.ModeFlowAggregator && cmd.supportFlowAggregator) ||
 			(!runtime.InPod && cmd.commandGroup == mc) ||
-			(!runtime.InPod && cmd.commandGroup == upgrade) {
+			(!runtime.InPod && cmd.commandGroup == upgrade) ||
+			(!runtime.InPod && cmd.commandGroup == check) {
 			if groupCommand, ok := groupCommands[cmd.commandGroup]; ok {
 				groupCommand.AddCommand(cmd.cobraCommand)
 			} else {
@@ -104,7 +105,8 @@ func (cl *commandList) validate() []error {
 	if len(cl.definitions) == 0 {
 		return []error{fmt.Errorf("no command found in the command list")}
 	}
-	for i, c := range cl.definitions {
+	for i := range cl.definitions {
+		c := &cl.definitions[i]
 		for _, err := range c.validate() {
 			errs = append(errs, fmt.Errorf("#%d command<%s>: %w", i, c.use, err))
 		}
@@ -137,9 +139,11 @@ func (cl *commandList) GetDebugCommands(mode string) [][]string {
 		}
 	}
 	for _, cmd := range cl.rawCommands {
-		if cmd.cobraCommand.Use == "proxy" {
+
+		if cmd.cobraCommand.Use == "proxy" || cmd.cobraCommand.Use == "packetcapture" {
 			// proxy will keep running until interrupted so it
-			// cannot be used as is in e2e tests.
+			// cannot be used as is in e2e tests. For packetcapture, the default values didn't
+			// make much sense in e2e tests.
 			continue
 		}
 		if mode == runtime.ModeController && cmd.supportController ||

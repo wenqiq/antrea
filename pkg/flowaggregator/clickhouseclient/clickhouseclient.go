@@ -89,10 +89,11 @@ const (
                    egressName,
                    egressIP,
                    appProtocolName,
-                   httpVals)
+                   httpVals,
+                   egressNodeName)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?)`
+                           ?, ?, ?, ?, ?)`
 )
 
 // PrepareClickHouseConnection is used for unit testing
@@ -107,7 +108,7 @@ type ClickHouseExportProcess struct {
 	db     *sql.DB
 	config ClickHouseConfig
 	// deque buffers flows records between batch commits.
-	deque *deque.Deque
+	deque deque.Deque[*flowrecord.FlowRecord]
 	// dequeMutex is for concurrency between adding and removing records from deque.
 	dequeMutex sync.Mutex
 	// queueSize is the max size of deque
@@ -150,7 +151,6 @@ func NewClickHouseClient(config ClickHouseConfig, clusterUUID string) (*ClickHou
 	chClient := &ClickHouseExportProcess{
 		db:          connect,
 		config:      config,
-		deque:       deque.New(),
 		queueSize:   maxQueueSize,
 		clusterUUID: clusterUUID,
 	}
@@ -270,12 +270,8 @@ func (ch *ClickHouseExportProcess) batchCommitAll(ctx context.Context) (int, err
 	// currSize could have increased due to CacheRecord being called in between.
 	currSize = ch.deque.Len()
 	recordsToExport := make([]*flowrecord.FlowRecord, 0, currSize)
-	for i := 0; i < currSize; i++ {
-		record, ok := ch.deque.PopFront().(*flowrecord.FlowRecord)
-		if !ok {
-			continue
-		}
-		recordsToExport = append(recordsToExport, record)
+	for range currSize {
+		recordsToExport = append(recordsToExport, ch.deque.PopFront())
 	}
 	ch.dequeMutex.Unlock()
 
@@ -334,6 +330,7 @@ func (ch *ClickHouseExportProcess) batchCommitAll(ctx context.Context) (int, err
 			record.EgressIP,
 			record.AppProtocolName,
 			record.HttpVals,
+			record.EgressNodeName,
 		)
 
 		if err != nil {
@@ -425,7 +422,7 @@ func ConnectClickHouse(config *ClickHouseConfig) (*sql.DB, error) {
 	connTimeout := 10 * time.Second
 
 	// Connect to ClickHouse in a loop
-	if err := wait.PollImmediate(connRetryInterval, connTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.TODO(), connRetryInterval, connTimeout, true, func(ctx context.Context) (bool, error) {
 		// Open the database and ping it
 		opt := clickhouse.Options{
 			Addr: []string{addr},

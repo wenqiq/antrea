@@ -486,6 +486,7 @@ func TestDeleteStaleAgentCRD(t *testing.T) {
 
 func TestSyncControllerCRD(t *testing.T) {
 	ctx := context.Background()
+	crdName := v1beta1.AntreaControllerInfoResourceName
 	existingCRD := &v1beta1.AntreaControllerInfo{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: crdName,
@@ -631,8 +632,8 @@ func TestEnqueueNode(t *testing.T) {
 	controller := newControllerMonitor(clientset)
 	controller.controllerMonitor.enqueueNode(node)
 	expectedkey, _ := keyFunc(node)
-	obj, _ := controller.controllerMonitor.nodeQueue.Get()
-	assert.Equal(t, expectedkey, obj.(string))
+	key, _ := controller.controllerMonitor.nodeQueue.Get()
+	assert.Equal(t, expectedkey, key)
 }
 
 func TestEnqueueExternalNode(t *testing.T) {
@@ -647,8 +648,8 @@ func TestEnqueueExternalNode(t *testing.T) {
 	controller := newControllerMonitor(clientset)
 	controller.controllerMonitor.enqueueExternalNode(externalNode)
 	expectedkey, _ := keyFunc(externalNode)
-	obj, _ := controller.controllerMonitor.externalNodeQueue.Get()
-	assert.Equal(t, expectedkey, obj.(string))
+	key, _ := controller.controllerMonitor.externalNodeQueue.Get()
+	assert.Equal(t, expectedkey, key)
 }
 
 func TestAntreaAgentInfoAPIAvailable(t *testing.T) {

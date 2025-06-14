@@ -21,14 +21,19 @@ running in three different modes:
 - [Usage](#usage)
   - [Showing or changing log verbosity level](#showing-or-changing-log-verbosity-level)
   - [Showing feature gates status](#showing-feature-gates-status)
+  - [Performing checks to facilitate installation process](#performing-checks-to-facilitate-installation-process)
+    - [Pre-installation checks](#pre-installation-checks)
+    - [Post-installation checks](#post-installation-checks)
   - [Collecting support information](#collecting-support-information)
   - [controllerinfo and agentinfo commands](#controllerinfo-and-agentinfo-commands)
   - [NetworkPolicy commands](#networkpolicy-commands)
     - [Mapping endpoints to NetworkPolicies](#mapping-endpoints-to-networkpolicies)
+    - [Evaluating expected NetworkPolicy behavior](#evaluating-expected-networkpolicy-behavior)
   - [Dumping Pod network interface information](#dumping-pod-network-interface-information)
   - [Dumping OVS flows](#dumping-ovs-flows)
   - [OVS packet tracing](#ovs-packet-tracing)
   - [Traceflow](#traceflow)
+  - [PacketCapture](#packetcapture)
   - [Antctl Proxy](#antctl-proxy)
   - [Flow Aggregator commands](#flow-aggregator-commands)
     - [Dumping flow records](#dumping-flow-records)
@@ -36,15 +41,17 @@ running in three different modes:
   - [Multi-cluster commands](#multi-cluster-commands)
   - [Multicast commands](#multicast-commands)
   - [Showing memberlist state](#showing-memberlist-state)
+  - [BGP commands](#bgp-commands)
   - [Upgrade existing objects of CRDs](#upgrade-existing-objects-of-crds)
 <!-- /toc -->
 
 ## Installation
 
-The antctl binary is included in the Antrea Docker image
-(`antrea/antrea-ubuntu`) which means that there is no need to install anything
-to connect to the Antrea Agent. Simply exec into the antrea-agent container for
-the appropriate antrea-agent Pod and run `antctl`:
+The antctl binary is included in the Antrea Docker images
+(`antrea/antrea-agent-ubuntu`, `antrea/antrea-controller-ubuntu`) which means
+that there is no need to install anything to connect to the Antrea Agent. Simply
+exec into the antrea-agent container for the appropriate antrea-agent Pod and
+run `antctl`:
 
 ```bash
 kubectl exec -it ANTREA-AGENT_POD_NAME -n kube-system -c antrea-agent -- bash
@@ -121,6 +128,52 @@ The following command prints the current feature gates:
 
 ```bash
 antctl get featuregates
+```
+
+### Performing checks to facilitate installation process
+
+Antrea provides a utility command `antctl check` designed to perform checks
+that verify whether a Kubernetes cluster is correctly configured for installing
+Antrea, and also to confirm that Antrea has been installed correctly.
+
+#### Pre-installation checks
+
+Before installing Antrea, it can be helpful to ensure that the Kubernetes
+cluster is configured properly. This can prevent potential issues that might
+arise during the installation of Antrea. To perform these pre-installation
+checks, simply run the command as follows:
+
+```bash
+antctl check cluster
+```
+
+Run the following command to discover more options:
+
+```bash
+antctl check cluster --help
+```
+
+#### Post-installation checks
+
+Once Antrea is installed, you can verify that networking is functioning
+correctly within your cluster. To perform post-installation checks, simply run
+the command as follows:
+
+```bash
+antctl check installation
+```
+
+In case Antrea is installed in a custom namespace, You
+can specify the namespace by adding the flag:
+
+```bash
+antctl check installation --namespace [NAMESPACE]
+```
+
+Run the following command to discover more options:
+
+```bash
+antctl check installation --help
 ```
 
 ### Collecting support information
@@ -200,7 +253,7 @@ output format. The `NAME` of a control plane NetworkPolicy is the UID of its sou
 NetworkPolicy.
 
 ```bash
-antctl get networkpolicy [NAME] [-n NAMESPACE] [-o yaml]
+antctl get networkpolicy [NAME] [-n NAMESPACE] [-T K8sNP|ACNP|ANNP|ANP|BANP] [-o yaml]
 antctl get appliedtogroup [NAME] [-o yaml]
 antctl get addressgroup [NAME] [-o yaml]
 ```
@@ -263,6 +316,20 @@ Namespace.
 This command only works in "controller mode" and **as of now it can only be run
 from inside the Antrea Controller Pod, and not from out-of-cluster**.
 
+#### Evaluating expected NetworkPolicy behavior
+
+`antctl` supports evaluating all the existing Antrea-native NetworkPolicies,
+Kubernetes NetworkPolicies and AdminNetworkPolicies to predict the effective
+policy rule for traffic between source and destination Pods.
+
+```bash
+antctl query networkpolicyevaluation -S NAMESPACE/POD -D NAMESPACE/POD
+```
+
+If only Pod name is provided, the command will default to the "default" Namespace.
+
+This command only works in "controller mode".
+
 ### Dumping Pod network interface information
 
 `antctl` agent command `get podinterface` (or `get pi`) can dump network
@@ -285,7 +352,7 @@ in the specified OVS flow tables, or all or the specified OVS groups.
 antctl get ovsflows
 antctl get ovsflows -p POD -n NAMESPACE
 antctl get ovsflows -S SERVICE -n NAMESPACE
-antctl get ovsflows -N NETWORKPOLICY -n NAMESPACE
+antctl get ovsflows [-n NAMESPACE] -N NETWORKPOLICY --type NETWORKPOLICY_TYPE
 antctl get ovsflows -T TABLE_A,TABLE_B
 antctl get ovsflows -T TABLE_A,TABLE_B_NUM
 antctl get ovsflows -G all
@@ -293,7 +360,7 @@ antctl get ovsflows -G GROUP_ID1,GROUP_ID2
 ```
 
 OVS flow tables can be specified using table names, or the table numbers.
-`antctl get ovsflow --help` lists all Antrea flow tables. For more information
+`antctl get ovsflows --table-names-only` lists all Antrea flow tables. For more information
 about Antrea OVS pipeline and flows, please refer to the [OVS pipeline doc](design/ovs-pipeline.md).
 
 Example outputs of dumping Pod and NetworkPolicy OVS flows:
@@ -316,13 +383,22 @@ kube-system kube-dns 160ea6d7-0234-5d1d-8ea0-b703d0aa3b46 1
 # Dump OVS flows of NetworkPolicy "kube-dns"
 $ antctl get of -N kube-dns -n kube-system
 FLOW
-table=90, n_packets=0, n_bytes=0, priority=190,conj_id=1,ip actions=resubmit(,105)
-table=90, n_packets=0, n_bytes=0, priority=200,ip actions=conjunction(1,1/3)
-table=90, n_packets=0, n_bytes=0, priority=200,ip,reg1=0x5 actions=conjunction(2,2/3),conjunction(1,2/3)
-table=90, n_packets=0, n_bytes=0, priority=200,udp,tp_dst=53 actions=conjunction(1,3/3)
-table=90, n_packets=0, n_bytes=0, priority=200,tcp,tp_dst=53 actions=conjunction(1,3/3)
-table=90, n_packets=0, n_bytes=0, priority=200,tcp,tp_dst=9153 actions=conjunction(1,3/3)
-table=100, n_packets=0, n_bytes=0, priority=200,ip,reg1=0x5 actions=drop
+table=IngressRule, n_packets=0, n_bytes=0, priority=190,conj_id=1,ip actions=set_field:0x1->reg5,ct(commit,table=IngressMetric,zone=65520,exec(set_field:0x1/0xffffffff->ct_label))
+table=IngressRule, n_packets=0, n_bytes=0, priority=200,ip actions=conjunction(1,1/3)
+table=IngressRule, n_packets=0, n_bytes=0, priority=200,ip,reg1=0x5 actions=conjunction(2,2/3),conjunction(1,2/3)
+table=IngressRule, n_packets=0, n_bytes=0, priority=200,udp,tp_dst=53 actions=conjunction(1,3/3)
+table=IngressRule, n_packets=0, n_bytes=0, priority=200,tcp,tp_dst=53 actions=conjunction(1,3/3)
+table=IngressRule, n_packets=0, n_bytes=0, priority=200,tcp,tp_dst=9153 actions=conjunction(1,3/3)
+table=IngressDefaultRule, n_packets=0, n_bytes=0, priority=200,ip,reg1=0x5 actions=drop
+
+# Dump OVS flows of AntreaNetworkPolicy "test-annp"
+$ antctl get ovsflows -N test-annp -n default --type ANNP
+FLOW
+table=AntreaPolicyIngressRule, n_packets=0, n_bytes=0, priority=14900,conj_id=6 actions=set_field:0x6->reg3,set_field:0x400/0x400->reg0,goto_table:IngressMetric
+table=AntreaPolicyIngressRule, n_packets=0, n_bytes=0, priority=14900,ip,nw_src=10.20.1.8 actions=conjunction(6,1/3)
+table=AntreaPolicyIngressRule, n_packets=0, n_bytes=0, priority=14900,ip,nw_src=10.20.2.8 actions=conjunction(6,1/3)
+table=AntreaPolicyIngressRule, n_packets=0, n_bytes=0, priority=14900,reg1=0x3 actions=conjunction(6,2/3)
+table=AntreaPolicyIngressRule, n_packets=0, n_bytes=0, priority=14900,tcp,tp_dst=443 actions=conjunction(6,3/3)
 ```
 
 ### OVS packet tracing
@@ -357,11 +433,11 @@ local (coredns) Pod:
 ```bash
 $ antctl trace-packet -S default/web-client -D kube-system/coredns-6955765f44-zcbwj -f udp,udp_dst=53
 result: |
-  Flow: udp,in_port=1,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
+  Flow: udp,in_port=32768,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
 
   bridge("br-int")
   ----------------
-   0. in_port=1, priority 200, cookie 0x5e000000000000
+   0. in_port=32768, priority 200, cookie 0x5e000000000000
       load:0->NXM_NX_REG0[0..15]
       resubmit(,30)
   30. ip, priority 200, cookie 0x5e000000000000
@@ -371,14 +447,14 @@ result: |
        -> Sets the packet to an untracked state, and clears all the conntrack fields.
 
   Final flow: unchanged
-  Megaflow: recirc_id=0,eth,udp,in_port=1,nw_frag=no,tp_src=0x0/0xfc00
+  Megaflow: recirc_id=0,eth,udp,in_port=32768,nw_frag=no,tp_src=0x0/0xfc00
   Datapath actions: ct(zone=65520),recirc(0x53)
 
   ===============================================================================
   recirc(0x53) - resume conntrack with default ct_state=trk|new (use --ct-next to customize)
   ===============================================================================
 
-  Flow: recirc_id=0x53,ct_state=new|trk,ct_zone=65520,eth,udp,in_port=1,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
+  Flow: recirc_id=0x53,ct_state=new|trk,ct_zone=65520,eth,udp,in_port=32768,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
 
   bridge("br-int")
   ----------------
@@ -409,15 +485,15 @@ result: |
        -> A clone of the packet is forked to recirculate. The forked pipeline will be resumed at table 110.
        -> Sets the packet to an untracked state, and clears all the conntrack fields.
 
-  Final flow: recirc_id=0x53,eth,udp,reg0=0x10000,reg1=0x5,in_port=1,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
-  Megaflow: recirc_id=0x53,ct_state=+new-est-inv+trk,ct_mark=0,eth,udp,in_port=1,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=192.0.0.0/2,nw_dst=172.100.1.7,nw_ttl=64,nw_frag=no,tp_dst=53
+  Final flow: recirc_id=0x53,eth,udp,reg0=0x10000,reg1=0x5,in_port=32768,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
+  Megaflow: recirc_id=0x53,ct_state=+new-est-inv+trk,ct_mark=0,eth,udp,in_port=32768,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=192.0.0.0/2,nw_dst=172.100.1.7,nw_ttl=64,nw_frag=no,tp_dst=53
   Datapath actions: set(eth(src=62:39:b4:e8:05:76,dst=52:bd:c6:e0:eb:c1)),set(ipv4(ttl=63)),ct(commit,zone=65520),recirc(0x54)
 
   ===============================================================================
   recirc(0x54) - resume conntrack with default ct_state=trk|new (use --ct-next to customize)
   ===============================================================================
 
-  Flow: recirc_id=0x54,ct_state=new|trk,ct_zone=65520,eth,udp,reg0=0x10000,reg1=0x5,in_port=1,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
+  Flow: recirc_id=0x54,ct_state=new|trk,ct_zone=65520,eth,udp,reg0=0x10000,reg1=0x5,in_port=32768,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
 
   bridge("br-int")
   ----------------
@@ -428,7 +504,7 @@ result: |
        -> output port is 5
 
   Final flow: unchanged
-  Megaflow: recirc_id=0x54,eth,ip,in_port=1,nw_frag=no
+  Megaflow: recirc_id=0x54,eth,ip,in_port=32768,nw_frag=no
   Datapath actions: 3
 ```
 
@@ -494,6 +570,58 @@ $ antctl traceflow -S pod1 -D pod2 -f udp,udp_dst=1234
 $ antctl traceflow -S pod1 -D svc1 -f tcp --live-traffic -t 1m
 # Start a Traceflow to capture the first dropped TCP packet to pod1 on port 80, within 10 minutes
 $ antctl traceflow -D pod1 -f tcp,tcp_dst=80 --live-traffic --dropped-only -t 10m
+```
+
+### PacketCapture
+
+`antctl packetcapture` (or  `antctl pc`) command is used to start a `PacketCapture`
+and retrieve the captured result. After the result packet file (in pcapng format)
+is copied out, the PacketCapture will be deleted. The command will display the
+local path to the pcapng file as it exits. Users can also create a PacketCapture
+with `kubectl`, but `antctl` makes it easier. For more information about PacketCapture,
+refer to [PacketCapture guide](packetcapture-guide.md).
+
+To start a PacketCapture, users must provide the following arguments:
+
+* `--source` (or `-S`)
+* `--destination` (or `-D`)
+* `--number` (or `-n`)
+
+Note: one of `--source` and `--destination` must be a Pod.
+
+The `--flow` (or `-f`) argument can be used to specify the PacketCapture packet
+headers with the [ovs-ofctl](http://www.openvswitch.org//support/dist-docs/ovs-ofctl.8.txt)
+flow syntax. This argument works the same way as the one for `antctl traceflow`. The supported flow fields
+include: IP protocol (`icmp`, `tcp`, `udp`), source and destination ports
+(`tcp_src`, `tcp_dst`, `udp_src`, `udp_dst`), TCP flags (`tcp_flags`) and ICMP messages (`icmp_type`, `icmp_code`).
+The `icmp_type` value can be provided in either numeric or string type (`icmp-echo`, `icmp-echoreply`, `icmp-unreach`, `icmp-timxceed`),
+and the `icmp_code` value can be provided in only numeric type.
+
+By default, the command will wait for the PacketCapture to succeed or fail, or to
+timeout. The default timeout is 60 seconds, but can be changed with the
+`--timeout` (or `-t`) argument. Add the `--no-wait` flag to start a PacketCapture
+without waiting for its results. In this case, the command will not delete the
+PacketCapture resource.
+
+More examples of `antctl packetcapture`:
+
+```bash
+# Start capturing packets from pod1 to pod2, both Pods are in Namespace default
+$ antctl packetcapture -S pod1 -D pod2
+# Start capturing packets from pod1 in Namespace ns1 to a destination IP
+$ antctl packetcapture -S ns1/pod1 -D 192.168.123.123
+# Start capturing TCP FIN packets from pod1 to pod2, with destination port 80
+$ antctl packetcapture -S pod1 -D pod2 -f tcp,tcp_dst=80,tcp_flags=+fin
+# Start capturing TCP SYNs that are not ACKs from pod1 to pod2, with destination port 80
+$ antctl packetcapture -S pod1 -D pod2 -f tcp,tcp_dst=80,tcp_flags=+syn-ack
+# Start capturing UDP packets from pod1 to pod2, with destination port 1234
+$ antctl packetcapture -S pod1 -D pod2 -f udp,udp_dst=1234
+# Start capturing ICMP destination unreachable (host unreachable) packets from pod1 to pod2
+$ antctl packetcapture -S pod1 -D pod2 -f icmp,icmp_type=icmp-unreach,icmp_code=1
+# Start capturing ICMP echo packets from pod1 to pod2
+$ antctl packetcapture -S pod1 -D pod2 -f icmp,icmp_type=8
+# Save the packets file to a specified directory
+$ antctl packetcapture -S 192.168.123.123 -D pod2 -f tcp,tcp_dst=80 -o /tmp
 ```
 
 ### Antctl Proxy
@@ -680,6 +808,84 @@ NODE    IP         STATUS
 worker1 172.18.0.4 Alive 
 worker2 172.18.0.3 Alive 
 worker3 172.18.0.2 Dead
+```
+
+### BGP commands
+
+`antctl` agent command `get bgppolicy` prints the effective BGP policy applied on the local Node.
+It includes the name, local ASN, router ID and listen port of the effective BGP policy.
+
+```bash
+$ antctl get bgppolicy
+
+NAME               ROUTER-ID  LOCAL-ASN LISTEN-PORT
+example-bgp-policy 172.18.0.2 64512     179
+```
+
+`antctl` agent command `get bgppeers` print the current status of all BGP peers
+of effective BGP policy applied on the local Node. It includes Peer IP address with port,
+ASN, and State of the BGP Peers.
+
+```bash
+# Get the list of all bgp peers
+$ antctl get bgppeers
+
+PEER                       ASN   STATE
+192.168.77.200:179         65001 Established
+[fec0::196:168:77:251]:179 65002 Active
+
+# Get the list of IPv4 bgp peers only
+$ antctl get bgppeers --ipv4-only
+
+PEER               ASN   STATE
+192.168.77.200:179 65001 Established
+192.168.77.201:179 65002 Active
+
+# Get the list of IPv6 bgp peers only
+$ antctl get bgppeers --ipv6-only
+
+PEER                       ASN   STATE
+[fec0::196:168:77:251]:179 65001 Established
+[fec0::196:168:77:252]:179 65002 Active
+```
+
+`antctl` agent command `get bgproutes` prints the advertised BGP routes on the local Node.
+For more information about route advertisement, please refer to [Advertisements](./bgp-policy.md#advertisements).
+
+```bash
+# Get the list of all advertised bgp routes
+$ antctl get bgproutes
+
+ROUTE                    TYPE                  K8S-OBJ-REF
+172.18.0.3/32            EgressIP              egress1
+10.244.1.0/24            NodeIPAMPodCIDR       <NONE>
+10.96.0.1/32             ServiceLoadBalancerIP default/svc1
+fec0::192:168:77:100/128 EgressIP              egress2
+fd00:10:244:1::/64       NodeIPAMPodCIDR       <NONE>
+fec0::10:96:10:10/128    ServiceLoadBalancerIP default/svc2
+
+# Get the list of advertised IPv4 bgp routes
+$ antctl get bgproutes --ipv4-only
+
+ROUTE         TYPE                  K8S-OBJ-REF
+172.18.0.3/32 EgressIP              egress1
+10.244.1.0/24 NodeIPAMPodCIDR       <NONE>
+10.96.0.1/32  ServiceLoadBalancerIP default/svc1
+
+# Get the list of advertised IPv6 bgp routes
+$ antctl get bgproutes --ipv6-only
+
+ROUTE                    TYPE                  K8S-OBJ-REF
+fec0::192:168:77:100/128 EgressIP              egress2
+fd00:10:244:1::/64       NodeIPAMPodCIDR       <NONE>
+fec0::10:96:10:10/128    ServiceLoadBalancerIP default/svc2
+
+# Get the list of all advertised routes of a specific type
+$ antctl get bgproutes -T EgressIP
+
+ROUTE                    TYPE     K8S-OBJ-REF
+172.18.0.3/32            EgressIP egress1
+fec0::192:168:77:100/128 EgressIP egress2
 ```
 
 ### Upgrade existing objects of CRDs

@@ -60,7 +60,7 @@ type StatusController struct {
 	npControlInterface networkPolicyControlInterface
 
 	// queue maintains the keys of the NetworkPolicy objects that need to be synced.
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 
 	// internalNetworkPolicyStore is the storage where the populated internal Network Policy are stored.
 	internalNetworkPolicyStore storage.Interface
@@ -84,7 +84,12 @@ func NewStatusController(antreaClient antreaclientset.Interface, internalNetwork
 			annpLister:   annpInformer.Lister(),
 			acnpLister:   acnpInformer.Lister(),
 		},
-		queue:                      workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicy"),
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "networkpolicy",
+			},
+		),
 		internalNetworkPolicyStore: internalNetworkPolicyStore,
 		statuses:                   map[string]map[string]*controlplane.NetworkPolicyNodeStatus{},
 		acnpListerSynced:           acnpInformer.Informer().HasSynced,
@@ -213,21 +218,19 @@ func (c *StatusController) watchInternalNetworkPolicy() {
 	defer watcher.Stop()
 	resultCh := watcher.ResultChan()
 	for {
-		select {
-		case event, ok := <-resultCh:
-			if !ok {
-				return
-			}
-			// Skip handling Bookmark events.
-			if event.Type == watch.Bookmark {
-				continue
-			}
-			np := event.Object.(*controlplane.NetworkPolicy)
-			if !controlplane.IsSourceAntreaNativePolicy(np.SourceRef) {
-				continue
-			}
-			c.queue.Add(np.Name)
+		event, ok := <-resultCh
+		if !ok {
+			return
 		}
+		// Skip handling Bookmark events.
+		if event.Type == watch.Bookmark {
+			continue
+		}
+		np := event.Object.(*controlplane.NetworkPolicy)
+		if !controlplane.IsSourceAntreaNativePolicy(np.SourceRef) {
+			continue
+		}
+		c.queue.Add(np.Name)
 	}
 }
 
@@ -244,7 +247,7 @@ func (c *StatusController) processNextWorkItem() bool {
 	}
 	defer c.queue.Done(key)
 
-	err := c.syncHandler(key.(string))
+	err := c.syncHandler(key)
 	if err == nil {
 		c.queue.Forget(key)
 		return true

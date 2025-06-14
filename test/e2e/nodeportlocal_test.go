@@ -16,6 +16,7 @@ package e2e
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -26,7 +27,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	npltesting "antrea.io/antrea/pkg/agent/nodeportlocal/testing"
@@ -94,7 +94,7 @@ func TestNodePortLocal(t *testing.T) {
 	t.Run("testNPLChangePortRangeAgentRestart", func(t *testing.T) { testNPLChangePortRangeAgentRestart(t, data) })
 }
 
-func getNPLAnnotations(t *testing.T, data *TestData, r *require.Assertions, testPodName string, conditionFn func(types.NPLAnnotation) bool) ([]types.NPLAnnotation, string) {
+func getNPLAnnotations(t *testing.T, data *TestData, r *require.Assertions, testPodName string, conditionFn func([]types.NPLAnnotation) bool) ([]types.NPLAnnotation, string) {
 	var nplAnnotations []types.NPLAnnotation
 	var testPodIP *PodIPs
 
@@ -114,15 +114,7 @@ func getNPLAnnotations(t *testing.T, data *TestData, r *require.Assertions, test
 				return false, nil
 			}
 
-			podIPStrings := sets.New[string](pod.Status.PodIP)
-			for _, podIP := range pod.Status.PodIPs {
-				ipStr := strings.TrimSpace(podIP.IP)
-				if ipStr != "" {
-					podIPStrings.Insert(ipStr)
-				}
-			}
-
-			testPodIP, err = parsePodIPs(podIPStrings)
+			testPodIP, err = parsePodIPs(pod)
 			if err != nil || testPodIP.IPv4 == nil {
 				return false, nil
 			}
@@ -134,12 +126,8 @@ func getNPLAnnotations(t *testing.T, data *TestData, r *require.Assertions, test
 				return false, nil
 			}
 			json.Unmarshal([]byte(nplAnn), &nplAnnotations)
-			if conditionFn != nil {
-				for _, annotation := range nplAnnotations {
-					if !conditionFn(annotation) {
-						return false, nil
-					}
-				}
+			if conditionFn != nil && !conditionFn(nplAnnotations) {
+				return false, nil
 			}
 			return found, nil
 		})
@@ -164,16 +152,14 @@ func checkNPLRules(t *testing.T, data *TestData, r *require.Assertions, nplAnnot
 func checkNPLRulesForPod(t *testing.T, data *TestData, r *require.Assertions, nplAnnotations []types.NPLAnnotation, antreaPod, podIP string, present bool) {
 	var rules []nplRuleData
 	for _, ann := range nplAnnotations {
-		for _, protocol := range ann.Protocols {
-			rule := nplRuleData{
-				nodeIP:   ann.NodeIP,
-				nodePort: ann.NodePort,
-				podIP:    podIP,
-				podPort:  ann.PodPort,
-				protocol: protocol,
-			}
-			rules = append(rules, rule)
+		rule := nplRuleData{
+			nodeIP:   ann.NodeIP,
+			nodePort: ann.NodePort,
+			podIP:    podIP,
+			podPort:  ann.PodPort,
+			protocol: ann.Protocol,
 		}
+		rules = append(rules, rule)
 	}
 	checkForNPLRuleInIPTables(t, data, r, antreaPod, rules, present)
 	checkForNPLListeningSockets(t, data, r, antreaPod, rules, present)
@@ -182,16 +168,14 @@ func checkNPLRulesForPod(t *testing.T, data *TestData, r *require.Assertions, np
 func checkNPLRulesForWindowsPod(t *testing.T, data *TestData, r *require.Assertions, nplAnnotations []types.NPLAnnotation, antreaPod, podIP string, nodeName string, present bool) {
 	var rules []nplRuleData
 	for _, ann := range nplAnnotations {
-		for _, protocol := range ann.Protocols {
-			rule := nplRuleData{
-				nodeIP:   ann.NodeIP,
-				nodePort: ann.NodePort,
-				podIP:    podIP,
-				podPort:  ann.PodPort,
-				protocol: protocol,
-			}
-			rules = append(rules, rule)
+		rule := nplRuleData{
+			nodeIP:   ann.NodeIP,
+			nodePort: ann.NodePort,
+			podIP:    podIP,
+			podPort:  ann.PodPort,
+			protocol: ann.Protocol,
 		}
+		rules = append(rules, rule)
 	}
 	checkForNPLRuleInNetNat(t, data, r, antreaPod, nodeName, rules, present)
 }
@@ -211,7 +195,7 @@ func checkForNPLRuleInIPTables(t *testing.T, data *TestData, r *require.Assertio
 	cmd := []string{"iptables", "-t", "nat", "-S"}
 	t.Logf("Verifying iptables rules %v, present: %v", rules, present)
 	const timeout = 60 * time.Second
-	err := wait.Poll(time.Second, timeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, false, func(ctx context.Context) (bool, error) {
 		stdout, _, err := data.RunCommandFromPod(antreaNamespace, antreaPod, agentContainerName, cmd)
 		if err != nil {
 			t.Logf("Error while checking rules in iptables: %v", err)
@@ -255,7 +239,7 @@ func checkForNPLRuleInNetNat(t *testing.T, data *TestData, r *require.Assertions
 	defaultnodeIP := "0.0.0.0"
 	t.Logf("Verifying NetNat rules %v, present: %v", rules, present)
 	const timeout = 60 * time.Second
-	err := wait.Poll(time.Second, timeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, false, func(ctx context.Context) (bool, error) {
 		_, _, _, err := data.RunCommandOnNode(nodeName, "Get-NetNatStaticMapping")
 		if err != nil {
 			t.Logf("Error while checking NPL rules on Windows Node: %v", err)
@@ -263,12 +247,12 @@ func checkForNPLRuleInNetNat(t *testing.T, data *TestData, r *require.Assertions
 			return false, nil
 		}
 		for _, rule := range rules {
-			cmd := fmt.Sprintf("Get-NetNatStaticMapping -NatName antrea-nat") +
+			cmd := "Get-NetNatStaticMapping -NatName antrea-nat" +
 				fmt.Sprintf("|? ExternalIPAddress -EQ %s", defaultnodeIP) +
 				fmt.Sprintf("|? ExternalPort -EQ %d", rule.nodePort) +
 				fmt.Sprintf("|? Protocol -EQ %s", rule.protocol) +
 				"| Format-Table -HideTableHeaders"
-			cmdpwsh := fmt.Sprintf(`powershell.exe -NoLogo -NoProfile -NonInteractive -Command `) +
+			cmdpwsh := `powershell.exe -NoLogo -NoProfile -NonInteractive -Command ` +
 				fmt.Sprintf(`'$ErrorActionPreference="Stop";try {%s} catch {Write-Host $_;os.Exit(1)}'`, cmd)
 			_, stdout, _, err := data.RunCommandOnNode(nodeName, cmdpwsh)
 			if err != nil {
@@ -298,7 +282,7 @@ func checkForNPLRuleInNetNat(t *testing.T, data *TestData, r *require.Assertions
 func checkForNPLListeningSockets(t *testing.T, data *TestData, r *require.Assertions, antreaPod string, rules []nplRuleData, present bool) {
 	t.Logf("Verifying NPL listening sockets")
 	const timeout = 30 * time.Second
-	err := wait.Poll(time.Second, timeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, false, func(ctx context.Context) (bool, error) {
 		for _, rule := range rules {
 			protocolOption := "--" + rule.protocol
 			cmd := []string{"ss", "--listening", protocolOption, "-H", "-n"}
@@ -345,10 +329,8 @@ func deleteNPLRuleFromNetNat(t *testing.T, data *TestData, r *require.Assertions
 
 func checkTrafficForNPL(data *TestData, r *require.Assertions, nplAnnotations []types.NPLAnnotation, clientName string) {
 	for i := range nplAnnotations {
-		for j := range nplAnnotations[i].Protocols {
-			err := data.runNetcatCommandFromTestPodWithProtocol(clientName, data.testNamespace, "agnhost", nplAnnotations[i].NodeIP, int32(nplAnnotations[i].NodePort), nplAnnotations[i].Protocols[j])
-			r.NoError(err, "Traffic test failed for NodeIP: %s, NodePort: %d, Protocol: %s", nplAnnotations[i].NodeIP, nplAnnotations[i].NodePort, nplAnnotations[i].Protocols[j])
-		}
+		err := data.runNetcatCommandFromTestPodWithProtocol(clientName, data.testNamespace, "agnhost", nplAnnotations[i].NodeIP, int32(nplAnnotations[i].NodePort), nplAnnotations[i].Protocol)
+		r.NoError(err, "Traffic test failed for NodeIP: %s, NodePort: %d, Protocol: %s", nplAnnotations[i].NodeIP, nplAnnotations[i].NodePort, nplAnnotations[i].Protocol)
 	}
 }
 
@@ -500,13 +482,11 @@ func NPLTestPodAddMultiProtocol(t *testing.T, data *TestData) {
 		Add(nil, 8080, "tcp").Add(nil, 8080, "udp")
 
 	// Creating a Pod using agnhost image to support multiple protocols, instead of nginx.
-	cmd := []string{"/bin/bash", "-c"}
-	args := []string{
-		fmt.Sprintf("/agnhost serve-hostname --udp --http=false --port %d & /agnhost serve-hostname --tcp --http=false --port %d", 8080, 8080),
-	}
+
+	args := []string{"serve-hostname", "--tcp", "--udp", "--http=false", "--port=8080"}
 	port := corev1.ContainerPort{ContainerPort: 8080}
 	containerName := fmt.Sprintf("c%v", 8080)
-	err := NewPodBuilder(testPodName, data.testNamespace, agnhostImage).OnNode(serverNode).WithContainerName(containerName).WithCommand(cmd).WithArgs(args).WithPorts([]corev1.ContainerPort{port}).WithLabels(selector).Create(testData)
+	err := NewPodBuilder(testPodName, data.testNamespace, agnhostImage).OnNode(serverNode).WithContainerName(containerName).WithArgs(args).WithPorts([]corev1.ContainerPort{port}).WithLabels(selector).Create(testData)
 	r.NoError(err, "Error creating test Pod: %v", err)
 
 	nplAnnotations, testPodIP := getNPLAnnotations(t, testData, r, testPodName, nil)
@@ -522,14 +502,26 @@ func NPLTestPodAddMultiProtocol(t *testing.T, data *TestData) {
 	r.NoError(err, "Error when getting Antrea Agent Pod on Node '%s'", serverNode)
 
 	checkNPLRules(t, testData, r, nplAnnotations, antreaPod, testPodIP, serverNode, true)
+	expectedAnnotations.Check(t, nplAnnotations)
+	checkTrafficForNPL(testData, r, nplAnnotations, clientName)
 
+	// We now delete one of the Services, and we expect the corresponding NPL rule to be deleted.
+	testData.DeleteService(data.testNamespace, "agnhost2")
+	expectedAnnotations = newExpectedNPLAnnotations(defaultStartPort, defaultEndPort).
+		Add(nil, 8080, "tcp")
+	// Wait until we have only one NPL rule annotation.
+	conditionFn := func(annotations []types.NPLAnnotation) bool {
+		return len(annotations) == 1
+	}
+	nplAnnotations, testPodIP = getNPLAnnotations(t, testData, r, testPodName, conditionFn)
+
+	checkNPLRules(t, testData, r, nplAnnotations, antreaPod, testPodIP, serverNode, true)
 	expectedAnnotations.Check(t, nplAnnotations)
 	checkTrafficForNPL(testData, r, nplAnnotations, clientName)
 
 	testData.DeletePod(data.testNamespace, clientName)
 	testData.DeletePod(data.testNamespace, testPodName)
 	testData.DeleteService(data.testNamespace, "agnhost1")
-	testData.DeleteService(data.testNamespace, "agnhost2")
 	checkNPLRules(t, testData, r, nplAnnotations, antreaPod, testPodIP, serverNode, false)
 }
 
@@ -645,7 +637,7 @@ func testNPLMultiplePodsAgentRestart(t *testing.T, data *TestData) {
 
 // testNPLChangePortRangeAgentRestart tests NodePortLocal functionalities after changing port range.
 // - Create multiple Nginx Pods.
-// - Change nplPortRange.
+// - Change the PortRange.
 // - Restart Antrea Agent Pods.
 // - Verify that updated port range is being used for NPL.
 func testNPLChangePortRangeAgentRestart(t *testing.T, data *TestData) {
@@ -677,15 +669,13 @@ func testNPLChangePortRangeAgentRestart(t *testing.T, data *TestData) {
 	for _, testPodName := range testPods {
 		nplAnnotations, testPodIP := getNPLAnnotations(t, data, r, testPodName, nil)
 		for i := range nplAnnotations {
-			for j := range nplAnnotations[i].Protocols {
-				rule := nplRuleData{
-					nodePort: nplAnnotations[i].NodePort,
-					podIP:    testPodIP,
-					podPort:  nplAnnotations[i].PodPort,
-					protocol: nplAnnotations[i].Protocols[j],
-				}
-				rules = append(rules, rule)
+			rule := nplRuleData{
+				nodePort: nplAnnotations[i].NodePort,
+				podIP:    testPodIP,
+				podPort:  nplAnnotations[i].PodPort,
+				protocol: nplAnnotations[i].Protocol,
 			}
+			rules = append(rules, rule)
 		}
 	}
 	configureNPLForAgent(t, data, updatedStartPort, updatedEndPort)
@@ -704,8 +694,11 @@ func testNPLChangePortRangeAgentRestart(t *testing.T, data *TestData) {
 	}
 
 	for _, testPodName := range testPods {
-		conditionFn := func(ann types.NPLAnnotation) bool {
-			return ann.NodePort >= updatedStartPort
+		conditionFn := func(annotations []types.NPLAnnotation) bool {
+			for idx := range annotations {
+				return annotations[idx].NodePort >= updatedStartPort
+			}
+			return true
 		}
 		nplAnnotations, testPodIP := getNPLAnnotations(t, data, r, testPodName, conditionFn)
 

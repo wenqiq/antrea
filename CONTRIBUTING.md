@@ -174,7 +174,6 @@ Here are the trigger phrases for individual checks:
 * `/test-ipv6-only-e2e`: Linux IPv6 only e2e tests
 * `/test-ipv6-only-conformance`: Linux IPv6 only conformance tests
 * `/test-ipv6-only-networkpolicy`: Linux IPv6 only networkpolicy tests
-* `/test-flexible-ipam-e2e`: Flexible IPAM e2e tests
 * `/test-multicast-e2e`: Multicast e2e tests
 * `/test-multicluster-e2e`: Multicluster e2e tests
 * `/test-vm-e2e`: ExternalNode e2e tests
@@ -183,13 +182,27 @@ Here are the trigger phrases for individual checks:
 * `/test-rancher-e2e`: Linux IPv4 e2e tests on Rancher clusters.
 * `/test-rancher-conformance`: Linux IPv4 conformance tests on Rancher clusters.
 * `/test-rancher-networkpolicy`: Linux IPv4 networkpolicy tests on Rancher clusters.
+* `/test-kind-e2e`: Linux IPv4 e2e tests on Kind cluster.
+* `/test-kind-ipv6-e2e`: Linux dual stack e2e tests on Kind cluster.
+* `/test-kind-ipv6-only-e2e`: Linux IPv6 only e2e tests on Kind cluster.
+* `/test-kind-conformance`: Linux IPv4 conformance tests on Kind cluster.
+* `/test-kind-ipv6-only-conformance`: Linux IPv6 only conformance tests on Kind cluster.
+* `/test-kind-ipv6-conformance`: Linux dual stack conformance tests on Kind cluster.
+* `/test-kind-networkpolicy`: Linux IPv4 networkpolicy tests on Kind cluster.
+* `/test-kind-ipv6-only-networkpolicy`: Linux IPv6 only networkpolicy tests on Kind cluster.
+* `/test-kind-ipv6-networkpolicy`: Linux dual stack networkpolicy tests on Kind cluster.
+* `/test-kind-all-features-conformance`: Linux IPv4 conformance tests with all features enabled on Kind cluster.
+* `/test-kind-whole-conformance`: Linux All conformance tests on Kind cluster.
 
 Here are the trigger phrases for groups of checks:
 
 * `/test-all`: Linux IPv4 tests
+* `/test-kind-all`: Linux IPv4 tests on Kind cluster
 * `/test-windows-all`: Windows IPv4 tests, including e2e tests with proxyAll enabled. It also includes all containerd runtime based Windows tests since 1.10.0.
 * `/test-ipv6-all`: Linux dual stack tests
 * `/test-ipv6-only-all`: Linux IPv6 only tests
+* `/test-kind-ipv6-only-all`: Linux IPv6 only tests on Kind cluster.
+* `/test-kind-ipv6-all`: Linux dual stack tests on Kind cluster.
 
 Besides, you can skip a check with `/skip-*`, e.g. `/skip-e2e`: skip Linux IPv4
 e2e tests.

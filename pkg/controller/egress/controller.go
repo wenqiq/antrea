@@ -44,6 +44,7 @@ import (
 	"antrea.io/antrea/pkg/controller/externalippool"
 	"antrea.io/antrea/pkg/controller/grouping"
 	antreatypes "antrea.io/antrea/pkg/controller/types"
+	"antrea.io/antrea/pkg/util/k8s"
 )
 
 const (
@@ -86,7 +87,7 @@ type EgressController struct {
 	// egressGroupStore is the storage where the EgressGroups are stored.
 	egressGroupStore storage.Interface
 	// queue maintains the EgressGroup objects that need to be synced.
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 	// groupingInterface knows Pods that a given group selects.
 	groupingInterface grouping.Interface
 	// Added as a member to the struct to allow injection for testing.
@@ -100,13 +101,18 @@ func NewEgressController(crdClient clientset.Interface,
 	externalIPAllocator externalippool.ExternalIPAllocator,
 	egressGroupStore storage.Interface) *EgressController {
 	c := &EgressController{
-		crdClient:               crdClient,
-		egressInformer:          egressInformer,
-		egressLister:            egressInformer.Lister(),
-		egressListerSynced:      egressInformer.Informer().HasSynced,
-		egressIndexer:           egressInformer.Informer().GetIndexer(),
-		egressGroupStore:        egressGroupStore,
-		queue:                   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "egress"),
+		crdClient:          crdClient,
+		egressInformer:     egressInformer,
+		egressLister:       egressInformer.Lister(),
+		egressListerSynced: egressInformer.Informer().HasSynced,
+		egressIndexer:      egressInformer.Informer().GetIndexer(),
+		egressGroupStore:   egressGroupStore,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "egress",
+			},
+		),
 		groupingInterface:       groupingInterface,
 		groupingInterfaceSynced: groupingInterface.HasSynced,
 		ipAllocationMap:         map[string]*ipAllocation{},
@@ -202,8 +208,7 @@ func (c *EgressController) processNextEgressGroupWorkItem() bool {
 	}
 	defer c.queue.Done(key)
 
-	err := c.syncEgress(key.(string))
-	if err != nil {
+	if err := c.syncEgress(key); err != nil {
 		// Put the item back on the workqueue to handle any transient errors.
 		c.queue.AddRateLimited(key)
 		klog.ErrorS(err, "Failed to sync EgressGroup", "key", key)
@@ -244,14 +249,23 @@ func (c *EgressController) setIPAllocation(egressName string, ip net.IP, poolNam
 func (c *EgressController) syncEgressIP(egress *egressv1beta1.Egress) (net.IP, *egressv1beta1.Egress, error) {
 	prevIP, prevIPPool, exists := c.getIPAllocation(egress.Name)
 	if exists {
-		// The EgressIP and the ExternalIPPool don't change, do nothing.
-		if prevIP.String() == egress.Spec.EgressIP && prevIPPool == egress.Spec.ExternalIPPool && c.externalIPAllocator.IPPoolExists(egress.Spec.ExternalIPPool) {
-			return prevIP, egress, nil
+		// The EgressIP and the ExternalIPPool haven't changed.
+		if prevIP.String() == egress.Spec.EgressIP && prevIPPool == egress.Spec.ExternalIPPool {
+			// If the EgressIP is still valid for the ExternalIPPool, nothing needs to be done.
+			if c.externalIPAllocator.IPPoolHasIP(prevIPPool, prevIP) {
+				return prevIP, egress, nil
+			}
+			// The ExternalIPPool may no longer exist, or the IP is not in range.
+			// Reclaim the IP from the Egress API.
+			klog.InfoS("Allocated EgressIP is no longer part of ExternalIPPool, releasing it", "egress", klog.KObj(egress), "ip", egress.Spec.EgressIP, "pool", egress.Spec.ExternalIPPool)
+			if updatedEgress, err := c.updateEgressIP(egress, ""); err != nil {
+				return nil, egress, err
+			} else {
+				egress = updatedEgress
+			}
 		}
 		// Either EgressIP or ExternalIPPool changes, release the previous one first.
-		if err := c.releaseEgressIP(egress.Name, prevIP, prevIPPool); err != nil {
-			return nil, egress, err
-		}
+		c.releaseEgressIP(egress.Name, prevIP, prevIPPool)
 	}
 
 	// Skip allocating EgressIP if ExternalIPPool is not specified and return whatever user specifies.
@@ -321,20 +335,23 @@ func (c *EgressController) updateEgressIP(egress *egressv1beta1.Egress, ip strin
 }
 
 // releaseEgressIP removes the Egress's ipAllocation in the cache and releases the IP to the pool.
-func (c *EgressController) releaseEgressIP(egressName string, egressIP net.IP, poolName string) error {
+func (c *EgressController) releaseEgressIP(egressName string, egressIP net.IP, poolName string) {
 	if err := c.externalIPAllocator.ReleaseIP(poolName, egressIP); err != nil {
 		if err == externalippool.ErrExternalIPPoolNotFound {
 			// Ignore the error since the external IP Pool could be deleted.
 			klog.InfoS("Failed to release EgressIP because IP Pool does not exist", "egress", egressName, "ip", egressIP, "pool", poolName)
 		} else {
+			// It is possible for the external IP Pool to have been deleted and
+			// recreated immediately with a different range, which would trigger this
+			// case. Transient errors in ReleaseIP are not possible, so there is no
+			// point in retrying. We should still delete our own state by calling
+			// deleteIPAllocation.
 			klog.ErrorS(err, "Failed to release IP", "ip", egressIP, "pool", poolName)
-			return err
 		}
 	} else {
 		klog.InfoS("Released EgressIP", "egress", egressName, "ip", egressIP, "pool", poolName)
 	}
 	c.deleteIPAllocation(egressName)
-	return nil
 }
 
 func (c *EgressController) syncEgress(key string) error {
@@ -371,9 +388,9 @@ func (c *EgressController) syncEgress(key string) error {
 	egressGroup := egressGroupObj.(*antreatypes.EgressGroup)
 	pods, _ := c.groupingInterface.GetEntities(egressGroupType, key)
 	for _, pod := range pods {
-		// Ignore Pod if it's not scheduled or not running. And Egress does not support HostNetwork Pods, so also ignore
+		// Ignore Pod if it's not scheduled or is already terminated. And Egress does not support HostNetwork Pods, so also ignore
 		// Pod if it's HostNetwork Pod.
-		if pod.Spec.NodeName == "" || pod.Spec.HostNetwork {
+		if pod.Spec.NodeName == "" || pod.Spec.HostNetwork || k8s.IsPodTerminated(pod) {
 			continue
 		}
 		podNum++

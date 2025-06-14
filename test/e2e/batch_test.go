@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // TestBatchCreatePods verifies there is no FD leak after batched Pod creation.
@@ -60,17 +59,15 @@ func TestBatchCreatePods(t *testing.T) {
 
 	oldFDs := getFDs()
 
-	_, _, cleanupFn := createTestBusyboxPods(t, data, batchNum, data.testNamespace, node1)
+	_, _, cleanupFn := createTestToolboxPods(t, data, batchNum, data.testNamespace, node1)
 	defer cleanupFn()
 
 	// It is possible for new FDs to be allocated temporarily by the process, for different
 	// reasons (health probes, CNI invocations, ...). In that case, the new set of FDs can
 	// contain additional entries compared to the old set of FDs. However, eventually, getFDs()
 	// should return a subset of oldFDs.
-	// Most of the time, wait.PollImmediate will return immediately, after the first call to the
-	// condition function.
-	assert.NoError(t, wait.PollImmediate(100*time.Millisecond, 2*time.Second, func() (bool, error) {
+	assert.Eventually(t, func() bool {
 		newFDs := getFDs()
-		return oldFDs.IsSuperset(newFDs), nil
-	}), "Batched Pod creation allocated new FDs")
+		return oldFDs.IsSuperset(newFDs)
+	}, 2*time.Second, 100*time.Millisecond, "Batched Pod creation allocated new FDs")
 }

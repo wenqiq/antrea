@@ -15,13 +15,20 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
+	"antrea.io/antrea/pkg/agent/config"
 	crdv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	"antrea.io/antrea/pkg/features"
 	. "antrea.io/antrea/test/e2e/utils"
@@ -36,29 +43,31 @@ func initializeAntreaNodeNetworkPolicy(t *testing.T, data *TestData, toHostNetwo
 	p8081 = 8081
 	p8082 = 8082
 	p8085 = 8085
-	pods = []string{"a"}
+	podsPerNamespace = []string{"a"}
 	suffix := randName("")
-	namespaces = make(map[string]string)
-	namespaces["x"] = "x-" + suffix
-	namespaces["y"] = "y-" + suffix
+	namespaces = make(map[string]TestNamespaceMeta)
+	for _, ns := range []string{"x", "y", "z"} {
+		namespaces[ns] = TestNamespaceMeta{
+			Name: ns + "-" + suffix,
+		}
+	}
 	nodes = make(map[string]string)
-	nodes["x"] = controlPlaneNodeName()
-	nodes["y"] = workerNodeName(1)
+	nodes["x"] = nodeName(0)
+	nodes["y"] = nodeName(1)
+	nodes["z"] = nodeName(0)
 	hostNetworks := make(map[string]bool)
 	hostNetworks["x"] = true
 	if toHostNetworkPod {
 		hostNetworks["y"] = true
 	} else {
 		hostNetworks["y"] = false
-		namespaces["z"] = "z-" + suffix
-		nodes["z"] = workerNodeName(1)
-		hostNetworks["z"] = false
 	}
+	hostNetworks["z"] = false
 	allPods = []Pod{}
 
-	for _, podName := range pods {
+	for _, podName := range podsPerNamespace {
 		for _, ns := range namespaces {
-			allPods = append(allPods, NewPod(ns, podName))
+			allPods = append(allPods, NewPod(ns.Name, podName))
 		}
 	}
 
@@ -66,7 +75,7 @@ func initializeAntreaNodeNetworkPolicy(t *testing.T, data *TestData, toHostNetwo
 	// k8sUtils is a global var
 	k8sUtils, err = NewKubernetesUtils(data)
 	failOnError(err, t)
-	ips, err := k8sUtils.Bootstrap(namespaces, pods, true, nodes, hostNetworks)
+	ips, err := k8sUtils.Bootstrap(namespaces, podsPerNamespace, true, nodes, hostNetworks)
 	failOnError(err, t)
 	podIPs = ips
 }
@@ -86,6 +95,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
+	skipIfEncapModeIs(t, data, config.TrafficEncapModeNetworkPolicyOnly)
 
 	initializeAntreaNodeNetworkPolicy(t, data, true)
 
@@ -110,6 +120,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	t.Run("Case=ACNPTierOverride", func(t *testing.T) { testNodeACNPTierOverride(t) })
 	t.Run("Case=ACNPCustomTiers", func(t *testing.T) { testNodeACNPCustomTiers(t) })
 	t.Run("Case=ACNPPriorityConflictingRule", func(t *testing.T) { testNodeACNPPriorityConflictingRule(t) })
+	t.Run("Case=ACNPAuditLogging", func(t *testing.T) { testNodeACNPAuditLogging(t, data) })
 
 	k8sUtils.Cleanup(namespaces)
 
@@ -138,26 +149,34 @@ func testNodeACNPAllowNoDefaultIsolation(t *testing.T, protocol AntreaPolicyProt
 	builder1 = builder1.SetName("acnp-allow-x-from-y-ingress").
 		SetPriority(1.1).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder1.AddIngress(protocol, &p81, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionAllow, "", "", nil)
+	builder1.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: protocol,
+			Port:   &p81,
+			Action: crdv1beta1.RuleActionAllow,
+		}})
 
 	builder2 := &ClusterNetworkPolicySpecBuilder{}
 	builder2 = builder2.SetName("acnp-allow-x-to-y-egress").
 		SetPriority(1.1).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder2.AddEgress(protocol, &p81, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionAllow, "", "", nil)
+	builder2.AddEgress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: protocol,
+			Port:   &p81,
+			Action: crdv1beta1.RuleActionAllow,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
 	testStep := []*TestStep{
 		{
-			"Port 81",
-			reachability,
-			[]metav1.Object{builder1.Get(), builder2.Get()},
-			[]int32{81},
-			protocol,
-			0,
-			nil,
+			Name:          "Port 81",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder1.Get(), builder2.Get()},
+			Ports:         []int32{81},
+			Protocol:      protocol,
 		},
 	}
 	testCase := []*TestCase{
@@ -188,20 +207,23 @@ func testNodeACNPDropEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 	builder = builder.SetName("acnp-drop-x-to-y-egress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddEgress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder.AddEgress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: protocol,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Dropped)
+	reachability.Expect(getPod("x", "a"), getPod("y", "a"), Dropped)
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			protocol,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      protocol,
 		},
 	}
 	testCase := []*TestCase{
@@ -224,20 +246,23 @@ func testNodeACNPDropIngress(t *testing.T, protocol AntreaPolicyProtocol) {
 	builder = builder.SetName("acnp-drop-x-from-y-ingress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddIngress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: protocol,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachability.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			protocol,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      protocol,
 		},
 	}
 	testCase := []*TestCase{
@@ -252,20 +277,25 @@ func testNodeACNPPortRange(t *testing.T) {
 	builder = builder.SetName("acnp-drop-x-to-y-egress-port-range").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddEgress(ProtocolTCP, &p8080, nil, &p8082, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "acnp-port-range", nil)
+	builder.AddEgress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc:  ProtocolTCP,
+			Port:    &p8080,
+			EndPort: &p8082,
+			Action:  crdv1beta1.RuleActionDrop,
+			Name:    "acnp-port-range",
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Dropped)
+	reachability.Expect(getPod("x", "a"), getPod("y", "a"), Dropped)
 	testSteps := []*TestStep{
 		{
-			fmt.Sprintf("ACNP Drop Ports 8080:8082"),
-			reachability,
-			[]metav1.Object{builder.Get()},
-			[]int32{8080, 8081, 8082},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "ACNP Drop Ports 8080:8082",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{8080, 8081, 8082},
+			Protocol:      ProtocolTCP,
 		},
 	}
 
@@ -280,61 +310,79 @@ func testNodeACNPPortRange(t *testing.T) {
 // This test retrieves the port range from the client Pod and uses it in sourcePort and sourceEndPort of an ACNP rule to
 // verify that packets can be matched by source port.
 func testNodeACNPSourcePort(t *testing.T) {
-	portStart, portEnd, err := k8sUtils.getTCPv4SourcePortRangeFromPod(namespaces["x"], "a")
+	portStart, portEnd, err := k8sUtils.getTCPv4SourcePortRangeFromPod(getNS("x"), "a")
 	failOnError(err, t)
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-source-port").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddIngressForSrcPort(ProtocolTCP, nil, nil, &portStart, &portEnd, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc:     ProtocolTCP,
+			SrcPort:    &portStart,
+			SrcEndPort: &portEnd,
+			SelfNS:     false,
+			Action:     crdv1beta1.RuleActionDrop,
+		}})
 
 	builder2 := &ClusterNetworkPolicySpecBuilder{}
 	builder2 = builder2.SetName("acnp-source-port").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder2.AddIngressForSrcPort(ProtocolTCP, &p80, nil, &portStart, &portEnd, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder2.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc:     ProtocolTCP,
+			Port:       &p80,
+			SrcPort:    &portStart,
+			SrcEndPort: &portEnd,
+			SelfNS:     false,
+			Action:     crdv1beta1.RuleActionDrop,
+		}})
 
 	builder3 := &ClusterNetworkPolicySpecBuilder{}
 	builder3 = builder3.SetName("acnp-source-port").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder3.AddIngressForSrcPort(ProtocolTCP, &p80, &p81, &portStart, &portEnd, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder3.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc:     ProtocolTCP,
+			Port:       &p80,
+			EndPort:    &p81,
+			SrcPort:    &portStart,
+			SrcEndPort: &portEnd,
+			SelfNS:     false,
+			Action:     crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachability.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 	// After adding the dst port constraint of port 80, traffic on port 81 should not be affected.
 	updatedReachability := NewReachability(allPods, Connected)
 
 	testSteps := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 		{
-			"Port 81",
-			updatedReachability,
-			[]metav1.Object{builder2.Get()},
-			[]int32{81},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port 81",
+			Reachability:  updatedReachability,
+			TestResources: []metav1.Object{builder2.Get()},
+			Ports:         []int32{81},
+			Protocol:      ProtocolTCP,
 		},
 		{
-			"Port range 80-81",
-			reachability,
-			[]metav1.Object{builder3.Get()},
-			[]int32{80, 81},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port range 80-81",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder3.Get()},
+			Ports:         []int32{80, 81},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -366,8 +414,13 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 	builder = builder.SetName("acnp-reject-x-to-y-egress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddEgress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionReject, "", "", nil)
+	builder.AddEgress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: protocol,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionReject,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
 
@@ -376,16 +429,14 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 	if protocol == ProtocolSCTP {
 		expectedResult = Dropped
 	}
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), expectedResult)
+	reachability.Expect(getPod("x", "a"), getPod("y", "a"), expectedResult)
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			protocol,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      protocol,
 		},
 	}
 	testCase := []*TestCase{
@@ -400,20 +451,23 @@ func testNodeACNPRejectIngress(t *testing.T, protocol AntreaPolicyProtocol) {
 	builder = builder.SetName("acnp-reject-x-from-y-ingress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddIngress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionReject, "", "", nil)
+	builder.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: protocol,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionReject,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Rejected)
+	reachability.Expect(getPod("y", "a"), getPod("x", "a"), Rejected)
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			protocol,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      protocol,
 		},
 	}
 	testCase := []*TestCase{
@@ -428,32 +482,33 @@ func testNodeACNPNoEffectOnOtherProtocols(t *testing.T) {
 	builder = builder.SetName("acnp-drop-x-from-y-ingress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability1 := NewReachability(allPods, Connected)
-	reachability1.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachability1.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 
 	reachability2 := NewReachability(allPods, Connected)
 
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability1,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability1,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 		{
-			"Port 80",
-			reachability2,
-			[]metav1.Object{builder.Get()},
-			[]int32{80},
-			ProtocolUDP,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability2,
+			TestResources: []metav1.Object{builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolUDP,
 		},
 	}
 	testCase := []*TestCase{
@@ -470,51 +525,62 @@ func testNodeACNPPriorityOverride(t *testing.T) {
 		SetPriority(1.001).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// Highest priority. Drops traffic from y to x.
-	builder1.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder1.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	builder2 := &ClusterNetworkPolicySpecBuilder{}
 	builder2 = builder2.SetName("acnp-priority2").
 		SetPriority(1.002).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// Medium priority. Allows traffic from y to x.
-	builder2.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionAllow, "", "", nil)
+	builder2.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionAllow,
+		}})
 
 	builder3 := &ClusterNetworkPolicySpecBuilder{}
 	builder3 = builder3.SetName("acnp-priority3").
 		SetPriority(1.003).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// Lowest priority. Drops traffic from y to x.
-	builder3.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder3.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachabilityTwoACNPs := NewReachability(allPods, Connected)
 
 	reachabilityAllACNPs := NewReachability(allPods, Connected)
-	reachabilityAllACNPs.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachabilityAllACNPs.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 
 	testStepTwoACNP := []*TestStep{
 		{
-			"Two Policies with different priorities",
-			reachabilityTwoACNPs,
-			[]metav1.Object{builder3.Get(), builder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Two Policies with different priorities",
+			Reachability:  reachabilityTwoACNPs,
+			TestResources: []metav1.Object{builder3.Get(), builder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	// Create the Policies in specific order to make sure that priority re-assignments work as expected.
 	testStepAll := []*TestStep{
 		{
-			"All three Policies",
-			reachabilityAllACNPs,
-			[]metav1.Object{builder3.Get(), builder1.Get(), builder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "All three Policies",
+			Reachability:  reachabilityAllACNPs,
+			TestResources: []metav1.Object{builder3.Get(), builder1.Get(), builder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -533,52 +599,63 @@ func testNodeACNPTierOverride(t *testing.T) {
 		SetPriority(100).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// Highest priority tier. Drops traffic from y to x.
-	builder1.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder1.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	builder2 := &ClusterNetworkPolicySpecBuilder{}
 	builder2 = builder2.SetName("acnp-tier-securityops").
 		SetTier("securityops").
 		SetPriority(10).
-		SetAppliedToGroup([]ACNPAppliedToSpec{{PodSelector: map[string]string{"pod": "a"}, NSSelector: map[string]string{"ns": namespaces["x"]}}})
+		SetAppliedToGroup([]ACNPAppliedToSpec{{PodSelector: map[string]string{"pod": "a"}, NSSelector: map[string]string{"ns": getNS("x")}}})
 	// Medium priority tier. Allows traffic from y to x.
-	builder2.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionAllow, "", "", nil)
+	builder2.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionAllow,
+		}})
 
 	builder3 := &ClusterNetworkPolicySpecBuilder{}
 	builder3 = builder3.SetName("acnp-tier-application").
 		SetTier("application").
 		SetPriority(1).
-		SetAppliedToGroup([]ACNPAppliedToSpec{{NSSelector: map[string]string{"ns": namespaces["x"]}}})
+		SetAppliedToGroup([]ACNPAppliedToSpec{{NSSelector: map[string]string{"ns": getNS("x")}}})
 	// Lowest priority tier. Drops traffic from y to x.
-	builder3.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder3.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachabilityTwoACNPs := NewReachability(allPods, Connected)
 
 	reachabilityAllACNPs := NewReachability(allPods, Connected)
-	reachabilityAllACNPs.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachabilityAllACNPs.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 
 	testStepTwoACNP := []*TestStep{
 		{
-			"Two Policies in different tiers",
-			reachabilityTwoACNPs,
-			[]metav1.Object{builder3.Get(), builder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Two Policies in different tiers",
+			Reachability:  reachabilityTwoACNPs,
+			TestResources: []metav1.Object{builder3.Get(), builder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testStepAll := []*TestStep{
 		{
-			"All three Policies in different tiers",
-			reachabilityAllACNPs,
-			[]metav1.Object{builder3.Get(), builder1.Get(), builder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "All three Policies in different tiers",
+			Reachability:  reachabilityAllACNPs,
+			TestResources: []metav1.Object{builder3.Get(), builder1.Get(), builder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -594,9 +671,9 @@ func testNodeACNPCustomTiers(t *testing.T) {
 	k8sUtils.DeleteTier("high-priority")
 	k8sUtils.DeleteTier("low-priority")
 	// Create two custom tiers with tier priority immediately next to each other.
-	_, err := k8sUtils.CreateNewTier("high-priority", 245)
+	_, err := k8sUtils.CreateTier("high-priority", 245)
 	failOnError(err, t)
-	_, err = k8sUtils.CreateNewTier("low-priority", 246)
+	_, err = k8sUtils.CreateTier("low-priority", 246)
 	failOnError(err, t)
 
 	builder1 := &ClusterNetworkPolicySpecBuilder{}
@@ -605,8 +682,13 @@ func testNodeACNPCustomTiers(t *testing.T) {
 		SetPriority(100).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// Medium priority tier. Allows traffic from y to x.
-	builder1.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionAllow, "", "", nil)
+	builder1.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionAllow,
+		}})
 
 	builder2 := &ClusterNetworkPolicySpecBuilder{}
 	builder2 = builder2.SetName("acnp-tier-low").
@@ -614,33 +696,34 @@ func testNodeACNPCustomTiers(t *testing.T) {
 		SetPriority(1).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// Lowest priority tier. Drops traffic from y to x.
-	builder2.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder2.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachabilityOneACNP := NewReachability(allPods, Connected)
-	reachabilityOneACNP.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachabilityOneACNP.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 	testStepOneACNP := []*TestStep{
 		{
-			"One Policy",
-			reachabilityOneACNP,
-			[]metav1.Object{builder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "One Policy",
+			Reachability:  reachabilityOneACNP,
+			TestResources: []metav1.Object{builder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 
 	reachabilityTwoACNPs := NewReachability(allPods, Connected)
 	testStepTwoACNP := []*TestStep{
 		{
-			"Two Policies in different tiers",
-			reachabilityTwoACNPs,
-			[]metav1.Object{builder2.Get(), builder1.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Two Policies in different tiers",
+			Reachability:  reachabilityTwoACNPs,
+			TestResources: []metav1.Object{builder2.Get(), builder1.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -662,8 +745,13 @@ func testNodeACNPPriorityConflictingRule(t *testing.T) {
 	builder1 = builder1.SetName("acnp-drop").
 		SetPriority(1).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder1.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder1.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	builder2 := &ClusterNetworkPolicySpecBuilder{}
 	builder2 = builder2.SetName("acnp-allow").
@@ -671,20 +759,23 @@ func testNodeACNPPriorityConflictingRule(t *testing.T) {
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
 	// The following ingress rule will take no effect as it is exactly the same as ingress rule of cnp-drop,
 	// but cnp-allow has lower priority.
-	builder2.AddIngress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionAllow, "", "", nil)
+	builder2.AddIngress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionAllow,
+		}})
 
 	reachabilityBothACNP := NewReachability(allPods, Connected)
-	reachabilityBothACNP.Expect(Pod(namespaces["y"]+"/a"), Pod(namespaces["x"]+"/a"), Dropped)
+	reachabilityBothACNP.Expect(getPod("y", "a"), getPod("x", "a"), Dropped)
 	testStep := []*TestStep{
 		{
-			"Both ACNP",
-			reachabilityBothACNP,
-			[]metav1.Object{builder1.Get(), builder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Both ACNP",
+			Reachability:  reachabilityBothACNP,
+			TestResources: []metav1.Object{builder1.Get(), builder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -699,19 +790,21 @@ func testNodeACNPNamespaceIsolation(t *testing.T) {
 		SetTier("baseline").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder1.AddEgress(ProtocolTCP, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{"ns": namespaces["y"]}, nil, nil, nil,
-		false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder1.AddEgress(ACNPRuleBuilder{
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc:     ProtocolTCP,
+			NSSelector: map[string]string{"ns": getNS("y")},
+			Action:     crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability1 := NewReachability(allPods, Connected)
-	reachability1.ExpectEgressToNamespace(Pod(namespaces["x"]+"/a"), namespaces["y"], Dropped)
+	reachability1.ExpectEgressToNamespace(getPod("x", "a"), getNS("y"), Dropped)
 	testStep1 := &TestStep{
-		"Port 80",
-		reachability1,
-		[]metav1.Object{builder1.Get()},
-		[]int32{80},
-		ProtocolTCP,
-		0,
-		nil,
+		Name:          "Port 80",
+		Reachability:  reachability1,
+		TestResources: []metav1.Object{builder1.Get()},
+		Ports:         []int32{80},
+		Protocol:      ProtocolTCP,
 	}
 
 	testCase := []*TestCase{
@@ -723,40 +816,41 @@ func testNodeACNPNamespaceIsolation(t *testing.T) {
 func testNodeACNPClusterGroupUpdate(t *testing.T) {
 	cgName := "cg-ns-z-then-y"
 	cgBuilder := &ClusterGroupSpecBuilder{}
-	cgBuilder = cgBuilder.SetName(cgName).SetNamespaceSelector(map[string]string{"ns": namespaces["z"]}, nil)
+	cgBuilder = cgBuilder.SetName(cgName).SetNamespaceSelector(map[string]string{"ns": getNS("z")}, nil)
 	// Update CG NS selector to group Pods from Namespace Y
 	updatedCgBuilder := &ClusterGroupSpecBuilder{}
-	updatedCgBuilder = updatedCgBuilder.SetName(cgName).SetNamespaceSelector(map[string]string{"ns": namespaces["y"]}, nil)
+	updatedCgBuilder = updatedCgBuilder.SetName(cgName).SetNamespaceSelector(map[string]string{"ns": getNS("y")}, nil)
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-deny-a-to-cg-with-z-egress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddEgress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, cgName, "", nil)
+	builder.AddEgress(ACNPRuleBuilder{
+		RuleClusterGroup: cgName,
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.ExpectEgressToNamespace(Pod(namespaces["x"]+"/a"), namespaces["z"], Dropped)
+	reachability.ExpectEgressToNamespace(getPod("x", "a"), getNS("z"), Dropped)
 
 	updatedReachability := NewReachability(allPods, Connected)
-	updatedReachability.ExpectEgressToNamespace(Pod(namespaces["x"]+"/a"), namespaces["y"], Dropped)
+	updatedReachability.ExpectEgressToNamespace(getPod("x", "a"), getNS("y"), Dropped)
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{cgBuilder.Get(), builder.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{cgBuilder.Get(), builder.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 		{
-			"Port 80 - update",
-			updatedReachability,
-			[]metav1.Object{updatedCgBuilder.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port 80 - update",
+			Reachability:  updatedReachability,
+			TestResources: []metav1.Object{updatedCgBuilder.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -766,8 +860,8 @@ func testNodeACNPClusterGroupUpdate(t *testing.T) {
 }
 
 func testNodeACNPClusterGroupRefRuleIPBlocks(t *testing.T) {
-	podYAIP, _ := podIPs[namespaces["y"]+"/a"]
-	podZAIP, _ := podIPs[namespaces["z"]+"/a"]
+	podYAIP := podIPs[getNS("y")+"/a"]
+	podZAIP := podIPs[getNS("z")+"/a"]
 	// There are three situations of a Pod's IP(s):
 	// 1. Only one IPv4 address.
 	// 2. Only one IPv6 address.
@@ -798,23 +892,31 @@ func testNodeACNPClusterGroupRefRuleIPBlocks(t *testing.T) {
 	builder = builder.SetName("acnp-deny-x-to-yz-egress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddEgress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, cgName, "", nil)
-	builder.AddEgress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, cgName2, "", nil)
+	builder.AddEgress(ACNPRuleBuilder{
+		RuleClusterGroup: cgName,
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
+	builder.AddEgress(ACNPRuleBuilder{
+		RuleClusterGroup: cgName2,
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Dropped)
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["z"]+"/a"), Dropped)
+	reachability.Expect(getPod("x", "a"), getPod("y", "a"), Dropped)
+	reachability.Expect(getPod("x", "a"), getPod("z", "a"), Dropped)
 	testStep := []*TestStep{
 		{
-			"Port 80",
-			reachability,
-			[]metav1.Object{builder.Get(), cgBuilder.Get(), cgBuilder2.Get()},
-			[]int32{80},
-			ProtocolTCP,
-			0,
-			nil,
+			Name:          "Port 80",
+			Reachability:  reachability,
+			TestResources: []metav1.Object{builder.Get(), cgBuilder.Get(), cgBuilder2.Get()},
+			Ports:         []int32{80},
+			Protocol:      ProtocolTCP,
 		},
 	}
 	testCase := []*TestCase{
@@ -826,7 +928,7 @@ func testNodeACNPClusterGroupRefRuleIPBlocks(t *testing.T) {
 func testNodeACNPNestedClusterGroupCreateAndUpdate(t *testing.T, data *TestData) {
 	cg1Name := "cg-1"
 	cgBuilder1 := &ClusterGroupSpecBuilder{}
-	cgBuilder1 = cgBuilder1.SetName(cg1Name).SetNamespaceSelector(map[string]string{"ns": namespaces["y"]}, nil)
+	cgBuilder1 = cgBuilder1.SetName(cg1Name).SetNamespaceSelector(map[string]string{"ns": getNS("y")}, nil)
 	cgNestedName := "cg-nested"
 	cgBuilderNested := &ClusterGroupSpecBuilder{}
 	cgBuilderNested = cgBuilderNested.SetName(cgNestedName).SetChildGroups([]string{cg1Name})
@@ -834,36 +936,37 @@ func testNodeACNPNestedClusterGroupCreateAndUpdate(t *testing.T, data *TestData)
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("cnp-nested-cg").SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}}).
-		AddEgress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-			false, nil, crdv1beta1.RuleActionDrop, cgNestedName, "", nil)
+		AddEgress(ACNPRuleBuilder{
+			RuleClusterGroup: cgNestedName,
+			BaseRuleBuilder: BaseRuleBuilder{
+				Protoc: ProtocolTCP,
+				Port:   &p80,
+				Action: crdv1beta1.RuleActionDrop,
+			}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.ExpectEgressToNamespace(Pod(namespaces["x"]+"/a"), namespaces["y"], Dropped)
+	reachability.ExpectEgressToNamespace(getPod("x", "a"), getNS("y"), Dropped)
 	testStep1 := &TestStep{
-		"Port 80",
-		reachability,
+		Name:         "Port 80",
+		Reachability: reachability,
 		// Note in this testcase the ClusterGroup is created after the ACNP
-		[]metav1.Object{builder.Get(), cgBuilder1.Get(), cgBuilderNested.Get()},
-		[]int32{80},
-		ProtocolTCP,
-		0,
-		nil,
+		TestResources: []metav1.Object{builder.Get(), cgBuilder1.Get(), cgBuilderNested.Get()},
+		Ports:         []int32{80},
+		Protocol:      ProtocolTCP,
 	}
 
 	cg2Name := "cg-2"
 	cgBuilder2 := &ClusterGroupSpecBuilder{}
-	cgBuilder2 = cgBuilder2.SetName(cg2Name).SetNamespaceSelector(map[string]string{"ns": namespaces["z"]}, nil)
+	cgBuilder2 = cgBuilder2.SetName(cg2Name).SetNamespaceSelector(map[string]string{"ns": getNS("z")}, nil)
 	cgBuilderNested = cgBuilderNested.SetChildGroups([]string{cg2Name})
 	reachability2 := NewReachability(allPods, Connected)
-	reachability2.ExpectEgressToNamespace(Pod(namespaces["x"]+"/a"), namespaces["z"], Dropped)
+	reachability2.ExpectEgressToNamespace(getPod("x", "a"), getNS("z"), Dropped)
 	testStep2 := &TestStep{
-		"Port 80 updated",
-		reachability2,
-		[]metav1.Object{cgBuilder2.Get(), cgBuilderNested.Get()},
-		[]int32{80},
-		ProtocolTCP,
-		0,
-		nil,
+		Name:          "Port 80 updated",
+		Reachability:  reachability2,
+		TestResources: []metav1.Object{cgBuilder2.Get(), cgBuilderNested.Get()},
+		Ports:         []int32{80},
+		Protocol:      ProtocolTCP,
 	}
 
 	testSteps := []*TestStep{testStep1, testStep2}
@@ -874,8 +977,8 @@ func testNodeACNPNestedClusterGroupCreateAndUpdate(t *testing.T, data *TestData)
 }
 
 func testNodeACNPNestedIPBlockClusterGroupCreateAndUpdate(t *testing.T) {
-	podYAIP, _ := podIPs[namespaces["y"]+"/a"]
-	podZAIP, _ := podIPs[namespaces["z"]+"/a"]
+	podYAIP := podIPs[getPodName("y", "a")]
+	podZAIP := podIPs[getPodName("z", "a")]
 	genCIDR := func(ip string) string {
 		switch IPFamily(ip) {
 		case "v4":
@@ -904,38 +1007,143 @@ func testNodeACNPNestedIPBlockClusterGroupCreateAndUpdate(t *testing.T) {
 	builder = builder.SetName("acnp-deny-x-to-yz-egress").
 		SetPriority(1.0).
 		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
-	builder.AddEgress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, cgParentName, "", nil)
+	builder.AddEgress(ACNPRuleBuilder{
+		RuleClusterGroup: cgParentName,
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Dropped)
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["z"]+"/a"), Dropped)
+	reachability.Expect(getPod("x", "a"), getPod("y", "a"), Dropped)
+	reachability.Expect(getPod("x", "a"), getPod("z", "a"), Dropped)
 	testStep := &TestStep{
-		"Port 80",
-		reachability,
-		[]metav1.Object{builder.Get(), cgBuilder1.Get(), cgBuilder2.Get(), cgParent.Get()},
-		[]int32{80},
-		ProtocolTCP,
-		0,
-		nil,
+		Name:          "Port 80",
+		Reachability:  reachability,
+		TestResources: []metav1.Object{builder.Get(), cgBuilder1.Get(), cgBuilder2.Get(), cgParent.Get()},
+		Ports:         []int32{80},
+		Protocol:      ProtocolTCP,
 	}
 
 	cgParent = cgParent.SetChildGroups([]string{cg1Name})
 
 	reachability2 := NewReachability(allPods, Connected)
-	reachability2.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Dropped)
+	reachability2.Expect(getPod("x", "a"), getPod("y", "a"), Dropped)
 	testStep2 := &TestStep{
-		"Port 80, updated",
-		reachability2,
-		[]metav1.Object{cgParent.Get()},
-		[]int32{80},
-		ProtocolTCP,
-		0,
-		nil,
+		Name:          "Port 80, updated",
+		Reachability:  reachability2,
+		TestResources: []metav1.Object{cgParent.Get()},
+		Ports:         []int32{80},
+		Protocol:      ProtocolTCP,
 	}
 
 	testCase := []*TestCase{
 		{"ACNP Drop Ingress From Node x to Pod y/a and z/a with nested ClusterGroup with ipBlocks", []*TestStep{testStep, testStep2}},
 	}
 	executeTests(t, testCase)
+}
+
+func testNodeACNPAuditLogging(t *testing.T, data *TestData) {
+	// In a Kind cluster, each Kubernetes Node runs as a Docker container. The iptables LOG target doesn't generate
+	// kernel logs inside containers unless /proc/sys/net/netfilter/nf_log_all_netns is set to 1. However, this setting
+	// cannot be modified in GitHub Actions.
+	skipIfProviderIs(t, "kind", "The iptables LOG action doesn't generate log in container")
+
+	randomLogLabel := randSeq(12) // Generate a random logLabel with 12 characters long.
+	toBeTruncated := "thisPartShouldBeTruncated"
+	logLabel := randomLogLabel + toBeTruncated // Append the suffix to the logLabel.
+	builder := &ClusterNetworkPolicySpecBuilder{}
+	builder = builder.SetName("acnp-drop-x-to-y-egress").
+		SetPriority(1.0).
+		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
+	builder.AddEgress(ACNPRuleBuilder{
+		NodeSelector: map[string]string{labelNodeHostname: nodes["y"]},
+		BaseRuleBuilder: BaseRuleBuilder{
+			Protoc: ProtocolTCP,
+			Port:   &p80,
+			Action: crdv1beta1.RuleActionDrop,
+		}})
+	builder.AddEgressLogging(logLabel)
+
+	acnp, err := k8sUtils.CreateOrUpdateACNP(builder.Get())
+	require.NoError(t, err)
+	require.NoError(t, data.waitForACNPRealized(t, acnp.Name, policyRealizedTimeout))
+
+	antreaPodName, err := data.getAntreaPodOnNode(nodes["x"])
+	require.NoError(t, err)
+
+	expectedLogPrefix := fmt.Sprintf("Antrea:O:Drop:%s:", randomLogLabel)
+
+	// Before generating some traffic, there should be no corresponding kernel log on hostNetwork Pod x/a, and the kernel
+	// logs should not contain the generated random logLabel.
+	stdout, stderr, err := data.RunCommandFromPod(antreaNamespace, antreaPodName, agentContainerName, []string{"sh", "-c", "dmesg | tail -n 200"})
+	if err != nil || stderr != "" {
+		t.Fatalf("Got error: %v, %v", err, stderr)
+	}
+	require.NotContains(t, stdout, expectedLogPrefix)
+
+	// Generate some traffic that will be dropped by acnp-drop-x-to-y-egress. In this test, the target IP is the Antrea
+	// gateway IP of Node y.
+	_, err = k8sUtils.Probe(getNS("x"), "a", getNS("y"), "a", p80, ProtocolTCP, nil, nil)
+	require.NoError(t, err)
+
+	ipv4Enabled, ipv6Enabled := isIPv4Enabled(), isIPv6Enabled()
+
+	getNodeIPs := func(nodeName string) (string, string) {
+		nodeInfo := getNodeByName(nodeName)
+		require.NotNil(t, nodeInfo)
+		ip4, ip6 := nodeGatewayIPs(nodeInfo.idx)
+		if ipv4Enabled {
+			require.NotEmpty(t, ip4)
+		}
+		if ipv6Enabled {
+			require.NotEmpty(t, ip6)
+			ip6 = expandIPv6(ip6)
+		}
+		return ip4, ip6
+	}
+	srcIP4, srcIP6 := getNodeIPs(nodes["x"])
+	dstIP4, dstIP6 := getNodeIPs(nodes["y"])
+
+	// Add (?s) to match \n.
+	re4 := regexp.MustCompile(fmt.Sprintf(`(?s)%s.*SRC=%s DST=%s`, expectedLogPrefix, srcIP4, dstIP4))
+	re6 := regexp.MustCompile(fmt.Sprintf(`(?s)%s.*SRC=%s DST=%s`, expectedLogPrefix, srcIP6, dstIP6))
+
+	// TODO: Replace wait.PollUntilContextTimeout with assert.EventuallyWithT after the fix for
+	//  https://github.com/stretchr/testify/issues/1396 is included in the latest release.
+	assert.NoError(t, wait.PollUntilContextTimeout(context.Background(), time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		// After generating some traffic, there should be corresponding kernel logs on hostNetwork Pod x/a, and the kernel
+		// logs should contain the generated random logLabel and not contain the part that should be truncated.
+		stdout, stderr, err = data.RunCommandFromPod(antreaNamespace, antreaPodName, agentContainerName, []string{"sh", "-c", "dmesg | tail -n 200"})
+		require.NoError(t, err)
+		require.Empty(t, stderr)
+
+		if ipv4Enabled {
+			assert.Regexp(t, re4, stdout, "Expected IPv4 log entry not found")
+			assert.NotContains(t, stdout, toBeTruncated)
+		}
+		if ipv6Enabled {
+			assert.Regexp(t, re6, stdout, "Expected IPv6 log entry not found")
+			assert.NotContains(t, stdout, toBeTruncated)
+		}
+		return true, nil
+	}))
+}
+
+func expandIPv6(ipv6 string) string {
+	// Parse the IPv6 address
+	parsedIP := net.ParseIP(ipv6)
+
+	// Get the IPv6 portion from the parsed IP (the last 16 bytes)
+	ipv6Bytes := parsedIP.To16()
+
+	// Format each 2-byte segment as a four-digit hex value
+	var segments []string
+	for i := 0; i < len(ipv6Bytes); i += 2 {
+		segments = append(segments, fmt.Sprintf("%04x", int(ipv6Bytes[i])<<8|int(ipv6Bytes[i+1])))
+	}
+
+	// Join the segments with ":" to form the expanded address
+	return strings.Join(segments, ":")
 }

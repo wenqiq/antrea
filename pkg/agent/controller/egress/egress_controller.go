@@ -41,9 +41,10 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent"
+	"antrea.io/antrea/pkg/agent/client"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/ipassigner"
+	"antrea.io/antrea/pkg/agent/ipassigner/linkmonitor"
 	"antrea.io/antrea/pkg/agent/memberlist"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/route"
@@ -155,12 +156,12 @@ type EgressController struct {
 	routeClient          route.Interface
 	k8sClient            kubernetes.Interface
 	crdClient            clientsetversioned.Interface
-	antreaClientProvider agent.AntreaClientProvider
+	antreaClientProvider client.AntreaClientProvider
 
 	egressInformer     cache.SharedIndexInformer
 	egressLister       crdlisters.EgressLister
 	egressListerSynced cache.InformerSynced
-	queue              workqueue.RateLimitingInterface
+	queue              workqueue.TypedRateLimitingInterface[string]
 
 	externalIPPoolLister       crdlisters.ExternalIPPoolLister
 	externalIPPoolListerSynced cache.InformerSynced
@@ -205,12 +206,14 @@ type EgressController struct {
 	tableAllocator *idAllocator
 	// Each subnet has its own route table.
 	egressRouteTables map[crdv1b1.SubnetInfo]*egressRouteTable
+
+	linkMonitor linkmonitor.Interface
 }
 
 func NewEgressController(
 	ofClient openflow.Client,
 	k8sClient kubernetes.Interface,
-	antreaClientGetter agent.AntreaClientProvider,
+	antreaClientGetter client.AntreaClientProvider,
 	crdClient clientsetversioned.Interface,
 	ifaceStore interfacestore.InterfaceStore,
 	routeClient route.Interface,
@@ -225,6 +228,7 @@ func NewEgressController(
 	maxEgressIPsPerNode int,
 	trafficShapingEnabled bool,
 	supportSeparateSubnet bool,
+	linkMonitor linkmonitor.Interface,
 ) (*EgressController, error) {
 	if trafficShapingEnabled && !openflow.OVSMetersAreSupported() {
 		klog.Info("EgressTrafficShaping feature gate is enabled, but it is ignored because OVS meters are not supported.")
@@ -242,7 +246,12 @@ func NewEgressController(
 		k8sClient:            k8sClient,
 		antreaClientProvider: antreaClientGetter,
 		crdClient:            crdClient,
-		queue:                workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "egressgroup"),
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "egressgroup",
+			},
+		),
 		egressInformer:       egressInformer.Informer(),
 		egressLister:         egressInformer.Lister(),
 		egressListerSynced:   egressInformer.Informer().HasSynced,
@@ -268,6 +277,7 @@ func NewEgressController(
 		externalIPPoolLister:       externalIPPoolInformer.Lister(),
 		externalIPPoolListerSynced: externalIPPoolInformer.Informer().HasSynced,
 		supportSeparateSubnet:      supportSeparateSubnet,
+		linkMonitor:                linkMonitor,
 	}
 	if supportSeparateSubnet {
 		c.egressRouteTables = map[crdv1b1.SubnetInfo]*egressRouteTable{}
@@ -280,7 +290,7 @@ func NewEgressController(
 			resyncPeriod,
 		)
 	}
-	ipAssigner, err := newIPAssigner(nodeTransportInterface, egressDummyDevice)
+	ipAssigner, err := newIPAssigner(nodeTransportInterface, egressDummyDevice, linkMonitor)
 	if err != nil {
 		return nil, fmt.Errorf("initializing egressIP assigner failed: %v", err)
 	}
@@ -500,7 +510,7 @@ func (c *EgressController) Run(stopCh <-chan struct{}) {
 	go c.localIPDetector.Run(stopCh)
 	go c.egressIPScheduler.Run(stopCh)
 	go c.ipAssigner.Run(stopCh)
-	if !cache.WaitForNamedCacheSync(controllerName, stopCh, c.egressListerSynced, c.externalIPPoolListerSynced, c.localIPDetector.HasSynced, c.egressIPScheduler.HasScheduled) {
+	if !cache.WaitForNamedCacheSync(controllerName, stopCh, c.egressListerSynced, c.externalIPPoolListerSynced, c.localIPDetector.HasSynced, c.egressIPScheduler.HasScheduled, c.linkMonitor.HasSynced) {
 		return
 	}
 
@@ -554,21 +564,13 @@ func (c *EgressController) worker() {
 }
 
 func (c *EgressController) processNextWorkItem() bool {
-	obj, quit := c.queue.Get()
+	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
-	defer c.queue.Done(obj)
+	defer c.queue.Done(key)
 
-	// We expect strings (Egress name) to come off the workqueue.
-	if key, ok := obj.(string); !ok {
-		// As the item in the workqueue is actually invalid, we call Forget here else we'd
-		// go into a loop of attempting to process a work item that is invalid.
-		// This should not happen.
-		c.queue.Forget(obj)
-		klog.Errorf("Expected string in work queue but got %#v", obj)
-		return true
-	} else if err := c.syncEgress(key); err == nil {
+	if err := c.syncEgress(key); err == nil {
 		// If no error occurs we Forget this item so it does not get queued again until
 		// another change happens.
 		c.queue.Forget(key)
@@ -1002,7 +1004,7 @@ func (c *EgressController) syncEgress(egressName string) error {
 			if !exist {
 				return nil
 			}
-			if err := c.uninstallEgress(egressName, eState); err != nil {
+			if err := c.uninstallEgress(egressName, eState, egress); err != nil {
 				return err
 			}
 			return nil
@@ -1030,7 +1032,7 @@ func (c *EgressController) syncEgress(egressName string) error {
 	eState, exist := c.getEgressState(egressName)
 	// If the EgressIP changes, uninstalls this Egress first.
 	if exist && eState.egressIP != desiredEgressIP {
-		if err := c.uninstallEgress(egressName, eState); err != nil {
+		if err := c.uninstallEgress(egressName, eState, egress); err != nil {
 			return err
 		}
 		exist = false
@@ -1153,7 +1155,7 @@ func (c *EgressController) syncEgress(egressName string) error {
 	return nil
 }
 
-func (c *EgressController) uninstallEgress(egressName string, eState *egressState) error {
+func (c *EgressController) uninstallEgress(egressName string, eState *egressState, egress *crdv1b1.Egress) error {
 	// Uninstall all of its Pod flows.
 	if err := c.uninstallPodFlows(egressName, eState, eState.ofPorts, eState.pods); err != nil {
 		return err
@@ -1169,8 +1171,12 @@ func (c *EgressController) uninstallEgress(egressName string, eState *egressStat
 		}
 	}
 	// Unassign the Egress IP from the local Node if it was assigned by the agent.
-	if _, err := c.ipAssigner.UnassignIP(eState.egressIP); err != nil {
+	unassigned, err := c.ipAssigner.UnassignIP(eState.egressIP)
+	if err != nil {
 		return err
+	}
+	if unassigned && egress != nil {
+		c.record.Eventf(egress, corev1.EventTypeNormal, "IPUnassigned", "Unassigned Egress %s with IP %s from Node %s", egressName, eState.egressIP, c.nodeName)
 	}
 	// Remove the Egress's state.
 	c.deleteEgressState(egressName)
@@ -1239,19 +1245,17 @@ func (c *EgressController) watchEgressGroup() {
 	var initObjects []*cpv1b2.EgressGroup
 loop:
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				klog.Warningf("Result channel for EgressGroup was closed")
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
-				initObjects = append(initObjects, event.Object.(*cpv1b2.EgressGroup))
-			case watch.Bookmark:
-				break loop
-			}
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			klog.Warningf("Result channel for EgressGroup was closed")
+			return
+		}
+		switch event.Type {
+		case watch.Added:
+			klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
+			initObjects = append(initObjects, event.Object.(*cpv1b2.EgressGroup))
+		case watch.Bookmark:
+			break loop
 		}
 	}
 	klog.Infof("Received %d init events for EgressGroup", len(initObjects))
@@ -1260,27 +1264,25 @@ loop:
 	c.replaceEgressGroups(initObjects)
 
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				c.addEgressGroup(event.Object.(*cpv1b2.EgressGroup))
-				klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
-			case watch.Modified:
-				c.patchEgressGroup(event.Object.(*cpv1b2.EgressGroupPatch))
-				klog.V(2).Infof("Updated EgressGroup (%#v)", event.Object)
-			case watch.Deleted:
-				c.deleteEgressGroup(event.Object.(*cpv1b2.EgressGroup))
-				klog.V(2).Infof("Removed EgressGroup (%#v)", event.Object)
-			default:
-				klog.Errorf("Unknown event: %v", event)
-				return
-			}
-			eventCount++
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			return
 		}
+		switch event.Type {
+		case watch.Added:
+			c.addEgressGroup(event.Object.(*cpv1b2.EgressGroup))
+			klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
+		case watch.Modified:
+			c.patchEgressGroup(event.Object.(*cpv1b2.EgressGroupPatch))
+			klog.V(2).Infof("Updated EgressGroup (%#v)", event.Object)
+		case watch.Deleted:
+			c.deleteEgressGroup(event.Object.(*cpv1b2.EgressGroup))
+			klog.V(2).Infof("Removed EgressGroup (%#v)", event.Object)
+		default:
+			klog.Errorf("Unknown event: %v", event)
+			return
+		}
+		eventCount++
 	}
 }
 
@@ -1360,13 +1362,13 @@ func (c *EgressController) GetEgressIPByMark(mark uint32) (string, error) {
 	return "", fmt.Errorf("no EgressIP associated with mark %v", mark)
 }
 
-// GetEgress returns effective Egress and Egress IP applied on a Pod.
-func (c *EgressController) GetEgress(ns, podName string) (string, string, error) {
+// GetEgress returns effective EgressName, EgressIP and EgressNode name of Egress applied on a Pod.
+func (c *EgressController) GetEgress(ns, podName string) (string, string, string, error) {
 	if c == nil {
-		return "", "", fmt.Errorf("Egress is not enabled")
+		return "", "", "", fmt.Errorf("Egress is not enabled")
 	}
 	pod := k8s.NamespacedName(ns, podName)
-	egress, exists := func() (string, bool) {
+	egressName, exists := func() (string, bool) {
 		c.egressBindingsMutex.RLock()
 		defer c.egressBindingsMutex.RUnlock()
 		binding, exists := c.egressBindings[pod]
@@ -1376,13 +1378,15 @@ func (c *EgressController) GetEgress(ns, podName string) (string, string, error)
 		return binding.effectiveEgress, true
 	}()
 	if !exists {
-		return "", "", fmt.Errorf("no Egress applied to Pod %v", pod)
+		return "", "", "", fmt.Errorf("no Egress applied to Pod %v", pod)
 	}
-	state, exists := c.getEgressState(egress)
-	if !exists {
-		return "", "", fmt.Errorf("no Egress State associated with name %s", egress)
+	egress, err := c.egressLister.Get(egressName)
+	if err != nil {
+		return "", "", "", err
 	}
-	return egress, state.egressIP, nil
+	egressNode := egress.Status.EgressNode
+	egressIP := egress.Status.EgressIP
+	return egressName, egressIP, egressNode, nil
 }
 
 // An Egress is schedulable if its Egress IP is allocated from ExternalIPPool.

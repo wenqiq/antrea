@@ -31,12 +31,11 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 
-	crdv1a2 "antrea.io/antrea/pkg/apis/crd/v1alpha2"
+	crdv1b1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	fakecrd "antrea.io/antrea/pkg/client/clientset/versioned/fake"
 	crdinformers "antrea.io/antrea/pkg/client/informers/externalversions"
-	listers "antrea.io/antrea/pkg/client/listers/crd/v1alpha2"
+	listers "antrea.io/antrea/pkg/client/listers/crd/v1beta1"
 	annotation "antrea.io/antrea/pkg/ipam"
-	"antrea.io/antrea/pkg/ipam/poolallocator"
 )
 
 type fakeAntreaIPAMController struct {
@@ -48,7 +47,7 @@ type fakeAntreaIPAMController struct {
 	poolLister         listers.IPPoolLister
 }
 
-func newFakeAntreaIPAMController(pool *crdv1a2.IPPool, namespace *corev1.Namespace, statefulSet *appsv1.StatefulSet) *fakeAntreaIPAMController {
+func newFakeAntreaIPAMController(pool *crdv1b1.IPPool, namespace *corev1.Namespace, statefulSet *appsv1.StatefulSet) *fakeAntreaIPAMController {
 	crdClient := fakecrd.NewSimpleClientset(pool)
 	k8sClient := fake.NewSimpleClientset(namespace, statefulSet)
 
@@ -57,7 +56,7 @@ func newFakeAntreaIPAMController(pool *crdv1a2.IPPool, namespace *corev1.Namespa
 	podInformer := informerFactory.Core().V1().Pods()
 	statefulSetInformer := informerFactory.Apps().V1().StatefulSets()
 	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, 0)
-	poolInformer := crdInformerFactory.Crd().V1alpha2().IPPools()
+	poolInformer := crdInformerFactory.Crd().V1beta1().IPPools()
 	poolLister := poolInformer.Lister()
 
 	controller := NewAntreaIPAMController(crdClient, poolInformer, namespaceInformer, podInformer, statefulSetInformer)
@@ -71,28 +70,27 @@ func newFakeAntreaIPAMController(pool *crdv1a2.IPPool, namespace *corev1.Namespa
 	}
 }
 
-func initTestObjects(annotateNamespace bool, annotateStatefulSet bool, replicas int32) (*corev1.Namespace, *crdv1a2.IPPool, *appsv1.StatefulSet) {
+func initTestObjects(annotateNamespace bool, annotateStatefulSet bool, replicas int32) (*corev1.Namespace, *crdv1b1.IPPool, *appsv1.StatefulSet) {
 	namespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: uuid.New().String(),
 		},
 	}
-
-	subnetRange := crdv1a2.SubnetIPRange{
-		IPRange: crdv1a2.IPRange{
-			Start: "10.2.2.100",
-			End:   "10.2.2.110",
-		},
-		SubnetInfo: crdv1a2.SubnetInfo{
-			Gateway:      "10.2.2.1",
-			PrefixLength: 24,
-		},
+	ipRange := crdv1b1.IPRange{
+		Start: "10.2.2.100",
+		End:   "10.2.2.110",
 	}
 
-	pool := &crdv1a2.IPPool{
+	subnetInfo := crdv1b1.SubnetInfo{
+		Gateway:      "10.2.2.1",
+		PrefixLength: 24,
+	}
+
+	pool := &crdv1b1.IPPool{
 		ObjectMeta: metav1.ObjectMeta{Name: uuid.New().String()},
-		Spec: crdv1a2.IPPoolSpec{
-			IPRanges: []crdv1a2.SubnetIPRange{subnetRange},
+		Spec: crdv1b1.IPPoolSpec{
+			IPRanges:   []crdv1b1.IPRange{ipRange},
+			SubnetInfo: subnetInfo,
 		},
 	}
 
@@ -123,25 +121,24 @@ func initTestObjects(annotateNamespace bool, annotateStatefulSet bool, replicas 
 	return namespace, pool, statefulSet
 }
 
-func verifyPoolAllocatedSize(t *testing.T, poolName string, poolLister listers.IPPoolLister, size int) {
+func verifyPoolAllocatedSize(ctx context.Context, t *testing.T, poolName string, poolLister listers.IPPoolLister, size int) {
+	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 1*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			pool, err := poolLister.Get(poolName)
+			if err != nil {
+				return false, nil
+			}
+			if len(pool.Status.IPAddresses) == size {
+				return true, nil
+			}
 
-	err := wait.PollImmediate(100*time.Millisecond, 1*time.Second, func() (bool, error) {
-		pool, err := poolLister.Get(poolName)
-		if err != nil {
 			return false, nil
-		}
-		if len(pool.Status.IPAddresses) == size {
-			return true, nil
-		}
-
-		return false, nil
-	})
+		})
 
 	require.NoError(t, err)
 }
 
 func TestStatefulSetLifecycle(t *testing.T) {
-
 	tests := []struct {
 		name                string
 		dedicatedPool       bool
@@ -176,6 +173,7 @@ func TestStatefulSetLifecycle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
 			stopCh := make(chan struct{})
 			defer close(stopCh)
 
@@ -183,30 +181,19 @@ func TestStatefulSetLifecycle(t *testing.T) {
 			controller := newFakeAntreaIPAMController(pool, namespace, statefulSet)
 			controller.informerFactory.Start(stopCh)
 			controller.crdInformerFactory.Start(stopCh)
+			controller.informerFactory.WaitForCacheSync(stopCh)
+			controller.crdInformerFactory.WaitForCacheSync(stopCh)
 
 			go controller.Run(stopCh)
 
-			var allocator *poolallocator.IPPoolAllocator
-			var err error
-			// Wait until pool propagates to the informer
-			pollErr := wait.PollImmediate(100*time.Millisecond, 3*time.Second, func() (bool, error) {
-				allocator, err = poolallocator.NewIPPoolAllocator(pool.Name, controller.crdClient, controller.poolLister)
-				if err != nil {
-					return false, nil
-				}
-				return true, nil
-			})
-			require.NoError(t, pollErr)
-			defer allocator.ReleaseStatefulSet(statefulSet.Namespace, statefulSet.Name)
-
 			// Verify create event was handled by the controller
-			verifyPoolAllocatedSize(t, pool.Name, controller.poolLister, tt.expectAllocatedSize)
+			verifyPoolAllocatedSize(ctx, t, pool.Name, controller.poolLister, tt.expectAllocatedSize)
 
 			// Delete StatefulSet
-			controller.fakeK8sClient.AppsV1().StatefulSets(namespace.Name).Delete(context.TODO(), statefulSet.Name, metav1.DeleteOptions{})
+			controller.fakeK8sClient.AppsV1().StatefulSets(namespace.Name).Delete(ctx, statefulSet.Name, metav1.DeleteOptions{})
 
 			// Verify Delete event was processed
-			verifyPoolAllocatedSize(t, pool.Name, controller.poolLister, 0)
+			verifyPoolAllocatedSize(ctx, t, pool.Name, controller.poolLister, 0)
 		})
 	}
 }
@@ -219,50 +206,52 @@ func TestReleaseStaleAddresses(t *testing.T) {
 
 	namespace, pool, statefulSet := initTestObjects(true, false, 0)
 
-	activeSetOwner := crdv1a2.StatefulSetOwner{
+	activeSetOwner := crdv1b1.StatefulSetOwner{
 		Name:      statefulSet.Name,
 		Namespace: namespace.Name,
 	}
 
-	staleSetOwner := crdv1a2.StatefulSetOwner{
+	staleSetOwner := crdv1b1.StatefulSetOwner{
 		Name:      uuid.New().String(),
 		Namespace: namespace.Name,
 	}
 
-	stalePodOwner := crdv1a2.PodOwner{
+	stalePodOwner := crdv1b1.PodOwner{
 		Name:      uuid.New().String(),
 		Namespace: namespace.Name,
 	}
 
-	addresses := []crdv1a2.IPAddressState{
+	addresses := []crdv1b1.IPAddressState{
 		{IPAddress: "10.2.2.12",
-			Phase: crdv1a2.IPAddressPhaseReserved,
-			Owner: crdv1a2.IPAddressOwner{StatefulSet: &activeSetOwner}},
+			Phase: crdv1b1.IPAddressPhaseReserved,
+			Owner: crdv1b1.IPAddressOwner{StatefulSet: &activeSetOwner}},
 		{IPAddress: "20.2.2.13",
-			Phase: crdv1a2.IPAddressPhaseReserved,
-			Owner: crdv1a2.IPAddressOwner{StatefulSet: &staleSetOwner}},
+			Phase: crdv1b1.IPAddressPhaseReserved,
+			Owner: crdv1b1.IPAddressOwner{StatefulSet: &staleSetOwner}},
 		{IPAddress: "20.2.2.14",
-			Phase: crdv1a2.IPAddressPhaseReserved,
-			Owner: crdv1a2.IPAddressOwner{StatefulSet: &staleSetOwner}},
+			Phase: crdv1b1.IPAddressPhaseReserved,
+			Owner: crdv1b1.IPAddressOwner{StatefulSet: &staleSetOwner}},
 		{IPAddress: "20.2.2.15",
-			Phase: crdv1a2.IPAddressPhaseAllocated,
-			Owner: crdv1a2.IPAddressOwner{StatefulSet: &activeSetOwner,
+			Phase: crdv1b1.IPAddressPhaseAllocated,
+			Owner: crdv1b1.IPAddressOwner{StatefulSet: &activeSetOwner,
 				Pod: &stalePodOwner},
 		},
 	}
 
-	pool.Status = crdv1a2.IPPoolStatus{
+	pool.Status = crdv1b1.IPPoolStatus{
 		IPAddresses: addresses,
 	}
 
 	controller := newFakeAntreaIPAMController(pool, namespace, statefulSet)
 	controller.informerFactory.Start(stopCh)
 	controller.crdInformerFactory.Start(stopCh)
+	controller.informerFactory.WaitForCacheSync(stopCh)
+	controller.crdInformerFactory.WaitForCacheSync(stopCh)
 
 	go controller.Run(stopCh)
 
 	// verify two stale entries were deleted, one updated to Reserved status
-	err := wait.PollImmediate(100*time.Millisecond, 2*time.Second, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, 2*time.Second, true, func(ctx context.Context) (bool, error) {
 		pool, err := controller.poolLister.Get(pool.Name)
 		if err != nil {
 			return false, nil
@@ -274,7 +263,7 @@ func TestReleaseStaleAddresses(t *testing.T) {
 		}
 
 		for _, addr := range pool.Status.IPAddresses {
-			if addr.Phase != crdv1a2.IPAddressPhaseReserved {
+			if addr.Phase != crdv1b1.IPAddressPhaseReserved {
 				return true, fmt.Errorf("Incorrect phase %s after cleanup", addr.Phase)
 			}
 		}
@@ -332,6 +321,8 @@ func TestAntreaIPAMController_getIPPoolsForStatefulSet(t *testing.T) {
 			controller := newFakeAntreaIPAMController(pool, namespace, statefulSet)
 			controller.informerFactory.Start(stopCh)
 			controller.crdInformerFactory.Start(stopCh)
+			controller.informerFactory.WaitForCacheSync(stopCh)
+			controller.crdInformerFactory.WaitForCacheSync(stopCh)
 
 			got, got1 := controller.getIPPoolsForStatefulSet(statefulSet)
 			var want []string

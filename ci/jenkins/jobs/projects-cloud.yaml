@@ -99,6 +99,12 @@
             - text:
                 credential-id: CAPVC_PASSWORD
                 variable: CAPVC_PASSWORD
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
           publishers:
           - archive:
               allow-empty: true
@@ -211,6 +217,12 @@
             - text:
                 credential-id: CAPVC_PASSWORD
                 variable: CAPVC_PASSWORD
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
           publishers:
           - archive:
               allow-empty: true
@@ -310,6 +322,12 @@
             - text:
                 credential-id: CAPVC_PASSWORD
                 variable: CAPVC_PASSWORD
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
           publishers:
           - archive:
               allow-empty: true
@@ -397,6 +415,12 @@
             - text:
                 credential-id: CAPVC_PASSWORD
                 variable: CAPVC_PASSWORD
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
           publishers:
           - archive:
               allow-empty: true
@@ -509,6 +533,12 @@
             - text:
                 credential-id: CAPVC_PASSWORD
                 variable: CAPVC_PASSWORD
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
           publishers:
           - archive:
               allow-empty: true
@@ -580,6 +610,12 @@
             - text:
                 credential-id: RESOURCEPOOLPATH
                 variable: RESOURCEPOOLPATH
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
       - '{name}-{test_name}-for-gc':
           test_name: workload-cluster
           node: 'antrea-test-node'
@@ -718,11 +754,14 @@
           builders:
           - shell: |-
               #!/bin/bash
-              # gcloud auth login requires verification code from url
-              ${{GCLOUD_SDK_PATH}}/bin/gcloud auth activate-service-account --key-file=${{GCLOUD_KEY_PATH}}
+              # Prevent exposing credentials in the console output by adding set +x
+              # This is to avoid other developers removing this set+x by accident
+              set +x
+              sudo gcloud auth login --cred-file=${CREDENTIAL_PATH}
               sudo ./ci/test-conformance-gke.sh --cluster-name antrea-gke-${{BUILD_NUMBER}} \
-                --svc-account antrea-gcp@antrea.iam.gserviceaccount.com --gcloud-sdk-path ${{GCLOUD_SDK_PATH}} \
-                --log-mode detail --setup-only
+                --svc-account ${{SERVICE_ACCOUNT}} --gcloud-sdk-path ${{GCLOUD_PATH}} \
+                --log-mode detail --setup-only --gke-project ${GKE_PROJECT} --shared-network \
+                --gke-network ${{GKE_NETWORK}} --gke-subnet ${{GKE_SUBNET}}
           triggers:
           - timed: H H */2 * *
           publishers:
@@ -741,7 +780,26 @@
           - email:
               notify-every-unstable-build: true
               recipients: projectantrea-dev@googlegroups.com
-          wrappers: []
+          wrappers:
+          - credentials-binding:
+            - text:
+                credential-id: SERVICE_ACCOUNT # Jenkins secret that stores the cloud service account
+                variable: SERVICE_ACCOUNT
+            - text:
+                credential-id: GKE_PROJECT
+                variable: GKE_PROJECT
+            - text:
+                credential-id: GKE_NETWORK
+                variable: GKE_NETWORK
+            - text:
+                credential-id: GKE_SUBNET
+                variable: GKE_SUBNET
+            - text:
+                credential-id: CREDENTIAL_PATH
+                variable: CREDENTIAL_PATH
+            - text:
+                credential-id: GCLOUD_PATH
+                variable: GCLOUD_PATH
       - 'cloud-{name}-{test_name}-cleanup':
           test_name: gke
           description: This is for deleting GKE test clusters.
@@ -1049,7 +1107,7 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-multicluster
-          status_url: https://jenkins.antrea-ci.rocks/job/antrea-multicluster-for-pull-request
+          status_url: null
           branches:
               - ${{sha1}}
           builders:
@@ -1078,8 +1136,127 @@
                     fingerprint: false
                     only-if-success: false
       - '{name}-{test_name}-for-pull-request':
-          test_name: kind-aws-ipv6-only-networkpolicy
-          node: 'antrea-kind-test'
+          test_name: kind-e2e
+          node: 'antrea-kind-testbed'
+          description: 'This is for running e2e tests on kind.'
+          branches:
+          - ${{sha1}}
+          builders:
+            - builder-e2e-kind:
+               ip_version: 'ipv4'
+               kind_cluster_name: '{test_name}'
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-e2e|kind-all|all).*
+          white_list_target_branches: []
+          allow_whitelist_orgs_as_admins: true
+          admin_list: '{antrea_admin_list}'
+          org_list: '{antrea_org_list}'
+          white_list: '{antrea_white_list}'
+          only_trigger_phrase: true
+          trigger_permit_all: true
+          throttle_concurrent_builds_enabled: 'true'
+          status_context: jenkins-kind-e2e
+          status_url: null
+          success_status: Build finished.
+          failure_status: Failed. Add comment /test-kind-e2e to re-trigger.
+          error_status: Failed. Add comment /test-kind-e2e to re-trigger.
+          triggered_status: null
+          started_status: null
+          wrappers:
+          - timeout:
+              fail: true
+              timeout: 135
+              type: absolute
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: antrea-test-logs.tar.gz
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
+      - '{name}-{test_name}-for-pull-request':
+          test_name: kind-conformance
+          node: 'antrea-kind-testbed'
+          description: 'This is for running conformance tests on kind.'
+          branches:
+          - ${{sha1}}
+          builders:
+            - builder-conformance-kind:
+               conformance_type: 'conformance'
+               ip_version: 'ipv4'
+               kind_cluster_name: '{test_name}'
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-conformance|kind-all|all).*
+          white_list_target_branches: []
+          allow_whitelist_orgs_as_admins: true
+          admin_list: '{antrea_admin_list}'
+          org_list: '{antrea_org_list}'
+          white_list: '{antrea_white_list}'
+          only_trigger_phrase: true
+          trigger_permit_all: true
+          throttle_concurrent_builds_enabled: 'true'
+          status_context: jenkins-kind-conformance
+          status_url: null
+          success_status: Build finished.
+          failure_status: Failed. Add comment /test-kind-conformance to re-trigger.
+          error_status: Failed. Add comment /test-kind-conformance to re-trigger.
+          triggered_status: null
+          started_status: null
+          wrappers:
+          - timeout:
+              fail: true
+              timeout: 135
+              type: absolute
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
+      - '{name}-{test_name}-for-pull-request':
+          test_name: kind-networkpolicy
+          node: 'antrea-kind-testbed'
+          description: 'This is for running networkpolicy tests on kind.'
+          branches:
+          - ${{sha1}}
+          builders:
+            - builder-conformance-kind:
+               conformance_type: 'networkpolicy'
+               ip_version: 'ipv4'
+               kind_cluster_name: '{test_name}'
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-networkpolicy|kind-all|all).*
+          white_list_target_branches: []
+          allow_whitelist_orgs_as_admins: true
+          admin_list: '{antrea_admin_list}'
+          org_list: '{antrea_org_list}'
+          white_list: '{antrea_white_list}'
+          only_trigger_phrase: true
+          trigger_permit_all: true
+          throttle_concurrent_builds_enabled: 'true'
+          status_context: jenkins-kind-networkpolicy
+          status_url: null
+          success_status: Build finished.
+          failure_status: Failed. Add comment /test-kind-networkpolicy to re-trigger.
+          error_status: Failed. Add comment /test-kind-networkpolicy to re-trigger.
+          triggered_status: null
+          started_status: null
+          wrappers:
+          - timeout:
+              fail: true
+              timeout: 135
+              type: absolute
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
+      - '{name}-{test_name}-for-pull-request':
+          test_name: kind-ipv6-only-networkpolicy
+          node: 'antrea-kind-testbed'
           description: 'This is the {test_name} test for {name}.'
           branches:
               - ${{sha1}}    
@@ -1088,7 +1265,7 @@
                 conformance_type: 'networkpolicy'
                 ip_version: 'ipv6'
                 kind_cluster_name: '{test_name}'
-          trigger_phrase: ^(?!Thanks for your PR).*/test-kind-aws-ipv6-only-(networkpolicy|all).*
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-ipv6-only-networkpolicy|kind-ipv6-only-all|ipv6-only-all).*
           white_list_target_branches: []
           allow_whitelist_orgs_as_admins: true
           admin_list: '{antrea_admin_list}'
@@ -1097,10 +1274,10 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-kind-ipv6-only-networkpolicy
-          status_url: --none--
+          status_url: null
           success_status: Build finished.
-          failure_status: Failed. Add comment /test-kind-aws-ipv6-only-networkpolicy to re-trigger.
-          error_status: Failed. Add comment /test-kind-aws-ipv6-only-networkpolicy to re-trigger.
+          failure_status: Failed. Add comment /test-kind-ipv6-only-networkpolicy to re-trigger.
+          error_status: Failed. Add comment /test-kind-ipv6-only-networkpolicy to re-trigger.
           triggered_status: null
           started_status: null
           wrappers:
@@ -1108,10 +1285,17 @@
               fail: true
               timeout: 135
               type: absolute
-          publishers: []
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
       - '{name}-{test_name}-for-pull-request':
-          test_name: kind-aws-ipv6-only-conformance
-          node: 'antrea-kind-test'
+          test_name: kind-ipv6-only-conformance
+          node: 'antrea-kind-testbed'
           description: 'This is the {test_name} test for {name}.'
           branches:
              - ${{sha1}}   
@@ -1120,7 +1304,7 @@
                 conformance_type: 'conformance'
                 ip_version: 'ipv6'
                 kind_cluster_name: '{test_name}'
-          trigger_phrase: ^(?!Thanks for your PR).*/test-kind-aws-ipv6-only-(conformance|all).*
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-ipv6-only-conformance|kind-ipv6-only-all|ipv6-only-all).*
           white_list_target_branches: []
           allow_whitelist_orgs_as_admins: true
           admin_list: '{antrea_admin_list}'
@@ -1129,10 +1313,10 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-kind-ipv6-only-conformance
-          status_url: --none--
+          status_url: null
           success_status: Build finished.
-          failure_status: Failed. Add comment /test-kind-aws-ipv6-only-conformance to re-trigger.
-          error_status: Failed. Add comment /test-kind-aws-ipv6-only-conformance to re-trigger.
+          failure_status: Failed. Add comment /test-kind-ipv6-only-conformance to re-trigger.
+          error_status: Failed. Add comment /test-kind-ipv6-only-conformance to re-trigger.
           triggered_status: null
           started_status: null
           wrappers:
@@ -1140,10 +1324,17 @@
               fail: true
               timeout: 135
               type: absolute
-          publishers: []
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
       - '{name}-{test_name}-for-pull-request':
-          test_name: kind-aws-ipv6-only-e2e
-          node: 'antrea-kind-test'
+          test_name: kind-ipv6-only-e2e
+          node: 'antrea-kind-testbed'
           description: 'This is the {test_name} test for {name}.'
           branches:
              - ${{sha1}}      
@@ -1151,7 +1342,7 @@
             - builder-e2e-kind:
                 ip_version: 'ipv6'
                 kind_cluster_name: '{test_name}'
-          trigger_phrase: ^(?!Thanks for your PR).*/test-kind-aws-ipv6-only-(e2e|all).*
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-ipv6-only-e2e|kind-ipv6-only-all|ipv6-only-all).*
           white_list_target_branches: []
           allow_whitelist_orgs_as_admins: true
           admin_list: '{antrea_admin_list}'
@@ -1160,10 +1351,10 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-kind-ipv6-only-e2e
-          status_url: --none--
+          status_url: null
           success_status: Build finished.
-          failure_status: Failed. Add comment /test-kind-aws-ipv6-only-e2e to re-trigger.
-          error_status: Failed. Add comment /test-kind-aws-ipv6-only-e2e to re-trigger.
+          failure_status: Failed. Add comment /test-kind-ipv6-only-e2e to re-trigger.
+          error_status: Failed. Add comment /test-kind-ipv6-only-e2e to re-trigger.
           triggered_status: null
           started_status: null
           wrappers:
@@ -1171,10 +1362,17 @@
               fail: true
               timeout: 135
               type: absolute
-          publishers: []
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: antrea-test-logs.tar.gz
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
       - '{name}-{test_name}-for-pull-request':
-          test_name: kind-aws-ipv6-ds-networkpolicy
-          node: 'antrea-kind-test'
+          test_name: kind-ipv6-ds-networkpolicy
+          node: 'antrea-kind-testbed'
           description: 'This is the {test_name} test for {name}.'
           branches:
              - ${{sha1}}    
@@ -1183,7 +1381,7 @@
                 conformance_type: 'networkpolicy'
                 ip_version: 'dual'
                 kind_cluster_name: '{test_name}'
-          trigger_phrase: ^(?!Thanks for your PR).*/test-kind-aws-ipv6-(networkpolicy|all).*
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-ipv6-networkpolicy|kind-ipv6-all|ipv6-all).*
           white_list_target_branches: []
           allow_whitelist_orgs_as_admins: true
           admin_list: '{antrea_admin_list}'
@@ -1192,10 +1390,10 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-kind-ipv6-ds-networkpolicy
-          status_url: --none--
+          status_url: null
           success_status: Build finished.
-          failure_status: Failed. Add comment /test-kind-aws-ipv6-networkpolicy to re-trigger.
-          error_status: Failed. Add comment /test-kind-aws-ipv6-networkpolicy to re-trigger.
+          failure_status: Failed. Add comment /test-kind-ipv6-networkpolicy to re-trigger.
+          error_status: Failed. Add comment /test-kind-ipv6-networkpolicy to re-trigger.
           triggered_status: null
           started_status: null
           wrappers:
@@ -1203,10 +1401,17 @@
               fail: true
               timeout: 135
               type: absolute
-          publishers: []
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
       - '{name}-{test_name}-for-pull-request':
-          test_name: kind-aws-ipv6-ds-conformance
-          node: 'antrea-kind-test'
+          test_name: kind-ipv6-ds-conformance
+          node: 'antrea-kind-testbed'
           description: 'This is the {test_name} test for {name}.'
           branches:
              - ${{sha1}}   
@@ -1215,7 +1420,7 @@
                 conformance_type: 'conformance'
                 ip_version: 'dual'
                 kind_cluster_name: '{test_name}'
-          trigger_phrase: ^(?!Thanks for your PR).*/test-kind-aws-ipv6-(conformance|all).*
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-ipv6-conformance|kind-ipv6-all|ipv6-all).*
           white_list_target_branches: []
           allow_whitelist_orgs_as_admins: true
           admin_list: '{antrea_admin_list}'
@@ -1224,10 +1429,10 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-kind-ipv6-ds-conformance
-          status_url: --none--
+          status_url: null
           success_status: Build finished.
-          failure_status: Failed. Add comment /test-kind-aws-ipv6-conformance to re-trigger.
-          error_status: Failed. Add comment /test-kind-aws-ipv6-conformance to re-trigger.
+          failure_status: Failed. Add comment /test-kind-ipv6-conformance to re-trigger.
+          error_status: Failed. Add comment /test-kind-ipv6-conformance to re-trigger.
           triggered_status: null
           started_status: null
           wrappers:
@@ -1235,10 +1440,17 @@
               fail: true
               timeout: 135
               type: absolute
-          publishers: []
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
       - '{name}-{test_name}-for-pull-request':
-          test_name: kind-aws-ipv6-ds-e2e
-          node: 'antrea-kind-test'
+          test_name: kind-ipv6-ds-e2e
+          node: 'antrea-kind-testbed'
           description: 'This is the {test_name} test for {name}.'
           branches:
              - ${{sha1}}      
@@ -1246,7 +1458,7 @@
             - builder-e2e-kind:
                  ip_version: 'dual'
                  kind_cluster_name: '{test_name}'
-          trigger_phrase: ^(?!Thanks for your PR).*/test-kind-aws-ipv6-(e2e|all).*
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-ipv6-e2e|kind-ipv6-all|ipv6-all).*
           white_list_target_branches: []
           allow_whitelist_orgs_as_admins: true
           admin_list: '{antrea_admin_list}'
@@ -1255,10 +1467,10 @@
           only_trigger_phrase: true
           trigger_permit_all: true
           status_context: jenkins-kind-ipv6-ds-e2e
-          status_url: --none--
+          status_url: null
           success_status: Build finished.
-          failure_status: Failed. Add comment /test-kind-aws-ipv6-e2e to re-trigger.
-          error_status: Failed. Add comment /test-kind-aws-ipv6-e2e to re-trigger.
+          failure_status: Failed. Add comment /test-kind-ipv6-e2e to re-trigger.
+          error_status: Failed. Add comment /test-kind-ipv6-e2e to re-trigger.
           triggered_status: null
           started_status: null
           wrappers:
@@ -1266,4 +1478,257 @@
               fail: true
               timeout: 135
               type: absolute
-          publishers: []
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: antrea-test-logs.tar.gz
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
+      - '{name}-{test_name}-for-pr':
+          test_name: kind-all-features-conformance
+          node: 'antrea-kind-testbed'
+          description: 'This is the {test_name} test for {name}.'
+          branches:
+          - ${{sha1}}
+          builders:
+            - builder-conformance-kind:
+               conformance_type: 'all-features-conformance'
+               ip_version: 'ipv4'
+               kind_cluster_name: '{test_name}'
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-all-features-conformance|kind-all|all-features-conformance|all).*
+          white_list_target_branches: []
+          allow_whitelist_orgs_as_admins: true
+          admin_list: '{antrea_admin_list}'
+          org_list: '{antrea_org_list}'
+          white_list: '{antrea_white_list}'
+          only_trigger_phrase: true
+          trigger_permit_all: true
+          status_context: jenkins-kind-all-features-conformance
+          status_url: null
+          success_status: Build finished.
+          failure_status: Failed. Add comment /test-kind-all-features-conformance to re-trigger.
+          error_status: Failed. Add comment /test-kind-all-features-conformance to re-trigger.
+          triggered_status: null
+          started_status: null
+          wrappers:
+          - credentials-binding:
+            - text:
+                credential-id: CODECOV_TOKEN
+                variable: CODECOV_TOKEN
+          - timeout:
+              fail: true
+              timeout: 80
+              type: absolute
+          - credentials-binding:
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
+      - '{name}-{test_name}-for-pr':
+          test_name: kind-whole-conformance
+          node: 'antrea-kind-testbed'
+          description: 'This is the {test_name} test for {name}.'
+          branches:
+          - ${{sha1}}
+          builders:
+            - builder-conformance-kind:
+               conformance_type: 'whole-conformance'
+               ip_version: 'ipv4'
+               kind_cluster_name: '{test_name}'
+          trigger_phrase: ^(?!Thanks for your PR).*/test-(kind-whole-conformance|kind-all|whole-conformance|all).*
+          white_list_target_branches: []
+          allow_whitelist_orgs_as_admins: true
+          admin_list: '{antrea_admin_list}'
+          org_list: '{antrea_org_list}'
+          white_list: '{antrea_white_list}'
+          only_trigger_phrase: true
+          trigger_permit_all: true
+          status_context: jenkins-kind-whole-conformance
+          status_url: null
+          success_status: Build finished.
+          failure_status: Failed. Add comment /test-kind-whole-conformance to re-trigger.
+          error_status: Failed. Add comment /test-kind-whole-conformance to re-trigger.
+          triggered_status: null
+          started_status: null
+          wrappers:
+          - credentials-binding:
+            - text:
+                credential-id: CODECOV_TOKEN
+                variable: CODECOV_TOKEN
+          - timeout:
+              fail: true
+              timeout: 240
+              type: absolute
+          - credentials-binding:
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
+          publishers:
+          - archive:
+              allow-empty: true
+              artifacts: '*sonobuoy*.tar.gz, whole-conformance-coverage.tar.gz'
+              case-sensitive: true
+              default-excludes: true
+              fingerprint: false
+              only-if-success: false
+      - 'cloud-{name}-{test_name}-aws-cleanup':
+          test_name: sriov-secondary-network
+          description: This is for deleting AWS resources for SRIOV secondary-network test.
+          parameters:
+          - string:
+              default: https://github.com/antrea-io/antrea/
+              description: The repository to checkout Antrea for this test.
+              name: ANTREA_REPO
+              trim: 'true'
+          - string:
+              default: main
+              description: The branch or SHA commit ID to checkout and build Antrea for this test.
+              name: ANTREA_GIT_REVISION
+              trim: 'true'
+          - string:
+              default: ''
+              description: The ec2 instance id of control-plane Node.
+              name: CONTROLPLANE_INSTANCE_ID
+              trim: 'true'
+          - string:
+              default: ''
+              description: The ec2 instance id of worker Node.
+              name: WORKER_INSTANCE_ID
+              trim: 'true'
+          - string:
+              default: ''
+              description: The ec2 secondary network-interface id of control-plane Node.
+              name: CONTROLPLANE_NODE_ENI
+              trim: 'true'
+          - string:
+              default: ''
+              description: The ec2 secondary network-interface id of worker Node.
+              name: WORKER_NODE_ENI
+              trim: 'true'
+          - string:
+              default: ''
+              description: The subnet CIDR reservation id created in the subnet during test.
+              name: SUBNET_CIDR_RESERVATION_ID
+              trim: 'true'
+          builders:
+          - shell: |-
+              #!/bin/bash
+              set -ex
+              export CONTROLPLANE_INSTANCE_ID=${{CONTROLPLANE_INSTANCE_ID}}
+              export WORKER_INSTANCE_ID=${{WORKER_INSTANCE_ID}}
+              export CONTROLPLANE_NODE_ENI=${{CONTROLPLANE_NODE_ENI}}
+              export WORKER_NODE_ENI=${{WORKER_NODE_ENI}}
+              export SUBNET_CIDR_RES_ID=${{SUBNET_CIDR_RESERVATION_ID}}
+              source ./ci/test-sriov-secondary-network-aws.sh --cleanup-only \
+                --aws-access-key ${{AWS_ACCESS_KEY}} --aws-secret-key ${{AWS_SECRET_KEY}} --aws-service-user-role-arn ${{AWS_SERVICE_USER_ROLE_ARN}} --aws-service-user ${{AWS_SERVICE_USER_NAME}} \
+                --CONTROLPLANE_INSTANCE_ID ${{CONTROLPLANE_INSTANCE_ID}}
+          concurrent: false
+          disabled: false
+          node: antrea-cloud
+          branches:
+          - '${{ANTREA_GIT_REVISION}}'
+          repo_url: '${{ANTREA_REPO}}'
+          publishers:
+          - email:
+              notify-every-unstable-build: true
+              recipients: projectantrea-dev@googlegroups.com rahulj@vmware.com
+          triggers: []
+          wrappers:
+          - credentials-binding:
+            - text:
+                credential-id: AWS_ACCESS_KEY # Jenkins secret that stores aws access key
+                variable: AWS_ACCESS_KEY
+            - text:
+                credential-id: AWS_SECRET_KEY # Jenkins secret that stores aws secret key
+                variable: AWS_SECRET_KEY
+            - text:
+                credential-id: AWS_SERVICE_USER_ROLE_ARN
+                variable: AWS_SERVICE_USER_ROLE_ARN
+            - text:
+               credential-id: AWS_SERVICE_USER_NAME
+               variable: AWS_SERVICE_USER_NAME
+      - '{name}-{test_name}-for-pull-request':
+          disabled: false
+          test_name: sriov-secondary-network-e2e
+          node: antrea-cloud-test
+          description: 'Test SR-IOV secondary network in AWS for antrea.'
+          branches:
+          - ${{sha1}}
+          trigger_phrase: '^(?!Thanks for your PR).*/test-sriov-secondary-network-e2e.*'
+          white_list_target_branches: []
+          allow_whitelist_orgs_as_admins: true
+          admin_list: '{antrea_admin_list}'
+          org_list: '{antrea_org_list}'
+          white_list: '{antrea_white_list}'
+          only_trigger_phrase: true
+          trigger_permit_all: false
+          status_context: sriov-secondary-network-e2e
+          status_url: null
+          success_status: Build finished.
+          failure_status: Failed. Add comment /test-sriov-secondary-network-e2e to re-trigger.
+          error_status: Failed. Add comment /test-sriov-secondary-network-e2e to re-trigger.
+          triggered_status: null
+          started_status: null
+          builders:
+          - shell: |-
+              #!/bin/bash
+              cat ${{AWS_EC2_SSH_KEY}} > ./${{AWS_EC2_SSH_KEY_NAME}}
+              chmod 400 ${{AWS_EC2_SSH_KEY_NAME}}
+              DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
+              [ "$DOCKER_REGISTRY" != "docker.io" ] || ./ci/jenkins/docker_login.sh --docker-user ${{DOCKER_USERNAME}} --docker-password ${{DOCKER_PASSWORD}}
+              sudo ./ci/test-sriov-secondary-network-aws.sh --aws-access-key ${{AWS_ACCESS_KEY}} --aws-secret-key ${{AWS_SECRET_KEY}} \
+                --aws-security-group-id ${{AWS_SECURITY_GROUP}} --aws-subnet-id ${{AWS_SUBNET_ID}} \
+                --aws-ec2-ssh-key-name ${{AWS_EC2_SSH_KEY_NAME}} --aws-service-user-role-arn ${{AWS_SERVICE_USER_ROLE_ARN}} --aws-service-user ${{AWS_SERVICE_USER_NAME}}
+          publishers:
+          - email:
+              notify-every-unstable-build: true
+              recipients: projectantrea-dev@googlegroups.com
+          wrappers:
+          - credentials-binding:
+            - text:
+                credential-id: AWS_ACCESS_KEY # Jenkins secret that stores aws access key
+                variable: AWS_ACCESS_KEY
+            - text:
+                credential-id: AWS_SECRET_KEY # Jenkins secret that stores aws secret key
+                variable: AWS_SECRET_KEY
+            - text:
+                credential-id: DOCKER_USERNAME
+                variable: DOCKER_USERNAME
+            - text:
+                credential-id: DOCKER_PASSWORD
+                variable: DOCKER_PASSWORD
+            - text:
+                credential-id: AWS_EC2_SSH_KEY_NAME
+                variable: AWS_EC2_SSH_KEY_NAME
+            - text:
+                credential-id: AWS_SECURITY_GROUP
+                variable: AWS_SECURITY_GROUP
+            - text:
+                credential-id: AWS_SUBNET_ID
+                variable: AWS_SUBNET_ID
+            - text:
+                credential-id: AWS_SERVICE_USER_ROLE_ARN
+                variable: AWS_SERVICE_USER_ROLE_ARN
+            - text:
+               credential-id: AWS_SERVICE_USER_NAME
+               variable: AWS_SERVICE_USER_NAME
+            - ssh-user-private-key:
+                credential-id: AWS_EC2_SSH_KEY
+                key-file-variable: AWS_EC2_SSH_KEY
+                username-variable: AWS_EC2_SSH_USER_NAME
+                passphrase-variable: AWS_EC2_SSH_PASSPHRASE

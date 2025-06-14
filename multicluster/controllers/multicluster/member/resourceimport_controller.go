@@ -286,7 +286,7 @@ func (r *ResourceImportReconciler) handleResImpUpdateForEndpoints(ctx context.Co
 	if epNotFound {
 		err := r.localClusterClient.Create(ctx, mcsEpObj, &client.CreateOptions{})
 		if err != nil {
-			klog.ErrorS(err, "Failed to create MCS Endpoints", "endpoints", klog.KObj(mcsEpObj), err)
+			klog.ErrorS(err, "Failed to create MCS Endpoints", "endpoints", klog.KObj(mcsEpObj))
 			return ctrl.Result{}, err
 		}
 		r.installedResImports.Add(*resImp)
@@ -389,6 +389,7 @@ func (r *ResourceImportReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	instance := predicate.And(generationPredicate, labelIdentityResImportPredicate)
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&multiclusterv1alpha1.ResourceImport{}).
+		Named("resourceimport").
 		WithEventFilter(instance).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: common.DefaultWorkerCount,

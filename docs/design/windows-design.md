@@ -190,11 +190,11 @@ these scenarios:
 
 ## Antrea and OVS Management on Windows
 
-While we provide different installation methods for Windows, the recommended one starting with
-Antrea v1.13 is to use the `antrea-windows-containerd-with-ovs.yml` manifest. With this method, the
-antrea-agent process and the OVS daemons (ovsdb-server and ovs-vswitchd) run as a Pod on Windows
-worker Nodes, and are managed by a DaemonSet. This installation method relies on
-[Windows HostProcess Pod](https://kubernetes.io/docs/tasks/configure-pod-container/create-hostprocess-pod/)
+While we provide different installation methods for Windows, the recommended one
+is to use the `antrea-windows-with-ovs.yml` manifest. With this method, the
+antrea-agent process and the OVS daemons (ovsdb-server and ovs-vswitchd) run as
+a Pod on Windows worker Nodes, and are managed by a DaemonSet. This installation
+method relies on [Windows HostProcess Pod](https://kubernetes.io/docs/tasks/configure-pod-container/create-hostprocess-pod/)
 support.
 
 ## Traffic walkthrough
@@ -210,7 +210,7 @@ Kube-proxy userspace mode is configured to provide NodePort Service function. A 
 "HNS Internal NIC" is provided to kube-proxy to configure Service addresses. The OpenFlow entries for the
 NodePort Service traffic on Windows are the same as those on Linux.
 
-AntreaProxy implements the ClusterIP Service function. Antrea Agent installs routes to send ClusterIP Service
+Antrea Proxy implements the ClusterIP Service function. Antrea Agent installs routes to send ClusterIP Service
 traffic from host network to the OVS bridge. For each Service, it adds a route that routes the traffic via a
 virtual IP (169.254.0.253), and it also adds a route to indicate that the virtual IP is reachable via
 antrea-gw0. The reason to add a virtual IP, rather than routing the traffic directly to antrea-gw0, is that

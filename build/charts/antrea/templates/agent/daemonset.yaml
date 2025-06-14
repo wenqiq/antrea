@@ -105,6 +105,10 @@ spec:
             - name: SKIP_LOADING_KERNEL_MODULES
               value: "1"
             {{- end }}
+            # CONFIG_FILE_MODE set the file permission for 10-antrea.conflist.
+            # The default value will be '644' if it's empty.
+            - name: CONFIG_FILE_MODE
+              value: "{{ .Values.cni.configFileMode }}"
           volumeMounts:
           - name: antrea-config
             mountPath: /etc/antrea/antrea-cni.conflist
@@ -130,8 +134,15 @@ spec:
           image: {{ include "antreaAgentImage" . | quote }}
           imagePullPolicy: {{ include "antreaAgentImagePullPolicy" . }}
           {{- if ((.Values.testing).coverage) }}
-          command: ["/bin/sh"]
-          args: ["-c", "sleep 2; antrea-agent-coverage -test.run=TestBincoverRunMain -test.coverprofile=antrea-agent.cov.out -args-file=/agent-arg-file; while true; do sleep 5 & wait $!; done"]
+          args:
+            - "antrea-agent"
+            - "--config=/etc/antrea/antrea-agent.conf"
+            - "--logtostderr=false"
+            - "--log_dir=/var/log/antrea"
+            - "--alsologtostderr"
+            - "--log_file_max_size=100"
+            - "--log_file_max_num=4"
+            - "--v=4"
           {{- else}}
           command: ["antrea-agent"]
           # Log to both "/var/log/antrea/" and stderr (so "kubectl logs" can work).-
@@ -253,6 +264,10 @@ spec:
             mountPropagation: HostToContainer
           - name: xtables-lock
             mountPath: /run/xtables.lock
+          {{- if .Values.agent.kubeletRootDir }}
+          - name: host-pod-resources
+            mountPath: /var/lib/kubelet/pod-resources
+          {{- end }}
           {{- with .Values.agent.antreaAgent.extraVolumeMounts }}
           {{- toYaml . | trim | nindent 10 }}
           {{- end }}
@@ -266,9 +281,6 @@ spec:
             - "--log_file_max_num={{ .Values.agent.antreaOVS.logFileMaxNum }}"
             {{- if .Values.ovs.hwOffload }}
             - "--hw-offload"
-            {{- end }}
-            {{- if .Values.agent.dontLoadKernelModules }}
-            - "--skip-kmod"
             {{- end }}
             {{- with .Values.agent.antreaOVS.extraArgs }}
             {{- toYaml . | trim | nindent 12 }}
@@ -393,6 +405,12 @@ spec:
           hostPath:
             path: /run/xtables.lock
             type: FileOrCreate
+        {{- if .Values.agent.kubeletRootDir }}
+        - name: host-pod-resources
+          hostPath:
+            path: {{ .Values.agent.kubeletRootDir }}/pod-resources
+            type: Directory
+        {{- end }}
         {{- with .Values.agent.extraVolumes }}
         {{- toYaml . | trim | nindent 8 }}
         {{- end }}

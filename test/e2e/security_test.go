@@ -28,9 +28,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	certutil "k8s.io/client-go/util/cert"
 
+	"antrea.io/antrea/pkg/apis"
 	"antrea.io/antrea/pkg/apis/crd/v1beta1"
 	"antrea.io/antrea/pkg/apiserver/certificate"
 	controllerconfig "antrea.io/antrea/pkg/config/controller"
+	"antrea.io/antrea/pkg/util/k8s"
 )
 
 const (
@@ -68,9 +70,14 @@ func testUserProvidedCert(t *testing.T, data *TestData) {
 	if err := data.mutateAntreaConfigMap(cc, nil, false, false); err != nil {
 		t.Fatalf("Failed to update ConfigMap: %v", err)
 	}
+	t.Cleanup(func() {
+		data.mutateAntreaConfigMap(func(config *controllerconfig.ControllerConfig) {
+			config.SelfSignedCert = nil
+		}, nil, true, false)
+	})
 
 	genCertKeyAndUpdateSecret := func() ([]byte, []byte) {
-		certPem, keyPem, _ := certutil.GenerateSelfSignedCertKey("antrea", nil, certificate.GetAntreaServerNames(certificate.AntreaServiceName))
+		certPem, keyPem, _ := certutil.GenerateSelfSignedCertKey("antrea", nil, k8s.GetServiceDNSNames("kube-system", apis.AntreaServiceName))
 		secret, err := data.clientset.CoreV1().Secrets(tlsSecretNamespace).Get(context.TODO(), tlsSecretName, metav1.GetOptions{})
 		exists := true
 		if err != nil {
@@ -111,6 +118,9 @@ func testUserProvidedCert(t *testing.T, data *TestData) {
 	// Create/update the secret and restart antrea-controller, then verify apiserver and its clients are using the
 	// provided certificate.
 	certPem, _ := genCertKeyAndUpdateSecret()
+	t.Cleanup(func() {
+		data.clientset.CoreV1().Secrets(tlsSecretNamespace).Delete(context.TODO(), tlsSecretName, metav1.DeleteOptions{})
+	})
 	testCert(t, data, string(certPem), true)
 
 	// Update the secret and do not restart antrea-controller, then verify apiserver and its clients are using the
@@ -121,7 +131,14 @@ func testUserProvidedCert(t *testing.T, data *TestData) {
 
 // testSelfSignedCert tests the selfSignedCert=true case.
 func testSelfSignedCert(t *testing.T, data *TestData) {
-	testCert(t, data, "", true)
+	secretBeforeRestart, err := data.clientset.CoreV1().Secrets(tlsSecretNamespace).Get(context.TODO(), tlsSecretName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	testCert(t, data, string(secretBeforeRestart.Data[certificate.TLSCertFile]), true)
+
+	secretAfterRestart, err := data.clientset.CoreV1().Secrets(tlsSecretNamespace).Get(context.TODO(), tlsSecretName, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, secretBeforeRestart, secretAfterRestart)
 }
 
 // testCert optionally restarts antrea-controller, then checks:
@@ -151,14 +168,14 @@ func testCert(t *testing.T, data *TestData, expectedCABundle string, restartPod 
 
 	var caBundle string
 	var configMap *v1.ConfigMap
-	if err := wait.Poll(2*time.Second, timeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, timeout, false, func(ctx context.Context) (bool, error) {
 		var err error
-		configMap, err = data.clientset.CoreV1().ConfigMaps(caConfigMapNamespace).Get(context.TODO(), certificate.AntreaCAConfigMapName, metav1.GetOptions{})
+		configMap, err = data.clientset.CoreV1().ConfigMaps(caConfigMapNamespace).Get(context.TODO(), apis.AntreaCAConfigMapName, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Errorf("cannot get ConfigMap antrea-ca")
 		}
 		var exists bool
-		caBundle, exists = configMap.Data[certificate.CAConfigMapKey]
+		caBundle, exists = configMap.Data[apis.CAConfigMapKey]
 		if !exists {
 			t.Log("Missing content for CA bundle, retrying")
 			return false, nil
@@ -194,12 +211,12 @@ func testCert(t *testing.T, data *TestData, expectedCABundle string, restartPod 
 
 	caFile := "/etc/config/ca.crt"
 	clientName := "agnhost"
-	reqURL := fmt.Sprintf("https://%s/readyz", certificate.GetAntreaServerNames(certificate.AntreaServiceName)[0])
+	reqURL := fmt.Sprintf("https://%s/readyz", k8s.GetServiceDNSNames("kube-system", apis.AntreaServiceName)[0])
 	cmd := []string{"curl", "--cacert", caFile, "-s", reqURL}
 	require.NoError(t, NewPodBuilder(clientName, data.testNamespace, agnhostImage).WithContainerName(getImageName(agnhostImage)).MountConfigMap(configMapCopy.Name, "/etc/config/", "config-volume").WithHostNetwork(false).Create(data))
 	defer data.DeletePodAndWait(defaultTimeout, clientName, data.testNamespace)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, clientName, data.testNamespace))
-	if err := wait.Poll(2*time.Second, timeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, timeout, false, func(ctx context.Context) (bool, error) {
 		stdout, stderr, err := data.RunCommandFromPod(data.testNamespace, clientName, agnhostContainerName, cmd)
 		if err != nil {
 			t.Logf("error when running cmd: %v , stdout: <%v>, stderr: <%v>", err, stdout, stderr)
@@ -226,7 +243,7 @@ func testCert(t *testing.T, data *TestData, expectedCABundle string, restartPod 
 	}
 
 	// antrea-agents reconnect every 5 seconds, we expect their connections are restored in a few seconds.
-	if err := wait.Poll(2*time.Second, 30*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 30*time.Second, false, func(ctx context.Context) (bool, error) {
 		cmds := []string{"antctl", "get", "controllerinfo", "-o", "json"}
 		stdout, _, err := runAntctl(antreaController.Name, cmds, data)
 		if err != nil {

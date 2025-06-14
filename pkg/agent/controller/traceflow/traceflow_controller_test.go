@@ -27,11 +27,12 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/interfacestore"
@@ -48,6 +49,7 @@ import (
 var (
 	pod1IPv4       = "192.168.10.10"
 	pod2IPv4       = "192.168.11.10"
+	svc1IPv4       = "10.96.0.1"
 	dstIPv4        = "192.168.99.99"
 	pod1MAC, _     = net.ParseMAC("aa:bb:cc:dd:ee:0f")
 	pod2MAC, _     = net.ParseMAC("aa:bb:cc:dd:ee:00")
@@ -79,6 +81,23 @@ var (
 			Namespace: "default",
 		},
 	}
+
+	svc1 = v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "svc-1",
+			Namespace: "default",
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{
+				{
+					Port:     80,
+					Protocol: v1.ProtocolTCP,
+				},
+			},
+			Type:      v1.ServiceTypeClusterIP,
+			ClusterIP: svc1IPv4,
+		},
+	}
 )
 
 type fakeTraceflowController struct {
@@ -88,13 +107,16 @@ type fakeTraceflowController struct {
 	mockOFClient         *openflowtest.MockClient
 	crdClient            *fakeversioned.Clientset
 	crdInformerFactory   crdinformers.SharedInformerFactory
+	informerFactory      informers.SharedInformerFactory
 	networkPolicyQuerier *queriertest.MockAgentNetworkPolicyInfoQuerier
 	egressQuerier        *queriertest.MockEgressQuerier
 }
 
 func newFakeTraceflowController(t *testing.T, initObjects []runtime.Object, networkConfig *config.NetworkConfig, nodeConfig *config.NodeConfig) *fakeTraceflowController {
 	controller := gomock.NewController(t)
-	kubeClient := fake.NewSimpleClientset(&pod1, &pod2, &pod3)
+	kubeClient := fake.NewSimpleClientset(&pod1, &pod2, &pod3, &svc1)
+	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+	serviceInformer := informerFactory.Core().V1().Services()
 	mockOFClient := openflowtest.NewMockClient(controller)
 	crdClient := fakeversioned.NewSimpleClientset(initObjects...)
 	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, 0)
@@ -110,6 +132,8 @@ func newFakeTraceflowController(t *testing.T, initObjects []runtime.Object, netw
 
 	tfController := &Controller{
 		kubeClient:            kubeClient,
+		serviceLister:         serviceInformer.Lister(),
+		serviceListerSynced:   serviceInformer.Informer().HasSynced,
 		crdClient:             crdClient,
 		traceflowInformer:     traceflowInformer,
 		traceflowLister:       traceflowInformer.Lister(),
@@ -121,8 +145,13 @@ func newFakeTraceflowController(t *testing.T, initObjects []runtime.Object, netw
 		networkConfig:         networkConfig,
 		nodeConfig:            nodeConfig,
 		serviceCIDR:           serviceCIDRNet,
-		queue:                 workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "traceflow"),
-		runningTraceflows:     make(map[int8]*traceflowState),
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "traceflow",
+			},
+		),
+		runningTraceflows: make(map[int8]*traceflowState),
 	}
 
 	return &fakeTraceflowController{
@@ -132,6 +161,7 @@ func newFakeTraceflowController(t *testing.T, initObjects []runtime.Object, netw
 		mockOFClient:         mockOFClient,
 		crdClient:            crdClient,
 		crdInformerFactory:   crdInformerFactory,
+		informerFactory:      informerFactory,
 		networkPolicyQuerier: npQuerier,
 		egressQuerier:        egressQuerier,
 	}
@@ -227,7 +257,7 @@ func TestPreparePacket(t *testing.T) {
 							TCP: &crdv1beta1.TCPHeader{
 								SrcPort: 80,
 								DstPort: 81,
-								Flags:   pointer.Int32(11),
+								Flags:   ptr.To[int32](11),
 							},
 						},
 					},
@@ -473,11 +503,77 @@ func TestPreparePacket(t *testing.T) {
 				IPProto:       protocol.Type_IPv6ICMP,
 			},
 		},
+		{
+			name: "Pod-to-service packet without port and protocol",
+			tf: &crdv1beta1.Traceflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "tf7", UID: "uid7"},
+				Spec: crdv1beta1.TraceflowSpec{
+					Source: crdv1beta1.Source{
+						Namespace: pod1.Namespace,
+						Pod:       pod1.Name,
+					},
+					Destination: crdv1beta1.Destination{
+						Namespace: svc1.Namespace,
+						Service:   svc1.Name,
+					},
+					Packet: crdv1beta1.Packet{
+						IPHeader: &crdv1beta1.IPHeader{},
+					},
+				},
+			},
+			expectedPacket: &binding.Packet{
+				SourceIP:        net.ParseIP(pod1IPv4),
+				SourceMAC:       pod1MAC,
+				DestinationIP:   net.ParseIP(svc1IPv4).To4(),
+				DestinationPort: 80,
+				IPProto:         protocol.Type_TCP,
+				TTL:             64,
+				TCPFlags:        uint8(2),
+			},
+		},
+		{
+			name: "Pod-to-service packet with port and protocol",
+			tf: &crdv1beta1.Traceflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "tf8", UID: "uid8"},
+				Spec: crdv1beta1.TraceflowSpec{
+					Source: crdv1beta1.Source{
+						Namespace: pod1.Namespace,
+						Pod:       pod1.Name,
+					},
+					Destination: crdv1beta1.Destination{
+						Namespace: svc1.Namespace,
+						Service:   svc1.Name,
+					},
+					Packet: crdv1beta1.Packet{
+						IPHeader: &crdv1beta1.IPHeader{
+							Protocol: 17,
+						},
+						TransportHeader: crdv1beta1.TransportHeader{
+							UDP: &crdv1beta1.UDPHeader{
+								DstPort: 8080,
+							},
+						},
+					},
+				},
+			},
+			expectedPacket: &binding.Packet{
+				SourceIP:        net.ParseIP(pod1IPv4),
+				SourceMAC:       pod1MAC,
+				DestinationIP:   net.ParseIP(svc1IPv4).To4(),
+				DestinationPort: 8080,
+				IPProto:         protocol.Type_UDP,
+				TTL:             64,
+			},
+		},
 	}
 
 	for _, tt := range tcs {
 		t.Run(tt.name, func(t *testing.T) {
 			tfc := newFakeTraceflowController(t, []runtime.Object{tt.tf}, nil, nil)
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			tfc.informerFactory.Start(stopCh)
+			tfc.informerFactory.WaitForCacheSync(stopCh)
 			podInterfaces := tfc.interfaceStore.GetContainerInterfacesByPod(pod1.Name, pod1.Namespace)
 			if tt.intf != nil {
 				podInterfaces[0] = tt.intf
@@ -532,9 +628,6 @@ func TestStartTraceflow(t *testing.T) {
 	tcs := []struct {
 		name           string
 		tf             *crdv1beta1.Traceflow
-		ofPort         uint32
-		receiverOnly   bool
-		packet         *binding.Packet
 		expectedCalls  func(mockOFClient *openflowtest.MockClient)
 		nodeConfig     *config.NodeConfig
 		expectedErr    string
@@ -558,16 +651,6 @@ func TestStartTraceflow(t *testing.T) {
 					Phase:        crdv1beta1.Running,
 					DataplaneTag: 1,
 				},
-			},
-			ofPort: ofPortPod1,
-			packet: &binding.Packet{
-				SourceIP:       net.ParseIP(pod1IPv4),
-				SourceMAC:      pod1MAC,
-				DestinationIP:  net.ParseIP(pod2IPv4),
-				DestinationMAC: pod2MAC,
-				IPProto:        1,
-				TTL:            64,
-				ICMPType:       8,
 			},
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTraceflowFlows(uint8(1), false, false, false, nil, ofPortPod1, uint16(crdv1beta1.DefaultTraceflowTimeout))
@@ -600,15 +683,6 @@ func TestStartTraceflow(t *testing.T) {
 					DataplaneTag: 1,
 				},
 			},
-			ofPort: ofPortPod1,
-			packet: &binding.Packet{
-				SourceIP:      net.ParseIP(pod1IPv4),
-				SourceMAC:     pod1MAC,
-				DestinationIP: net.ParseIP(dstIPv4),
-				IPProto:       1,
-				TTL:           64,
-				ICMPType:      8,
-			},
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTraceflowFlows(uint8(1), false, false, false, nil, ofPortPod1, uint16(crdv1beta1.DefaultTraceflowTimeout))
 				mockOFClient.EXPECT().SendTraceflowPacket(uint8(1), &binding.Packet{
@@ -637,7 +711,6 @@ func TestStartTraceflow(t *testing.T) {
 					DataplaneTag: 1,
 				},
 			},
-			ofPort: ofPortPod2,
 			expectedCalls: func(mockOFClient *openflowtest.MockClient) {
 				mockOFClient.EXPECT().InstallTraceflowFlows(uint8(1), true, false, true, &binding.Packet{DestinationMAC: pod2MAC}, ofPortPod2, uint16(crdv1beta1.DefaultTraceflowTimeout))
 			},

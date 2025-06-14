@@ -48,6 +48,7 @@ const (
 // Declared variables for test
 var (
 	ipSetupVethWithName            = ip.SetupVethWithName
+	ipDelLinkByName                = ip.DelLinkByName
 	ipamConfigureIface             = ipam.ConfigureIface
 	ethtoolTXHWCsumOff             = ethtool.EthtoolTXHWCsumOff
 	renameInterface                = util.RenameInterface
@@ -213,13 +214,6 @@ func (ic *ifConfigurator) configureContainerSriovLink(
 	containerIface := &current.Interface{Name: containerIfaceName, Sandbox: containerNetNS}
 	result.Interfaces = []*current.Interface{hostIface, containerIface}
 
-	// Get rest of the VF information
-	pfName, vfID, err := ic.getVFInfo(pciAddress)
-	klog.V(2).InfoS("Get pfName and vfID of pciAddress", "pfName", pfName, "vfID", vfID, "pciAddress", pciAddress)
-	if err != nil {
-		return fmt.Errorf("failed to get VF information: %v", err)
-	}
-
 	vfIFName, err := ic.getVFLinkName(pciAddress)
 	if err != nil || vfIFName == "" {
 		return fmt.Errorf("VF interface not found for pciAddress %s: %v", pciAddress, err)
@@ -264,6 +258,15 @@ func (ic *ifConfigurator) configureContainerLinkVeth(
 		if err != nil {
 			return fmt.Errorf("failed to create veth devices for container %s: %v", containerID, err)
 		}
+		success := false
+		defer func() {
+			if !success {
+				klog.V(2).InfoS("Deleting veth devices for container during rollback", "containerID", containerID)
+				if err := ipDelLinkByName(hostVeth.Name); err != nil && err != ip.ErrLinkNotFound {
+					klog.ErrorS(err, "Failed to delete veth devices for container during rollback", "containerID", containerID)
+				}
+			}
+		}()
 		containerIface.Mac = podMAC.String()
 		hostIface.Mac = hostVeth.HardwareAddr.String()
 		// Disable TX checksum offloading when it's configured explicitly.
@@ -278,6 +281,7 @@ func (ic *ifConfigurator) configureContainerLinkVeth(
 		if err := ipamConfigureIface(containerIface.Name, result); err != nil {
 			return fmt.Errorf("failed to configure IP address for container %s: %v", containerID, err)
 		}
+		success = true
 		return nil
 	}); err != nil {
 		return err
@@ -632,12 +636,13 @@ func (ic *ifConfigurator) validateInterface(intf *current.Interface, inNetns boo
 	if err != nil {
 		return nil, fmt.Errorf("failed to find link for interface %s", intf.Name)
 	}
-	if ifType == netDeviceTypeVeth {
+	switch ifType {
+	case netDeviceTypeVeth:
 		if !isVeth(link) {
 			return nil, fmt.Errorf("interface %s is not of type veth", intf.Name)
 		}
 		return link, nil
-	} else if ifType == netDeviceTypeVF {
+	case netDeviceTypeVF:
 		return link, nil
 	}
 	return nil, fmt.Errorf("unknown device type %s", ifType)
@@ -646,8 +651,4 @@ func (ic *ifConfigurator) validateInterface(intf *current.Interface, inNetns boo
 func isVeth(link netlink.Link) bool {
 	_, isVeth := link.(*netlink.Veth)
 	return isVeth
-}
-
-func getOVSInterfaceType(ovsPortName string) int {
-	return defaultOVSInterfaceType
 }

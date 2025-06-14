@@ -39,6 +39,7 @@ import (
 	"antrea.io/antrea/pkg/agent/flowexporter"
 	"antrea.io/antrea/pkg/agent/flowexporter/connections"
 	connectionstest "antrea.io/antrea/pkg/agent/flowexporter/connections/testing"
+	"antrea.io/antrea/pkg/agent/flowexporter/exporter/filter"
 	"antrea.io/antrea/pkg/agent/metrics"
 	ipfixtest "antrea.io/antrea/pkg/ipfix/testing"
 	queriertest "antrea.io/antrea/pkg/querier/testing"
@@ -90,8 +91,7 @@ func testSendTemplateSet(t *testing.T, v4Enabled bool, v6Enabled bool) {
 }
 
 func sendTemplateSet(t *testing.T, ctrl *gomock.Controller, mockIPFIXExpProc *ipfixtest.MockIPFIXExportingProcess, mockIPFIXRegistry *ipfixtest.MockIPFIXRegistry, flowExp *FlowExporter, isIPv6 bool) {
-	var mockTempSet *ipfixentitiestesting.MockSet
-	mockTempSet = ipfixentitiestesting.NewMockSet(ctrl)
+	var mockTempSet = ipfixentitiestesting.NewMockSet(ctrl)
 	flowExp.ipfixSet = mockTempSet
 	// Following consists of all elements that are in IANAInfoElements and AntreaInfoElements (globals)
 	// Only the element name is needed, other arguments have dummy values.
@@ -112,9 +112,9 @@ func sendTemplateSet(t *testing.T, ctrl *gomock.Controller, mockIPFIXExpProc *ip
 		mockIPFIXRegistry.EXPECT().GetInfoElement(ie, ipfixregistry.AntreaEnterpriseID).Return(elemList[i+len(ianaIE)+len(IANAReverseInfoElements)].GetInfoElement(), nil)
 	}
 	if !isIPv6 {
-		mockTempSet.EXPECT().AddRecord(elemList, testTemplateIDv4).Return(nil)
+		mockTempSet.EXPECT().AddRecordV2(elemList, testTemplateIDv4).Return(nil)
 	} else {
-		mockTempSet.EXPECT().AddRecord(elemList, testTemplateIDv6).Return(nil)
+		mockTempSet.EXPECT().AddRecordV2(elemList, testTemplateIDv6).Return(nil)
 	}
 	// Passing 0 for sentBytes as it is not used anywhere in the test. If this not a call to mock, the actual sentBytes
 	// above elements: IANAInfoElements, IANAReverseInfoElements and AntreaInfoElements.
@@ -126,7 +126,7 @@ func sendTemplateSet(t *testing.T, ctrl *gomock.Controller, mockIPFIXExpProc *ip
 	}
 	mockIPFIXExpProc.EXPECT().SendSet(mockTempSet).Return(0, nil)
 	_, err := flowExp.sendTemplateSet(isIPv6)
-	assert.NoError(t, err, "Error in sending template set")
+	assert.NoError(t, err, "Error when sending template set")
 
 	eL := flowExp.elementsListv4
 	if isIPv6 {
@@ -248,13 +248,13 @@ func testSendDataSet(t *testing.T, v4Enabled bool, v6Enabled bool) {
 	sendDataSet := func(elemList []ipfixentities.InfoElementWithValue, templateID uint16, conn flowexporter.Connection) {
 		mockDataSet.EXPECT().ResetSet()
 		mockDataSet.EXPECT().PrepareSet(ipfixentities.Data, templateID).Return(nil)
-		mockDataSet.EXPECT().AddRecord(ElementListMatcher(elemList), templateID).Return(nil)
+		mockDataSet.EXPECT().AddRecordV2(ElementListMatcher(elemList), templateID).Return(nil)
 		mockIPFIXExpProc.EXPECT().SendSet(mockDataSet).Return(0, nil)
 
 		err := flowExp.addConnToSet(&conn)
 		assert.NoError(t, err, "Error when adding record to data set")
 		_, err = flowExp.sendDataSet()
-		assert.NoError(t, err, "Error in sending data set")
+		assert.NoError(t, err, "Error when sending data set")
 	}
 
 	if v4Enabled {
@@ -374,12 +374,11 @@ func TestFlowExporter_initFlowExporter(t *testing.T) {
 	defer conn2.Close()
 
 	for _, tc := range []struct {
-		protocol               string
-		address                string
-		expectedTempRefTimeout uint32
+		protocol string
+		address  string
 	}{
-		{conn1.LocalAddr().Network(), conn1.LocalAddr().String(), uint32(1800)},
-		{conn2.Addr().Network(), conn2.Addr().String(), uint32(0)},
+		{conn1.LocalAddr().Network(), conn1.LocalAddr().String()},
+		{conn2.Addr().Network(), conn2.Addr().String()},
 	} {
 		exp := &FlowExporter{
 			collectorAddr: tc.address,
@@ -391,7 +390,8 @@ func TestFlowExporter_initFlowExporter(t *testing.T) {
 		err = exp.initFlowExporter(context.Background())
 		require.NoError(t, err)
 		assert.Equal(t, tc.address, exp.exporterInput.CollectorAddress)
-		assert.Equal(t, tc.expectedTempRefTimeout, exp.exporterInput.TempRefTimeout)
+		// exporter should use the default value as per the go-ipfix library.
+		assert.Equal(t, uint32(0), exp.exporterInput.TempRefTimeout)
 		checkTotalReconnectionsMetric(t)
 		metrics.ReconnectionsToFlowCollector.Dec()
 	}
@@ -664,7 +664,7 @@ func runSendFlowRecordTests(t *testing.T, flowExp *FlowExporter, isIPv6 bool) {
 				StaleConnectionTimeout: 1,
 				PollInterval:           1}
 			flowExp.conntrackConnStore = connections.NewConntrackConnectionStore(mockConnDumper, !isIPv6, isIPv6, nil, nil, nil, nil, o)
-			flowExp.denyConnStore = connections.NewDenyConnectionStore(nil, nil, o)
+			flowExp.denyConnStore = connections.NewDenyConnectionStore(nil, nil, o, filter.NewProtocolFilter(nil))
 			flowExp.conntrackPriorityQueue = flowExp.conntrackConnStore.GetPriorityQueue()
 			flowExp.denyPriorityQueue = flowExp.denyConnStore.GetPriorityQueue()
 			flowExp.numDataSetsSent = 0
@@ -702,10 +702,10 @@ func runSendFlowRecordTests(t *testing.T, flowExp *FlowExporter, isIPv6 bool) {
 			mockDataSet.EXPECT().ResetSet()
 			if !isIPv6 {
 				mockDataSet.EXPECT().PrepareSet(ipfixentities.Data, flowExp.templateIDv4).Return(nil)
-				mockDataSet.EXPECT().AddRecord(flowExp.elementsListv4, flowExp.templateIDv4).Return(nil)
+				mockDataSet.EXPECT().AddRecordV2(flowExp.elementsListv4, flowExp.templateIDv4).Return(nil)
 			} else {
 				mockDataSet.EXPECT().PrepareSet(ipfixentities.Data, flowExp.templateIDv6).Return(nil)
-				mockDataSet.EXPECT().AddRecord(flowExp.elementsListv6, flowExp.templateIDv6).Return(nil)
+				mockDataSet.EXPECT().AddRecordV2(flowExp.elementsListv6, flowExp.templateIDv6).Return(nil)
 			}
 			mockIPFIXExpProc.EXPECT().SendSet(mockDataSet).Return(0, nil)
 			_, err := flowExp.sendFlowRecords()
@@ -806,26 +806,29 @@ func TestFlowExporter_findFlowType(t *testing.T) {
 func TestFlowExporter_fillEgressInfo(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	testCases := []struct {
-		name               string
-		sourcePodNamespace string
-		sourcePodName      string
-		expectedEgressName string
-		expectedEgressIP   string
-		expectedErr        string
+		name                   string
+		sourcePodNamespace     string
+		sourcePodName          string
+		expectedEgressName     string
+		expectedEgressIP       string
+		expectedEgressNodeName string
+		expectedErr            string
 	}{
 		{
-			name:               "Both EgressName and EgressIP filled",
-			sourcePodNamespace: "namespaceA",
-			sourcePodName:      "podA",
-			expectedEgressName: "test-egress",
-			expectedEgressIP:   "172.18.0.1",
+			name:                   "EgressName, EgressIP and EgressNodeName filled",
+			sourcePodNamespace:     "namespaceA",
+			sourcePodName:          "podA",
+			expectedEgressName:     "test-egress",
+			expectedEgressIP:       "172.18.0.1",
+			expectedEgressNodeName: "test-egress-node",
 		},
 		{
-			name:               "No Egress Information filled",
-			sourcePodNamespace: "namespaceA",
-			sourcePodName:      "podC",
-			expectedEgressName: "",
-			expectedEgressIP:   "",
+			name:                   "No Egress Information filled",
+			sourcePodNamespace:     "namespaceA",
+			sourcePodName:          "podC",
+			expectedEgressName:     "",
+			expectedEgressIP:       "",
+			expectedEgressNodeName: "",
 		},
 	}
 
@@ -841,13 +844,14 @@ func TestFlowExporter_fillEgressInfo(t *testing.T) {
 				SourcePodName:      tc.sourcePodName,
 			}
 			if tc.expectedEgressName != "" {
-				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return(tc.expectedEgressName, tc.expectedEgressIP, nil)
+				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return(tc.expectedEgressName, tc.expectedEgressIP, tc.expectedEgressNodeName, nil)
 			} else {
-				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return("", "", fmt.Errorf("no Egress applied to Pod %s", conn.SourcePodName))
+				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return("", "", "", fmt.Errorf("no Egress applied to Pod %s", conn.SourcePodName))
 			}
 			exp.fillEgressInfo(&conn)
 			assert.Equal(t, tc.expectedEgressName, conn.EgressName)
 			assert.Equal(t, tc.expectedEgressIP, conn.EgressIP)
+			assert.Equal(t, tc.expectedEgressNodeName, conn.EgressNodeName)
 		})
 	}
 }

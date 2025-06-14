@@ -30,14 +30,17 @@ import (
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/util"
 	antreasyscall "antrea.io/antrea/pkg/agent/util/syscall"
+	"antrea.io/antrea/pkg/agent/util/winnet"
 	"antrea.io/antrea/pkg/apis/crd/v1alpha1"
+	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/pkg/ovs/ovsctl"
 	utilip "antrea.io/antrea/pkg/util/ip"
 )
 
 var (
+	winnetUtil winnet.Interface = &winnet.Handle{}
 	// setInterfaceMTU is meant to be overridden for testing
-	setInterfaceMTU = util.SetInterfaceMTU
+	setInterfaceMTU = winnetUtil.SetNetAdapterMTU
 
 	// setInterfaceARPAnnounce is meant to be overridden for testing.
 	setInterfaceARPAnnounce = func(ifaceName string, value int) error { return nil }
@@ -56,11 +59,11 @@ func (i *Initializer) prepareHNSNetworkAndOVSExtension() error {
 	hnsNetwork, err := hcsshim.GetHNSNetworkByName(util.LocalHNSNetwork)
 	if err == nil {
 		// Enable OVS Extension on the HNS Network.
-		if err = util.EnableHNSNetworkExtension(hnsNetwork.Id, util.OVSExtensionID); err != nil {
+		if err = util.EnableHNSNetworkExtension(hnsNetwork.Id, winnet.OVSExtensionID); err != nil {
 			return err
 		}
 		// Enable RSC for existing vSwitch.
-		if err = util.EnableRSCOnVSwitch(util.LocalHNSNetwork); err != nil {
+		if err = winnetUtil.EnableRSCOnVSwitch(util.LocalHNSNetwork); err != nil {
 			return err
 		}
 		// Save the uplink adapter name to check if the OVS uplink port has been created in prepareOVSBridge stage.
@@ -86,7 +89,7 @@ func (i *Initializer) prepareHNSNetworkAndOVSExtension() error {
 	// adapter was not found" if no adapter is provided and no physical adapter is available on the host.
 	// If the discovered adapter is virtual, it likely means the physical adapter is already attached to another
 	// HNSNetwork. For example, docker may create HNSNetworks which attach to the physical adapter.
-	isVirtual, err := util.IsVirtualAdapter(adapter.Name)
+	isVirtual, err := winnetUtil.IsVirtualNetAdapter(adapter.Name)
 	if err != nil {
 		return err
 	}
@@ -106,7 +109,7 @@ func (i *Initializer) prepareHNSNetworkAndOVSExtension() error {
 		klog.InfoS("No default gateway found on interface", "interface", adapter.Name)
 	}
 	i.nodeConfig.UplinkNetConfig.Gateway = defaultGW
-	dnsServers, err := util.GetDNServersByInterfaceIndex(adapter.Index)
+	dnsServers, err := winnetUtil.GetDNServersByNetAdapterIndex(adapter.Index)
 	if err != nil {
 		return err
 	}
@@ -127,12 +130,12 @@ func (i *Initializer) prepareHNSNetworkAndOVSExtension() error {
 func (i *Initializer) prepareVMNetworkAndOVSExtension() error {
 	klog.V(2).Info("Setting up VM network")
 	// Check whether VM Switch is created
-	exists, err := util.VMSwitchExists()
+	exists, err := winnetUtil.VMSwitchExists(util.LocalVMSwitch)
 	if err != nil {
 		return err
 	}
 	if exists {
-		vmSwitchIFName, err := util.GetVMSwitchInterfaceName()
+		vmSwitchIFName, err := winnetUtil.GetVMSwitchNetAdapterName(util.LocalVMSwitch)
 		if err != nil {
 			return err
 		}
@@ -167,20 +170,29 @@ func (i *Initializer) prepareVMNetworkAndOVSExtension() error {
 	}()
 
 	klog.V(2).InfoS("Creating VM switch", "uplinkIFName", uplinkIFName)
-	if err = util.CreateVMSwitch(uplinkIFName); err != nil {
+	if err = winnetUtil.AddVMSwitch(uplinkIFName, util.LocalVMSwitch); err != nil {
 		return fmt.Errorf("failed to create VM switch for interface %s: %v", uplinkIFName, err)
+	}
+	enabled, err := winnetUtil.IsVMSwitchOVSExtensionEnabled(util.LocalVMSwitch)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		if err = winnetUtil.EnableVMSwitchOVSExtension(util.LocalVMSwitch); err != nil {
+			return err
+		}
 	}
 
 	defer func() {
 		if !success {
-			if err = util.RemoveVMSwitch(); err != nil {
+			if err = winnetUtil.RemoveVMSwitch(util.LocalVMSwitch); err != nil {
 				klog.ErrorS(err, "Failed to remove VMSwitch")
 			}
 		}
 	}()
 
-	uplinkMACStr := strings.Replace(uplinkIface.HardwareAddr.String(), ":", "", -1)
-	if err = util.RenameVMNetworkAdapter(util.LocalVMSwitch, uplinkMACStr, hostIFName, true); err != nil {
+	uplinkMACStr := strings.ReplaceAll(uplinkIface.HardwareAddr.String(), ":", "")
+	if err = winnetUtil.RenameVMNetworkAdapter(util.LocalVMSwitch, uplinkMACStr, hostIFName, true); err != nil {
 		return fmt.Errorf("failed to rename VMNetworkAdapter as %s: %v", hostIFName, err)
 	}
 
@@ -230,46 +242,63 @@ func (i *Initializer) prepareOVSBridgeOnHNSNetwork() error {
 	// Create local port.
 	brName := i.ovsBridgeClient.GetBridgeName()
 	if _, err = i.ovsBridgeClient.GetOFPort(brName, false); err == nil {
-		klog.Infof("OVS bridge local port %s already exists, skip the configuration", brName)
+		klog.InfoS("OVS bridge local port already exists, skip the configuration", "name", brName)
 	} else {
-		// OVS does not receive "ofport_request" param when creating local port, so here use config.AutoAssignedOFPort=0
-		// to ignore this param.
+		// OVS does not receive "ofport_request" param when creating local port, so here use
+		// ovsconfig.AutoAssignedOFPort (0).
 		externalIDs := map[string]interface{}{
 			interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaHost,
 		}
-		if _, err = i.ovsBridgeClient.CreateInternalPort(brName, config.AutoAssignedOFPort, "", externalIDs); err != nil {
+		if _, err = i.ovsBridgeClient.CreateInternalPort(brName, ovsconfig.AutoAssignedOFPort, "", externalIDs); err != nil {
 			return err
 		}
 	}
 
-	// If uplink is already exists, return.
+	// If uplink already exists, return early.
 	uplinkNetConfig := i.nodeConfig.UplinkNetConfig
 	uplink := uplinkNetConfig.Name
 	if ofport, err := i.ovsBridgeClient.GetOFPort(uplink, false); err == nil {
-		klog.InfoS("Uplink already exists, skip the configuration", "uplink", uplink, "port", ofport)
+		klog.InfoS("Uplink already exists, skip the configuration", "uplink", uplink, "ofPort", ofport)
 		i.nodeConfig.UplinkNetConfig.OFPort = uint32(ofport)
-		i.nodeConfig.HostInterfaceOFPort = config.BridgeOFPort
+		i.nodeConfig.HostInterfaceOFPort = ovsconfig.BridgeOFPort
+
+		// We check if the antrea-type external ID, which is used to store the interface
+		// type is present. If it is missing, we add it. Prior to Antrea v2.0, this external
+		// ID was not set for the uplink port, which was a bug. We need this code for
+		// backwards-compatibility, as other parts of the code may assume this external ID
+		// always exist. This code can be removed in Antrea v2.3.
+		externalIDs, err := i.ovsBridgeClient.GetPortExternalIDs(uplink)
+		if err != nil {
+			return fmt.Errorf("error when getting external IDs for uplink: %w", err)
+		}
+		if _, ok := externalIDs[interfacestore.AntreaInterfaceTypeKey]; ok {
+			// Nothing to do, external ID already exists
+			return nil
+		}
+		// Add missing external ID.
+		// A copy is required because of the type mismatch.
+		updatedExternalIDs := make(map[string]interface{})
+		for k, v := range externalIDs {
+			updatedExternalIDs[k] = v
+		}
+		updatedExternalIDs[interfacestore.AntreaInterfaceTypeKey] = interfacestore.AntreaUplink
+		if err := i.ovsBridgeClient.SetPortExternalIDs(uplink, updatedExternalIDs); err != nil {
+			return fmt.Errorf("failed to set external ID for Antrea interface type on uplink port: %w", err)
+		}
 		return nil
 	}
+
 	// Create uplink port.
-	freePort, err := i.ovsBridgeClient.AllocateOFPort(config.UplinkOFPort)
-	if err != nil {
-		klog.ErrorS(err, "Failed to find a free port on OVS")
-		return err
-	}
+	const uplinkOFPort = config.DefaultUplinkOFPort
 	var uplinkPortUUID string
-	uplinkPortUUID, err = i.ovsBridgeClient.CreateUplinkPort(uplink, freePort, nil)
+	uplinkPortUUID, err = i.ovsBridgeClient.CreateUplinkPort(uplink, uplinkOFPort, map[string]interface{}{interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaUplink})
 	if err != nil {
-		klog.Errorf("Failed to add uplink port %s: %v", uplink, err)
+		klog.ErrorS(err, "Failed to add uplink port", "uplink", uplink)
 		return err
-	}
-	uplinkOFPort, err := i.ovsBridgeClient.GetOFPort(uplink, false)
-	if err != nil {
-		return fmt.Errorf("failed to get uplink ofport %s: err=%w", uplink, err)
 	}
 	klog.InfoS("Allocated OpenFlow port for uplink interface", "port", uplink, "ofPort", uplinkOFPort)
 	i.nodeConfig.UplinkNetConfig.OFPort = uint32(uplinkOFPort)
-	i.nodeConfig.HostInterfaceOFPort = config.BridgeOFPort
+	i.nodeConfig.HostInterfaceOFPort = ovsconfig.BridgeOFPort
 	uplinkInterface := interfacestore.NewUplinkInterface(uplink)
 	uplinkInterface.OVSPortConfig = &interfacestore.OVSPortConfig{uplinkPortUUID, uplinkOFPort} //nolint: govet
 	i.ifaceStore.AddInterface(uplinkInterface)
@@ -280,7 +309,7 @@ func (i *Initializer) prepareOVSBridgeOnHNSNetwork() error {
 	// connection are routed to the selected backend Pod via the bridge interface; if we do not enable IP forwarding on
 	// the bridge interface, the packet will be discarded on the bridge interface as the destination of the packet
 	// is not the Node.
-	if err = util.EnableIPForwarding(brName); err != nil {
+	if err = winnetUtil.EnableIPForwarding(brName); err != nil {
 		return err
 	}
 	// Set the uplink with "no-flood" config, so that the IP of local Pods and "antrea-gw0" will not be leaked to the
@@ -377,11 +406,11 @@ func (i *Initializer) saveHostRoutes() error {
 	// IPv6 is not supported on Windows currently. Please refer to https://github.com/antrea-io/antrea/issues/5162
 	// for more information.
 	family := antreasyscall.AF_INET
-	filter := &util.Route{
+	filter := &winnet.Route{
 		LinkIndex:      i.nodeConfig.UplinkNetConfig.Index,
 		GatewayAddress: net.ParseIP(i.nodeConfig.UplinkNetConfig.Gateway),
 	}
-	routes, err := util.RouteListFiltered(family, filter, util.RT_FILTER_IF|util.RT_FILTER_GW)
+	routes, err := winnetUtil.RouteListFiltered(family, filter, winnet.RT_FILTER_IF|winnet.RT_FILTER_GW)
 	if err != nil {
 		return err
 	}
@@ -481,5 +510,9 @@ func (i *Initializer) installVMInitialFlows() error {
 }
 
 func (i *Initializer) prepareL7EngineInterfaces() error {
+	return nil
+}
+
+func (i *Initializer) setTXChecksumOffloadOnGateway() error {
 	return nil
 }

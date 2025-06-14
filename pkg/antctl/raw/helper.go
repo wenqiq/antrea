@@ -15,11 +15,15 @@
 package raw
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
+	"path"
 	"strconv"
+	"strings"
 
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
 	corev1 "k8s.io/api/core/v1"
@@ -27,15 +31,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 
-	agentapiserver "antrea.io/antrea/pkg/agent/apiserver"
 	"antrea.io/antrea/pkg/antctl/runtime"
 	"antrea.io/antrea/pkg/apis"
 	"antrea.io/antrea/pkg/apis/crd/v1beta1"
-	controllerapiserver "antrea.io/antrea/pkg/apiserver"
-	cert "antrea.io/antrea/pkg/apiserver/certificate"
 	antrea "antrea.io/antrea/pkg/client/clientset/versioned"
 	antreascheme "antrea.io/antrea/pkg/client/clientset/versioned/scheme"
+	"antrea.io/antrea/pkg/util/compress"
 	"antrea.io/antrea/pkg/util/ip"
 	"antrea.io/antrea/pkg/util/k8s"
 )
@@ -80,23 +83,22 @@ func SetupLocalKubeconfig(kubeconfig *rest.Config) {
 	kubeconfig.Insecure = true
 	kubeconfig.CAFile = ""
 	kubeconfig.CAData = nil
+	kubeconfig.BearerTokenFile = apis.APIServerLoopbackTokenPath
 	if runtime.Mode == runtime.ModeAgent {
 		kubeconfig.Host = net.JoinHostPort("127.0.0.1", strconv.Itoa(apis.AntreaAgentAPIPort))
-		kubeconfig.BearerTokenFile = agentapiserver.TokenPath
 	} else {
 		kubeconfig.Host = net.JoinHostPort("127.0.0.1", strconv.Itoa(apis.AntreaControllerAPIPort))
-		kubeconfig.BearerTokenFile = controllerapiserver.TokenPath
 	}
 }
 
-func GetControllerCACert(ctx context.Context, client kubernetes.Interface) ([]byte, error) {
-	cm, err := client.CoreV1().ConfigMaps(cert.GetCAConfigMapNamespace()).Get(ctx, cert.AntreaCAConfigMapName, metav1.GetOptions{})
+func GetControllerCACert(ctx context.Context, client kubernetes.Interface, controllerInfo *v1beta1.AntreaControllerInfo) ([]byte, error) {
+	cm, err := client.CoreV1().ConfigMaps(controllerInfo.PodRef.Namespace).Get(ctx, apis.AntreaCAConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	ca, ok := cm.Data[cert.CAConfigMapKey]
+	ca, ok := cm.Data[apis.CAConfigMapKey]
 	if !ok {
-		return nil, fmt.Errorf("missing key '%s' in ConfigMap", cert.CAConfigMapKey)
+		return nil, fmt.Errorf("missing key '%s' in ConfigMap", apis.CAConfigMapKey)
 	}
 	return []byte(ca), nil
 }
@@ -201,14 +203,14 @@ func CreateControllerClientCfg(
 		cfg.CAFile = ""
 		cfg.CAData = nil
 	} else {
-		caCert, err := GetControllerCACert(ctx, k8sClientset)
+		caCert, err := GetControllerCACert(ctx, k8sClientset, controllerInfo)
 		if err != nil {
 			fmt.Println("Failed to retrieve certificate for Antrea Controller, which is required to establish a secure connection")
 			fmt.Println("You can try running the command again with '--insecure'")
 			return nil, fmt.Errorf("error when getting cert: %w", err)
 		}
 		cfg.Insecure = false
-		cfg.ServerName = cert.GetAntreaServerNames(cert.AntreaServiceName)[0]
+		cfg.ServerName = k8s.GetServiceDNSNames(controllerInfo.PodRef.Namespace, apis.AntreaServiceName)[0]
 		cfg.CAData = caCert
 	}
 
@@ -223,4 +225,59 @@ func CreateControllerClientCfg(
 
 	cfg.Host = fmt.Sprintf("https://%s", net.JoinHostPort(nodeIP, fmt.Sprint(controllerInfo.APIPort)))
 	return cfg, nil
+}
+
+func ExecInPod(ctx context.Context, client kubernetes.Interface, config *rest.Config, namespace, pod, container string, command []string) (string, string, error) {
+	req := client.CoreV1().RESTClient().Post().Resource("pods").Name(pod).Namespace(namespace).SubResource("exec")
+	req.VersionedParams(&corev1.PodExecOptions{
+		Command:   command,
+		Container: container,
+		Stdin:     false,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       false,
+	}, scheme.ParameterCodec)
+	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	if err != nil {
+		return "", "", fmt.Errorf("error while creating executor: %w", err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  nil,
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Tty:    false,
+	})
+	return stdout.String(), stderr.String(), err
+}
+
+type PodFileCopier interface {
+	CopyFromPod(ctx context.Context, fs afero.Fs, namespace, name, containerName, srcPath, dstDir string) error
+}
+
+type podFile struct {
+	RestConfig *rest.Config
+	Client     kubernetes.Interface
+}
+
+func NewPodFileCopier(restConfig *rest.Config, client kubernetes.Interface) *podFile {
+	return &podFile{
+		RestConfig: restConfig,
+		Client:     client,
+	}
+}
+
+func (p *podFile) CopyFromPod(ctx context.Context, fs afero.Fs, namespace, name, containerName, srcPath, dstDir string) error {
+	dir, fileName := path.Split(srcPath)
+	cmd := []string{"tar"}
+	if dir != "" {
+		cmd = append(cmd, "-C", dir)
+	}
+	cmd = append(cmd, "-cf", "-", fileName)
+
+	output, _, err := ExecInPod(ctx, p.Client, p.RestConfig, namespace, name, containerName, cmd)
+	if err != nil {
+		return err
+	}
+	return compress.UnpackReader(fs, strings.NewReader(output), false, dstDir)
 }
