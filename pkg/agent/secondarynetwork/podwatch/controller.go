@@ -655,7 +655,9 @@ func updatePodNetworkStatusAnnotation(kubeClient clientset.Interface, ctx contex
 	netStatusesJson, ok := podItem.Annotations[netdefv1.NetworkStatusAnnot]
 	if ok {
 		err := json.Unmarshal([]byte(netStatusesJson), &oldNetworkStatus)
-		return fmt.Errorf("error unmarshal Pod network status annotation: %w", err)
+		if err != nil {
+			return fmt.Errorf("error unmarshal Pod network status annotation: %w", err)
+		}
 	}
 
 	netStatus = append(netStatus, oldNetworkStatus...)

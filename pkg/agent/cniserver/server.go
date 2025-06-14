@@ -15,7 +15,6 @@
 package cniserver
 
 import (
-	agenttypes "antrea.io/antrea/pkg/agent/types"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -42,6 +41,7 @@ import (
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/route"
+	agenttypes "antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
 	cnipb "antrea.io/antrea/pkg/apis/cni/v1beta1"
 	"antrea.io/antrea/pkg/cni"

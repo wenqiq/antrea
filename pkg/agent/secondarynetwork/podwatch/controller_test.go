@@ -35,7 +35,6 @@ import (
 	"github.com/google/uuid"
 	netdefv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	netdefclientfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
-	"github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 	netdefutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -638,7 +637,7 @@ func TestConfigurePodSecondaryNetwork(t *testing.T) {
 			}
 			updatedPod, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 			require.NoError(t, err)
-			networkStatusAnnot, err := utils.GetNetworkStatus(updatedPod)
+			networkStatusAnnot, err := netdefutils.GetNetworkStatus(updatedPod)
 			assert.NoError(t, err)
 			assert.Subset(t, networkStatusAnnot, tc.expectedNetworkStatusAnnot)
 		})
@@ -1231,7 +1230,6 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 		netStatus              []netdefv1.NetworkStatus
 		isPrimary              bool
 		getPodErr              error
-		getNetworkStatusCalled bool
 		getStatusErr           error
 		setNetworkStatusCalled bool
 		setStatusErr           error
@@ -1250,11 +1248,10 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 			expectErrStr: "api down",
 		},
 		{
-			name:                   "get status failure",
-			netStatus:              []netdefv1.NetworkStatus{{Name: "eth1"}},
-			getNetworkStatusCalled: true,
-			getStatusErr:           errors.New("parse error"),
-			expectStatus:           []netdefv1.NetworkStatus{{Name: "eth1"}},
+			name:         "get status failure",
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth1"}},
+			getStatusErr: errors.New("parse error"),
+			expectStatus: []netdefv1.NetworkStatus{{Name: "eth1"}},
 		},
 		{
 			name: "set status failure",
@@ -1321,7 +1318,6 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 			testPod.Annotations = tc.podAnnot
 			client := fake.NewSimpleClientset(testPod.DeepCopy())
 
-			var getNetworkStatusCalled bool
 			var setNetworkStatusCalled bool
 			defer mockNetdefutilsSetNetworkStatus(tc.setStatusErr, &setNetworkStatusCalled)()
 
@@ -1335,7 +1331,6 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 			if err != nil {
 				assert.Contains(t, err.Error(), tc.expectErrStr)
 			}
-			assert.Equal(t, tc.getNetworkStatusCalled, getNetworkStatusCalled)
 			assert.Equal(t, tc.setNetworkStatusCalled, setNetworkStatusCalled)
 			if err == nil {
 				podItem, err := client.CoreV1().Pods(podNamespace).Get(ctx, podName, metav1.GetOptions{})
