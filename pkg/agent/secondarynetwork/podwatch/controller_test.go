@@ -1228,7 +1228,6 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 		name                   string
 		podAnnot               map[string]string
 		netStatus              []netdefv1.NetworkStatus
-		isPrimary              bool
 		getPodErr              error
 		getStatusErr           error
 		setNetworkStatusCalled bool
@@ -1267,35 +1266,6 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 			setStatusErr:           errors.New("update conflict"),
 		},
 		{
-			name:         "primary update with Pod nil annotation",
-			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
-			isPrimary:    true,
-			expectErrStr: "skipping network status update for the Pod annotation is nil",
-		},
-		{
-			name:         "primary update without Pod k8s.v1.cni.cncf.io/networks annotation",
-			podAnnot:     map[string]string{"fake-anno": "fake-value"},
-			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
-			isPrimary:    true,
-			expectErrStr: "skipping network status update as the Pod without annotation k8s.v1.cni.cncf.io/networks",
-		},
-		{
-			name: "primary update replaces existing",
-			podAnnot: map[string]string{
-				netdefv1.NetworkAttachmentAnnot: `[{"name": "sriov-net1", "namespace": "default", "interface": "eth1"}]`,
-				netdefv1.NetworkStatusAnnot: `[{
-    "name": "eth0",
-    "ips": [
-        "192.168.1.2"
-    ],
-    "dns": {}
-}]`,
-			},
-			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
-			isPrimary:    true,
-			expectStatus: []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
-		},
-		{
 			name: "secondary update appends",
 			podAnnot: map[string]string{
 				netdefv1.NetworkAttachmentAnnot: `[{"name": "sriov-net1", "namespace": "default", "interface": "eth1"}]`,
@@ -1308,7 +1278,6 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 }]`,
 			},
 			netStatus:    []netdefv1.NetworkStatus{{Name: "eth1"}},
-			isPrimary:    false,
 			expectStatus: []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}, {Name: "eth1"}},
 		},
 	}
