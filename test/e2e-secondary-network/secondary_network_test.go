@@ -137,8 +137,12 @@ func (data *testData) assertPodNetworkStatus(t *testing.T, clientset *kubernetes
 
 			networkStatus, err := utils.GetNetworkStatus(podItem)
 			assert.NoError(collect, err, "Failed to parse network status from Pod annotation")
-			assert.Equal(collect, true, len(networkStatus) == len(ips)-1, "The number of network interface statuses in `k8s.v1.cni.cncf.io/network-status` should match the total number of interfaces IPs in the Pod except the loopback interface")
-			assert.Equal(collect, true, len(networkStatus) == len(secondaryNetworkList)+1, "The number of network interface statuses in `k8s.v1.cni.cncf.io/network-status` should be consistent with the total number of the network interface defined in `k8s.v1.cni.cncf.io/networks` plus the primary interface")
+			assert.Equal(collect, true, len(networkStatus) == len(ips)-1, "The number of network "+
+				"interface statuses in `k8s.v1.cni.cncf.io/network-status` should match the total number of interfaces "+
+				"IPs in the Pod except the loopback interface", "networkStatus", networkStatus)
+			assert.Equal(collect, true, len(networkStatus) == len(secondaryNetworkList)+1, "The number of network "+
+				"interface statuses in `k8s.v1.cni.cncf.io/network-status` should be consistent with the total number of "+
+				"the network interface defined in `k8s.v1.cni.cncf.io/networks` plus the primary interface", "secondaryNetworkList", secondaryNetworkList)
 
 			var secondaryNetworkStatus []nadv1.NetworkStatus
 			for i, network := range networkStatus {

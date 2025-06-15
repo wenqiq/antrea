@@ -25,12 +25,9 @@ import (
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/google/uuid"
-	netdefv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-	netdefutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 
 	"antrea.io/antrea/pkg/agent/cniserver/ipam"
@@ -228,6 +225,7 @@ func createCNIRequestAndInterfaceName(t *testing.T, name string, cniType string,
 
 func TestCmdAdd(t *testing.T) {
 	ctx := context.TODO()
+
 	versionedIPAMResult, err := ipamResult.GetAsVersion(supportedCNIVersion)
 	assert.NoError(t, err)
 
@@ -238,7 +236,6 @@ func TestCmdAdd(t *testing.T) {
 		ipamError                  error
 		cniType                    string
 		enableSecondaryNetworkIPAM bool
-		networkAttachmentAnnotNum  int
 		isChaining                 bool
 		connectOVS                 bool
 		migrateRoute               bool
@@ -281,7 +278,6 @@ func TestCmdAdd(t *testing.T) {
 			name:                       "add-general-cni",
 			ipamType:                   "test-cni-ipam",
 			ipamAdd:                    true,
-			networkAttachmentAnnotNum:  1,
 			enableSecondaryNetworkIPAM: false,
 			isChaining:                 false,
 			connectOVS:                 true,
@@ -309,10 +305,6 @@ func TestCmdAdd(t *testing.T) {
 			requestMsg, hostInterfaceName := createCNIRequestAndInterfaceName(t, testPodNameA, tc.cniType, ipamResult, tc.ipamType, true)
 			testIfaceConfigurator.hostIfaceName = hostInterfaceName
 			cniserver.podConfigurator.ifConfigurator = testIfaceConfigurator
-			networkAttachmentAnnot := map[string]string{netdefv1.NetworkAttachmentAnnot: "fake-k8s.v1.cni.cncf.io/network"}
-			pod.Annotations = networkAttachmentAnnot
-			kubeClient := fakeclientset.NewClientset(pod)
-			cniserver.kubeClient = kubeClient
 			if tc.ipamAdd {
 				if tc.enableSecondaryNetworkIPAM {
 					mockIPAMResult := ipamResult
@@ -369,12 +361,6 @@ func TestCmdAdd(t *testing.T) {
 				assert.NoError(t, err)
 				successResponse := resultToResponse(versionedResult)
 				assert.Equal(t, successResponse, resp)
-				podItem, err := cniserver.kubeClient.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
-				assert.NoError(t, err, "Get Pod error")
-				networkStatus, err := netdefutils.GetNetworkStatus(podItem)
-				assert.NoError(t, err, "Get network status from Pod annotation error")
-				assert.Equal(t, tc.networkAttachmentAnnotNum, len(networkStatus), "The Pod annotation should contain "+
-					"network status of the primary network interface")
 			}
 		})
 	}
