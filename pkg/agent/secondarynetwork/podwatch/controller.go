@@ -321,7 +321,10 @@ func (pc *PodController) syncPod(key string) error {
 
 	if obj, primaryNetworkStatusUpdate := pc.networkStatusMap.Load(key); primaryNetworkStatusUpdate {
 		networkStatus := obj.(*netdefv1.NetworkStatus)
-		_ = updatePodNetworkStatusAnnotation(pc.kubeClient, context.TODO(), []netdefv1.NetworkStatus{*networkStatus}, pod.Name, pod.Namespace)
+		if err := updatePodNetworkStatusAnnotation(pc.kubeClient, context.TODO(), []netdefv1.NetworkStatus{*networkStatus}, pod.Name, pod.Namespace); err != nil {
+			return fmt.Errorf("error update Pod networkstatus annotation: %w", err)
+		}
+		pc.networkStatusMap.Delete(key)
 	}
 
 	return pc.handleAddUpdatePod(pod, cniInfo, storedInterfaces)
@@ -641,6 +644,24 @@ var (
 	netdefutilsSetNetworkStatus = netdefutils.SetNetworkStatus
 )
 
+func MergeNetworkStatusLists(oldNetworkStatus []netdefv1.NetworkStatus, netStatus []netdefv1.NetworkStatus) []netdefv1.NetworkStatus {
+	oldKeys := make(map[[3]string]struct{})
+	for _, item := range oldNetworkStatus {
+		key := [3]string{item.Name, item.Interface, item.Mac}
+		oldKeys[key] = struct{}{}
+	}
+
+	var toAdd []netdefv1.NetworkStatus
+	for _, item := range netStatus {
+		key := [3]string{item.Name, item.Interface, item.Mac}
+		if _, exists := oldKeys[key]; !exists {
+			toAdd = append(toAdd, item)
+		}
+	}
+
+	return append(oldNetworkStatus, toAdd...)
+}
+
 // updatePodNetworkStatusAnnotation update the Pod's network status annotation
 func updatePodNetworkStatusAnnotation(kubeClient clientset.Interface, ctx context.Context, netStatus []netdefv1.NetworkStatus, podName, podNamespace string) error {
 	if len(netStatus) == 0 {
@@ -660,9 +681,13 @@ func updatePodNetworkStatusAnnotation(kubeClient clientset.Interface, ctx contex
 		}
 	}
 
-	netStatus = append(netStatus, oldNetworkStatus...)
+	mergedNetStatus := MergeNetworkStatusLists(oldNetworkStatus, netStatus)
+	if len(mergedNetStatus) == len(oldNetworkStatus) {
+		klog.V(2).InfoS("Skipping Pod network status annotation update", "Pod", klog.KRef(podNamespace, podName), "NetworkStatus", netStatus)
+		return nil
+	}
 
-	if err := netdefutilsSetNetworkStatus(kubeClient, podItem, netStatus); err != nil {
+	if err := netdefutilsSetNetworkStatus(kubeClient, podItem, mergedNetStatus); err != nil {
 		return fmt.Errorf("error setting Pod network status annotation: %w", err)
 	}
 	klog.V(2).InfoS("Pod network status annotation updated", "Pod", klog.KRef(podNamespace, podName), "NetworkStatus", netStatus)

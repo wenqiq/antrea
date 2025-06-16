@@ -1266,6 +1266,21 @@ func TestUpdatePodNetworkStatusAnnotation(t *testing.T) {
 			setStatusErr:           errors.New("update conflict"),
 		},
 		{
+			name: "primary update replaces existing",
+			podAnnot: map[string]string{
+				netdefv1.NetworkAttachmentAnnot: `[{"name": "sriov-net1", "namespace": "default", "interface": "eth1"}]`,
+				netdefv1.NetworkStatusAnnot: `[{
+    "name": "eth0",
+    "ips": [
+        "192.168.1.2"
+    ],
+    "dns": {}
+}]`,
+			},
+			netStatus:    []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
+			expectStatus: []netdefv1.NetworkStatus{{Name: "eth0", IPs: []string{"192.168.1.2"}}},
+		},
+		{
 			name: "secondary update appends",
 			podAnnot: map[string]string{
 				netdefv1.NetworkAttachmentAnnot: `[{"name": "sriov-net1", "namespace": "default", "interface": "eth1"}]`,
