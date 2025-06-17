@@ -215,6 +215,7 @@ func (data *testData) listPodAddresses(targetPod *testPodInfo) (map[string]net.I
 			macResult[currentInterface] = fields[1]
 		}
 	}
+	logs.Infof("listPodAddresses: %v\n %v\n %v", ipv4Result, ipv6Result, macResult)
 	return ipv4Result, ipv6Result, macResult, nil
 }
 
@@ -525,6 +526,7 @@ func (data *testData) assignIP(clientset *kubernetes.Clientset) error {
 
 			return true, nil
 		})
+		logs.Infof("assigning private IP address %s to interface %s", podIP, eni)
 		if err := aws.AssignIPToEC2ENI(context.TODO(), eni, podIP.String()); err != nil {
 			return err
 		}
