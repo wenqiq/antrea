@@ -20,6 +20,7 @@ function echoerr {
 }
 
 TIMEOUT="10m"
+AWS_DURATION_SECONDS=7200
 K8S_VERSION="v1.32"
 # Set AWS related variables
 REGION="us-west-2"  # AWS region
@@ -133,17 +134,27 @@ export AWS_DEFAULT_REGION=$REGION
 # Source: AWS STS AssumeRole API Documentation -
 # https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html#API_AssumeRole_RequestParameters
 # "By default, the value is set to 3600 seconds."
-# From previous observations, this Jenkins job process has taken less than an hour, usually within 20 minutes,
-# so it's set to the default 1 hour here.
 TEMP_CRED=$(aws sts assume-role \
   --role-arn "$AWS_SERVICE_USER_ROLE_ARN" \
-  --role-session-name "cli-session" \
+  --duration-seconds $AWS_DURATION_SECONDS \
+  --role-session-name "jenkins-session-$(date +%s)" \
   --query "Credentials" \
   --output json)
+
+# Handle assume-role errors immediately
+if [ $? -ne 0 ] || [ -z "$TEMP_CRED" ]; then
+  echo "ERROR: Failed to assume role $AWS_SERVICE_USER_ROLE_ARN"
+  exit 1
+fi
+
 
 export AWS_ACCESS_KEY_ID=$(echo "$TEMP_CRED" | jq -r .AccessKeyId)
 export AWS_SECRET_ACCESS_KEY=$(echo "$TEMP_CRED" | jq -r .SecretAccessKey)
 export AWS_SESSION_TOKEN=$(echo "$TEMP_CRED" | jq -r .SessionToken)
+
+# Clear sensitive variables from memory
+unset AWS_ACCESS_KEY AWS_SECRET_KEY TEMP_CRED
+
 set -ex
 
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -563,13 +574,7 @@ function clean_up_all() {
       delete_subnet_cidr_reservation
 }
 
-echo "===========Test SR-IOV secondary network in AWS============="
-
-if [[ "$RUN_SETUP_ONLY" != true ]]; then
-    trap clean_up_all EXIT
-fi
-
-if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
+function main() {
     setup_cluster
     build_image
     upload_and_load_image "$CONTROLPLANE_IP" "$DOCKER_IMAGE_PATH"
@@ -577,6 +582,80 @@ if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
     generate_ssh_config
     deploy_antrea
     run_test
+}
+
+# Generic function to execute command with timeout.
+function execute_command_with_timeout() {
+    cmd="$1"
+    timeout_seconds="$2"
+    local start_time=$(date +%s)
+
+    echo "Executing $cmd with timeout $timeout_seconds at $(date)"
+    timeout --preserve-status --foreground $timeout_seconds bash -c "$cmd"
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+
+        # Special handling for timeout exit code (124)
+        echo "ERROR: Command failed after ${duration}s with status $ret"
+        [ $ret -eq 124 ] && echo "Timeout occurred before credential expiration"
+        exit 2
+    fi
+}
+
+function run_with_timeout() {
+    local timeout_seconds=$1
+    local start_time=$(date +%s)
+    local pid
+    (
+        trap 'echo "Subprocess exiting"; exit 1' ERR
+        main
+    ) &
+    pid=$!
+
+    while true; do
+        if ! kill -0 $pid 2>/dev/null; then
+            wait $pid
+            return $?
+        fi
+
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
+
+        if [ $elapsed -ge $timeout_seconds ]; then
+            echoerr "ERROR: Operation timed out after ${timeout_seconds} seconds"
+            kill -TERM $pid >/dev/null 2>&1
+            sleep 5
+            if kill -0 $pid 2>/dev/null; then
+                kill -KILL $pid >/dev/null 2>&1
+            fi
+            return 124
+        fi
+
+        sleep 10
+    done
+}
+
+echo "===========Test SR-IOV secondary network in AWS============="
+
+if [[ "$RUN_SETUP_ONLY" != true ]]; then
+    trap clean_up_all EXIT
+fi
+
+if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
+    echo "Running main process with timeout: ${AWS_DURATION_SECONDS} seconds"
+    run_with_timeout $AWS_DURATION_SECONDS
+    exit_code=$?
+
+    if [ $exit_code -eq 124 ]; then
+        echoerr "ERROR: Process timed out before AWS credential expiration"
+        exit 1
+    elif [ $exit_code -ne 0 ]; then
+        echoerr "ERROR: Process failed with exit code $exit_code"
+        exit $exit_code
+    fi
 fi
 
 exit 0

@@ -36,6 +36,7 @@ KUBE_CONFORMANCE_IMAGE_VERSION=auto
 INSTALL_EKSCTL=true
 AWS_SERVICE_USER_ROLE_ARN=""
 AWS_SERVICE_USER_NAME=""
+AWS_DURATION_SECONDS=7200
 
 _usage="Usage: $0 [--cluster-name <EKSClusterNameToUse>] [--kubeconfig <KubeconfigSavePath>] [--k8s-version <ClusterVersion>]\
                   [--aws-access-key <AccessKey>] [--aws-secret-key <SecretKey>] [--aws-region <Region>] [--aws-service-user <ServiceUserName>]\
@@ -203,14 +204,23 @@ function setup_eks() {
       # so it's set to 2 hours here.
         TEMP_CRED=$(aws sts assume-role \
           --role-arn "$AWS_SERVICE_USER_ROLE_ARN" \
-          --role-session-name "cli-session" \
-          --duration-seconds 7200 \
+          --role-session-name "jenkins-session-$(date +%s)" \
+          --duration-seconds $AWS_DURATION_SECONDS \
           --query "Credentials" \
           --output json)
+
+        # Handle assume-role errors immediately
+        if [ $? -ne 0 ] || [ -z "$TEMP_CRED" ]; then
+          echo "ERROR: Failed to assume role $AWS_SERVICE_USER_ROLE_ARN"
+          exit 1
+        fi
 
         export AWS_ACCESS_KEY_ID=$(echo "$TEMP_CRED" | jq -r .AccessKeyId)
         export AWS_SECRET_ACCESS_KEY=$(echo "$TEMP_CRED" | jq -r .SecretAccessKey)
         export AWS_SESSION_TOKEN=$(echo "$TEMP_CRED" | jq -r .SessionToken)
+
+        # Clear sensitive variables from memory
+        unset AWS_ACCESS_KEY AWS_SECRET_KEY TEMP_CRED
     fi
 
     if [[ "$INSTALL_EKSCTL" == true ]]; then
@@ -356,10 +366,57 @@ pushd "$THIS_DIR" > /dev/null
 
 source ${THIS_DIR}/jenkins/utils.sh
 
+function main() {
+      setup_eks
+      deliver_antrea_to_eks
+      run_conformance
+}
+
+function run_with_timeout() {
+    local timeout_seconds=$1
+    local start_time=$(date +%s)
+    local pid
+    (
+        trap 'echo "Subprocess exiting"; exit 1' ERR
+        main
+    ) &
+    pid=$!
+
+    while true; do
+        if ! kill -0 $pid 2>/dev/null; then
+            wait $pid
+            return $?
+        fi
+
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
+
+        if [ $elapsed -ge $timeout_seconds ]; then
+            echoerr "ERROR: Operation timed out after ${timeout_seconds} seconds"
+            kill -TERM $pid >/dev/null 2>&1
+            sleep 5
+            if kill -0 $pid 2>/dev/null; then
+                kill -KILL $pid >/dev/null 2>&1
+            fi
+            return 124
+        fi
+
+        sleep 10
+    done
+}
+
 if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
-    setup_eks
-    deliver_antrea_to_eks
-    run_conformance
+    echo "Running main process with timeout: ${AWS_DURATION_SECONDS} seconds"
+    run_with_timeout $AWS_DURATION_SECONDS
+    exit_code=$?
+
+    if [ $exit_code -eq 124 ]; then
+        echoerr "ERROR: Process timed out before AWS credential expiration"
+        exit 1
+    elif [ $exit_code -ne 0 ]; then
+        echoerr "ERROR: Process failed with exit code $exit_code"
+        exit $exit_code
+    fi
 fi
 
 if [[ "$RUN_ALL" == true || "$RUN_CLEANUP_ONLY" == true ]]; then
