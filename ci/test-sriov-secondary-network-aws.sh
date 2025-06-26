@@ -122,10 +122,13 @@ case $key in
 esac
 done
 
+set +ex
 export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY
 export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY
 export AWS_DEFAULT_REGION=$REGION
 
+# Use AWS CLI to assume an IAM role and obtain temporary security credentials
+# Source: AWS CLI Command Reference - https://docs.aws.amazon.com/cli/latest/reference/sts/assume-role.html
 TEMP_CRED=$(aws sts assume-role \
   --role-arn "$AWS_SERVICE_USER_ROLE_ARN" \
   --role-session-name "cli-session" \
@@ -135,6 +138,7 @@ TEMP_CRED=$(aws sts assume-role \
 export AWS_ACCESS_KEY_ID=$(echo "$TEMP_CRED" | jq -r .AccessKeyId)
 export AWS_SECRET_ACCESS_KEY=$(echo "$TEMP_CRED" | jq -r .SecretAccessKey)
 export AWS_SESSION_TOKEN=$(echo "$TEMP_CRED" | jq -r .SessionToken)
+set -ex
 
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ANTREA_CHART="$THIS_DIR/../build/charts/antrea"
