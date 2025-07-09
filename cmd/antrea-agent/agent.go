@@ -779,6 +779,7 @@ func run(o *Options) error {
 		if err != nil {
 			return fmt.Errorf("failed to start Antrea IPAM agent: %v", err)
 		}
+		klog.InfoS("ipamController running 22222222222222222")
 		go ipamController.Run(stopCh)
 	}
 
@@ -813,7 +814,8 @@ func run(o *Options) error {
 	}
 
 	//  Start the localPodInformer
-	if localPodInformer.Evaluated() {
+	if localPodInformer.Evaluated() && enableAntreaIPAM {
+		klog.InfoS("localPodInformer running 11111111111")
 		go localPodInformer.Get().Run(stopCh)
 	}
 
@@ -944,6 +946,7 @@ func run(o *Options) error {
 		if err = secondaryNetworkController.Initialize(); err != nil {
 			return fmt.Errorf("failed to initialize secondary network: %v", err)
 		}
+		klog.InfoS("secondaryNetworkController running 22222222222222222")
 		go secondaryNetworkController.Run(stopCh)
 	}
 

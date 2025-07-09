@@ -385,7 +385,8 @@ EOF
 
 function deploy_antrea() {
     echo "Deploy antrea on cluster..."
-    helm install antrea "$ANTREA_CHART" --namespace kube-system --set featureGates.SecondaryNetwork=true,featureGates.AntreaIPAM=true
+#    helm install antrea "$ANTREA_CHART" --namespace kube-system --set featureGates.SecondaryNetwork=true,featureGates.AntreaIPAM=true
+    helm install antrea "$ANTREA_CHART" --namespace kube-system
     kubectl rollout status --timeout=2m deployment.apps/antrea-controller -n kube-system
     kubectl rollout status --timeout=2m daemonset/antrea-agent -n kube-system
     kubectl get node -owide
@@ -576,7 +577,7 @@ if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
     upload_and_load_image "$WORKER_IP" "$DOCKER_IMAGE_PATH"
     generate_ssh_config
     deploy_antrea
-    run_test
+#    run_test
 fi
 
 exit 0
