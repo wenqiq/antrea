@@ -136,9 +136,9 @@ func (d *AntreaIPAM) setController(controller *AntreaIPAMController) {
 	d.controller = controller
 }
 
-// findMatchingIP returns the first IP from the list that matches the given IP
+// findFirstMatchingIP returns the first IP from the list that matches the given IP
 // family, and removes it from the list.
-func findMatchingIP(ips []net.IP, ipVersion utilnet.IPFamily) (net.IP, []net.IP) {
+func findFirstMatchingIP(ips []net.IP, ipVersion utilnet.IPFamily) (net.IP, []net.IP) {
 	for i, ip := range ips {
 		if ip == nil {
 			continue
@@ -217,7 +217,7 @@ func (d *AntreaIPAM) Add(args *invoke.Args, k8sArgs *types.K8sArgs, networkConfi
 			// Pool of the same family or the allocation will fail (no
 			// fallback to subsequent Pools).
 			var matchedIP net.IP
-			matchedIP, remainingIPs = findMatchingIP(remainingIPs, allocator.IPVersion)
+			matchedIP, remainingIPs = findFirstMatchingIP(remainingIPs, allocator.IPVersion)
 			if matchedIP != nil {
 				ip = matchedIP
 				subnetInfo, err = allocator.AllocateIP(ip, crdv1b1.IPAddressPhaseAllocated, owner)
