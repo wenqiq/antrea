@@ -16,6 +16,7 @@ package ipam
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -158,6 +159,11 @@ func findFirstMatchingIP(ips []net.IP, ipVersion utilnet.IPFamily) (net.IP, []ne
 // The allocated IPs and associated resources will be stored in the IP Pool
 // status.
 //
+// When multiple Pools of the same IP family are configured and no specific IP
+// is requested, Add will try each Pool in order. If a Pool is exhausted (no
+// free IPs), the next Pool of the same family is attempted. Other errors
+// (e.g. API failures) cause an immediate return.
+//
 // When a Pod specifies desired IPs via the AntreaIPAMPodIP annotation, at most
 // one IPv4 and one IPv6 address are used; additional addresses of the same
 // family are silently ignored. Each specified IP is matched to the first Pool
@@ -226,6 +232,11 @@ func (d *AntreaIPAM) Add(args *invoke.Args, k8sArgs *types.K8sArgs, networkConfi
 			}
 		}
 		if err != nil {
+			if errors.Is(err, poolallocator.ErrPoolExhausted) {
+				klog.V(4).InfoS("IPPool exhausted, trying next pool", "IPPool", allocator.Name(), "Pod", string(k8sArgs.K8S_POD_NAME))
+				err = nil
+				continue
+			}
 			return true, nil, err
 		}
 		allocatedAllocators = append(allocatedAllocators, allocator)
@@ -355,6 +366,10 @@ func (d *AntreaIPAM) SecondaryNetworkAllocate(podOwner *crdv1b1.PodOwner, networ
 			owner := crdv1b1.IPAddressOwner{Pod: podOwner}
 			ip, subnetInfo, err = allocator.AllocateNext(crdv1b1.IPAddressPhaseAllocated, owner)
 			if err != nil {
+				if errors.Is(err, poolallocator.ErrPoolExhausted) {
+					klog.InfoS("IPPool exhausted, trying next pool", "IPPool", p)
+					continue
+				}
 				return nil, err
 			}
 			if numPools > 1 {
@@ -373,6 +388,9 @@ func (d *AntreaIPAM) SecondaryNetworkAllocate(podOwner *crdv1b1.PodOwner, networ
 			} else if vlanID != 0 && result.VLANID != vlanID {
 				return nil, fmt.Errorf("IPPools have conflicting VLAN IDs %d and %d for dual-stack allocation", result.VLANID, vlanID)
 			}
+		}
+		if len(result.IPs) == 0 {
+			return nil, fmt.Errorf("all IPPools are exhausted, failed to allocate any IP for Pod %s/%s", podOwner.Namespace, podOwner.Name)
 		}
 		// No failed allocation, so do not release allocated IPs.
 		allocatorsToRelease = nil
