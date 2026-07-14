@@ -97,6 +97,7 @@ func (data *testData) formAnnotationStringOfPod(pod *testPodInfo) string {
 			annotationString = annotationString + ", " + podNetworkSpec
 		}
 	}
+
 	annotationString += "]"
 	return annotationString
 }
