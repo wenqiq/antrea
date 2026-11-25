@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"strings"
 	"sync"
@@ -62,6 +63,9 @@ const (
 	numWorkers     = 4
 	// Set resyncPeriod to 0 to disable resyncing.
 	resyncPeriod = 0 * time.Minute
+	// cleanupInterval is the period between two stale IPAM allocation cleanup
+	// passes.
+	cleanupInterval = 5 * time.Minute
 )
 
 const (
@@ -133,7 +137,10 @@ type PodController struct {
 	// staleIPAllocations records the IPPool allocations that looked stale in the
 	// previous cleanup pass. Only written and read by the cleanup goroutine.
 	staleIPAllocations map[staleAllocationKey]struct{}
-	nodeConfig         *config.NodeConfig
+	// cleanupInitialDelay delays the first cleanup pass so that all agents do
+	// not hit the API server at the same time after a rollout.
+	cleanupInitialDelay time.Duration
+	nodeConfig          *config.NodeConfig
 }
 
 func NewPodController(
@@ -168,6 +175,7 @@ func NewPodController(
 		primaryInterfaceStore: primaryInterfaceStore,
 		interfaceConfigurator: interfaceConfigurator,
 		ipamAllocator:         ipam.GetSecondaryNetworkAllocator(),
+		cleanupInitialDelay:   time.Duration(rand.Float64() * float64(cleanupInterval)),
 		nodeConfig:            nodeConfig,
 	}
 	podInformer.AddEventHandlerWithResyncPeriod(
@@ -755,7 +763,18 @@ func (pc *PodController) Run(stopCh <-chan struct{}) {
 		return
 	}
 
-	go wait.NonSlidingUntil(pc.cleanUpStaleIPAddresses, 5*time.Minute, stopCh)
+	go func() {
+		if pc.cleanupInitialDelay > 0 {
+			timer := time.NewTimer(pc.cleanupInitialDelay)
+			defer timer.Stop()
+			select {
+			case <-stopCh:
+				return
+			case <-timer.C:
+			}
+		}
+		wait.NonSlidingUntil(pc.cleanUpStaleIPAddresses, cleanupInterval, stopCh)
+	}()
 
 	pc.reconcileSecondaryInterfaces()
 
@@ -795,6 +814,14 @@ func checkForPodSecondaryNetworkAttachment(pod *corev1.Pod) (string, bool) {
 func (pc *PodController) cleanUpStaleIPAddresses() {
 	pools, _ := pc.ipPoolLister.List(labels.Everything())
 	staleAllocations := make(map[staleAllocationKey]struct{})
+	// Cache live Pod GET results for the duration of this pass: a Pod with
+	// several secondary interfaces or pools would otherwise cost one GET per
+	// allocation.
+	type podLookup struct {
+		pod *corev1.Pod
+		err error
+	}
+	podCache := make(map[string]podLookup)
 	for _, ipPool := range pools {
 		for _, address := range ipPool.Status.IPAddresses {
 			stalePodOwner := address.Owner.Pod
@@ -810,18 +837,29 @@ func (pc *PodController) cleanUpStaleIPAddresses() {
 			if _, found := pc.interfaceStore.GetInterface(interfaceKey); found {
 				continue
 			}
-			// The IPPool cache is cluster-wide while interfaceStore only contains local interfaces.
-			// Use authoritative Pod state to preserve allocations for live Pods on other Nodes.
-			pod, err := pc.kubeClient.CoreV1().Pods(stalePodOwner.Namespace).Get(
-				context.TODO(), stalePodOwner.Name, metav1.GetOptions{})
-			if err == nil {
-				if pod.Spec.NodeName != pc.nodeConfig.Name {
+			// The IPPool cache is cluster-wide while interfaceStore only contains local
+			// interfaces. The Pod informer is filtered by Node name, so a Pod found in
+			// the local cache is local and needs no API GET; only Pods missing from the
+			// local cache (remote or deleted) fall back to a GET to preserve
+			// allocations for live Pods on other Nodes.
+			if _, err := pc.podLister.Pods(stalePodOwner.Namespace).Get(stalePodOwner.Name); err != nil {
+				podKey := podKeyGet(stalePodOwner.Name, stalePodOwner.Namespace)
+				lookup, cached := podCache[podKey]
+				if !cached {
+					pod, err := pc.kubeClient.CoreV1().Pods(stalePodOwner.Namespace).Get(
+						context.TODO(), stalePodOwner.Name, metav1.GetOptions{})
+					lookup = podLookup{pod, err}
+					podCache[podKey] = lookup
+				}
+				if lookup.err == nil {
+					if lookup.pod.Spec.NodeName != pc.nodeConfig.Name {
+						continue
+					}
+				} else if !apierrors.IsNotFound(lookup.err) {
+					klog.ErrorS(lookup.err, "Failed to get Pod before releasing stale IPAM allocation",
+						"Pod", klog.KRef(stalePodOwner.Namespace, stalePodOwner.Name), "interface", stalePodOwner.IFName)
 					continue
 				}
-			} else if !apierrors.IsNotFound(err) {
-				klog.ErrorS(err, "Failed to get Pod before releasing stale IPAM allocation",
-					"Pod", klog.KRef(stalePodOwner.Namespace, stalePodOwner.Name), "interface", stalePodOwner.IFName)
-				continue
 			}
 			key := staleAllocationKey{
 				poolName:    ipPool.Name,

@@ -41,9 +41,11 @@ import (
 	"go.uber.org/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 
 	"antrea.io/antrea/v2/pkg/agent/cniserver"
@@ -256,6 +258,9 @@ func TestCleanUpStaleIPAddressesByInterface(t *testing.T) {
 	deletedPodOwner := &crdv1beta1.PodOwner{
 		Name: "deleted-pod", Namespace: testNamespace, ContainerID: "deleted-container", IFName: "eth1",
 	}
+	deletedPodOwner2 := &crdv1beta1.PodOwner{
+		Name: "deleted-pod", Namespace: testNamespace, ContainerID: "deleted-container", IFName: "eth2",
+	}
 	primaryOwner := &crdv1beta1.PodOwner{
 		Name: podName, Namespace: testNamespace, ContainerID: containerID,
 	}
@@ -270,6 +275,7 @@ func TestCleanUpStaleIPAddressesByInterface(t *testing.T) {
 			{IPAddress: "10.2.2.11", Phase: crdv1beta1.IPAddressPhaseAllocated, Owner: crdv1beta1.IPAddressOwner{Pod: staleOwner}},
 			{IPAddress: "10.2.2.12", Phase: crdv1beta1.IPAddressPhaseAllocated, Owner: crdv1beta1.IPAddressOwner{Pod: deletedPodOwner}},
 			{IPAddress: "10.2.2.13", Phase: crdv1beta1.IPAddressPhaseAllocated, Owner: crdv1beta1.IPAddressOwner{Pod: primaryOwner}},
+			{IPAddress: "10.2.2.14", Phase: crdv1beta1.IPAddressPhaseAllocated, Owner: crdv1beta1.IPAddressOwner{Pod: deletedPodOwner2}},
 		}},
 	}
 
@@ -279,8 +285,16 @@ func TestCleanUpStaleIPAddressesByInterface(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: testNamespace},
 		Spec:       corev1.PodSpec{NodeName: testNode},
 	}
-	pc.kubeClient = fake.NewSimpleClientset(localPod)
+	kubeClient := fake.NewSimpleClientset(localPod)
+	var podGets []string
+	kubeClient.PrependReactor("get", "pods", func(action ktesting.Action) (bool, runtime.Object, error) {
+		podGets = append(podGets, action.(ktesting.GetAction).GetName())
+		return false, nil, nil
+	})
+	pc.kubeClient = kubeClient
 	pc.nodeConfig.Name = testNode
+	// The local Pod is served from the informer cache, without any API GET.
+	require.NoError(t, pc.podInformer.GetIndexer().Add(localPod))
 	activeInterface := interfacestore.NewContainerInterface(
 		"host-eth1", containerID, podName, testNamespace, "eth1", containerNetNS(containerID), nil, nil, 0)
 	pc.interfaceStore.AddInterface(activeInterface)
@@ -302,7 +316,12 @@ func TestCleanUpStaleIPAddressesByInterface(t *testing.T) {
 	// container ID, and a deleted Pod must not prevent cleanup.
 	mockIPAM.EXPECT().SecondaryNetworkRelease(staleOwner).Return(nil)
 	mockIPAM.EXPECT().SecondaryNetworkRelease(deletedPodOwner).Return(nil)
+	mockIPAM.EXPECT().SecondaryNetworkRelease(deletedPodOwner2).Return(nil)
 	pc.cleanUpStaleIPAddresses()
+
+	// The local Pod is resolved from the informer cache, while the deleted Pod
+	// costs one GET per pass no matter how many allocations it owns.
+	assert.Equal(t, []string{"deleted-pod", "deleted-pod"}, podGets)
 }
 
 func TestCleanUpStaleIPAddressesProtectsInFlightAllocation(t *testing.T) {
@@ -463,6 +482,10 @@ func TestPodControllerRun(t *testing.T) {
 	crdInformerFactory.WaitForCacheSync(stopCh)
 
 	mockIPAM.EXPECT().SecondaryNetworkRelease(stalePodOwner).Return(nil)
+
+	// Run delays the first cleanup pass by a random interval in production.
+	// Disable the delay so that the cleanup below is deterministic.
+	podController.cleanupInitialDelay = 0
 
 	// An allocation is released only after looking stale in two consecutive
 	// passes. Record the stale candidate now so that the first pass started by
