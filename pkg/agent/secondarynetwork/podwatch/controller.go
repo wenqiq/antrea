@@ -133,6 +133,11 @@ type PodController struct {
 	vfDeviceIDUsageMap sync.Map
 	// Map from "namespace/pod" to secondaryNetworkRollbackState. Only failed
 	// rollbacks are retained; status annotations are not configuration state.
+	// Known limitation: this state is in-memory only. If the agent restarts
+	// while a Pod is partially configured (e.g. a crash between two interfaces,
+	// or after a failed rollback), the restored interfaces make the Pod look
+	// configured and the missing networks are never retried until the Pod is
+	// recreated.
 	pendingRollbacks sync.Map
 	// staleIPAllocations records the IPPool allocations that looked stale in the
 	// previous cleanup pass. Only written and read by the cleanup goroutine.
