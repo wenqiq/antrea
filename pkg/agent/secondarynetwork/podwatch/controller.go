@@ -96,6 +96,15 @@ type secondaryNetworkRollbackState struct {
 	containerID string
 }
 
+// staleAllocationKey identifies an IPPool address entry that was found stale in
+// a cleanup pass.
+type staleAllocationKey struct {
+	poolName    string
+	ip          string
+	containerID string
+	ifName      string
+}
+
 type PodController struct {
 	kubeClient          clientset.Interface
 	netAttachDefClient  netdefclient.K8sCniCncfIoV1Interface
@@ -121,7 +130,10 @@ type PodController struct {
 	// Map from "namespace/pod" to secondaryNetworkRollbackState. Only failed
 	// rollbacks are retained; status annotations are not configuration state.
 	pendingRollbacks sync.Map
-	nodeConfig       *config.NodeConfig
+	// staleIPAllocations records the IPPool allocations that looked stale in the
+	// previous cleanup pass. Only written and read by the cleanup goroutine.
+	staleIPAllocations map[staleAllocationKey]struct{}
+	nodeConfig         *config.NodeConfig
 }
 
 func NewPodController(
@@ -776,8 +788,13 @@ func checkForPodSecondaryNetworkAttachment(pod *corev1.Pod) (string, bool) {
 // Otherwise, stale secondary IPs remain in the IPPool and cannot be reused.
 // We run it periodically to cover the case where a Pod is recreated with
 // the same name on another Node and has any secondary IP as well.
+// An allocation is released only after it has looked stale in two consecutive
+// passes: a fresh allocation is visible in the IPPool status before the
+// interface being configured is added to the local interface store, and
+// releasing such an allocation could hand its IP to another Pod.
 func (pc *PodController) cleanUpStaleIPAddresses() {
 	pools, _ := pc.ipPoolLister.List(labels.Everything())
+	staleAllocations := make(map[staleAllocationKey]struct{})
 	for _, ipPool := range pools {
 		for _, address := range ipPool.Status.IPAddresses {
 			stalePodOwner := address.Owner.Pod
@@ -806,6 +823,19 @@ func (pc *PodController) cleanUpStaleIPAddresses() {
 					"Pod", klog.KRef(stalePodOwner.Namespace, stalePodOwner.Name), "interface", stalePodOwner.IFName)
 				continue
 			}
+			key := staleAllocationKey{
+				poolName:    ipPool.Name,
+				ip:          address.IPAddress,
+				containerID: stalePodOwner.ContainerID,
+				ifName:      stalePodOwner.IFName,
+			}
+			staleAllocations[key] = struct{}{}
+			if _, stale := pc.staleIPAllocations[key]; !stale {
+				// First time this allocation looks stale. It may belong to an
+				// interface which is still being configured; wait for the next
+				// pass to confirm.
+				continue
+			}
 			klog.V(2).InfoS("Releasing stale IPAM allocation", "Pod", klog.KRef(stalePodOwner.Namespace, stalePodOwner.Name), "containerID", stalePodOwner.ContainerID, "interface", stalePodOwner.IFName)
 			if err := pc.ipamAllocator.SecondaryNetworkRelease(stalePodOwner); err != nil {
 				klog.ErrorS(err, "Error when releasing IPAM allocation",
@@ -813,6 +843,7 @@ func (pc *PodController) cleanUpStaleIPAddresses() {
 			}
 		}
 	}
+	pc.staleIPAllocations = staleAllocations
 }
 
 func (pc *PodController) initializeCNICache() {

@@ -294,11 +294,57 @@ func TestCleanUpStaleIPAddressesByInterface(t *testing.T) {
 	informerFactory.Start(stopCh)
 	informerFactory.WaitForCacheSync(stopCh)
 
-	// The active interface and primary network allocation must be preserved. The
-	// stale eth2 allocation must be released even though eth1 uses the same
+	// The first pass only records stale candidates: the active interface and
+	// primary network allocation are preserved, and nothing is released yet.
+	pc.cleanUpStaleIPAddresses()
+
+	// The stale eth2 allocation must be released even though eth1 uses the same
 	// container ID, and a deleted Pod must not prevent cleanup.
 	mockIPAM.EXPECT().SecondaryNetworkRelease(staleOwner).Return(nil)
 	mockIPAM.EXPECT().SecondaryNetworkRelease(deletedPodOwner).Return(nil)
+	pc.cleanUpStaleIPAddresses()
+}
+
+func TestCleanUpStaleIPAddressesProtectsInFlightAllocation(t *testing.T) {
+	inFlightOwner := &crdv1beta1.PodOwner{
+		Name: podName, Namespace: testNamespace, ContainerID: containerID, IFName: "eth2",
+	}
+	pool := &crdv1beta1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "secondary-network-pool"},
+		Status: crdv1beta1.IPPoolStatus{IPAddresses: []crdv1beta1.IPAddressState{
+			{IPAddress: "10.2.2.10", Phase: crdv1beta1.IPAddressPhaseAllocated, Owner: crdv1beta1.IPAddressOwner{Pod: inFlightOwner}},
+		}},
+	}
+
+	ctrl := gomock.NewController(t)
+	pc, _, _, _ := testPodController(ctrl)
+	localPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: testNamespace},
+		Spec:       corev1.PodSpec{NodeName: testNode},
+	}
+	pc.kubeClient = fake.NewSimpleClientset(localPod)
+	pc.nodeConfig.Name = testNode
+
+	crdClient := fakecrd.NewSimpleClientset(pool)
+	informerFactory := crdinformers.NewSharedInformerFactory(crdClient, 0)
+	pc.ipPoolLister = informerFactory.Crd().V1beta1().IPPools().Lister()
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	informerFactory.Start(stopCh)
+	informerFactory.WaitForCacheSync(stopCh)
+
+	// First pass: the interface is not in the store yet (configuration is in
+	// flight), so the allocation is recorded as a stale candidate, not released.
+	pc.cleanUpStaleIPAddresses()
+
+	// The interface configuration completes before the next pass.
+	inFlightInterface := interfacestore.NewContainerInterface(
+		"host-eth2", containerID, podName, testNamespace, "eth2", containerNetNS(containerID), nil, nil, 0)
+	pc.interfaceStore.AddInterface(inFlightInterface)
+
+	// The allocation must never be released (no SecondaryNetworkRelease call is
+	// expected), no matter how many passes run.
+	pc.cleanUpStaleIPAddresses()
 	pc.cleanUpStaleIPAddresses()
 }
 
@@ -335,6 +381,9 @@ func TestCleanUpStaleIPAddressesPreservesRemotePod(t *testing.T) {
 	informerFactory.WaitForCacheSync(stopCh)
 
 	mockIPAM.EXPECT().SecondaryNetworkRelease(remoteOwner).Times(0)
+	// No matter how many passes run, a live Pod on another Node must keep its
+	// allocation.
+	pc.cleanUpStaleIPAddresses()
 	pc.cleanUpStaleIPAddresses()
 }
 
@@ -414,6 +463,11 @@ func TestPodControllerRun(t *testing.T) {
 	crdInformerFactory.WaitForCacheSync(stopCh)
 
 	mockIPAM.EXPECT().SecondaryNetworkRelease(stalePodOwner).Return(nil)
+
+	// An allocation is released only after looking stale in two consecutive
+	// passes. Record the stale candidate now so that the first pass started by
+	// Run below releases it.
+	podController.cleanUpStaleIPAddresses()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
