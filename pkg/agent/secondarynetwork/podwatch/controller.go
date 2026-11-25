@@ -37,8 +37,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -145,6 +147,8 @@ type PodController struct {
 	// cleanupInitialDelay delays the first cleanup pass so that all agents do
 	// not hit the API server at the same time after a rollout.
 	cleanupInitialDelay time.Duration
+	eventBroadcaster    events.EventBroadcaster
+	recorder            events.EventRecorder
 	nodeConfig          *config.NodeConfig
 }
 
@@ -163,6 +167,7 @@ func NewPodController(
 		return nil, fmt.Errorf("failed to create SecondaryInterfaceConfigurator: %v", err)
 	}
 	podLister := corelisters.NewPodLister(podInformer.GetIndexer())
+	eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: kubeClient.EventsV1()})
 	pc := PodController{
 		kubeClient:         kubeClient,
 		netAttachDefClient: netAttachDefClient,
@@ -181,6 +186,8 @@ func NewPodController(
 		interfaceConfigurator: interfaceConfigurator,
 		ipamAllocator:         ipam.GetSecondaryNetworkAllocator(),
 		cleanupInitialDelay:   time.Duration(rand.Float64() * float64(cleanupInterval)),
+		eventBroadcaster:      eventBroadcaster,
+		recorder:              eventBroadcaster.NewRecorder(scheme.Scheme, controllerName),
 		nodeConfig:            nodeConfig,
 	}
 	podInformer.AddEventHandlerWithResyncPeriod(
@@ -553,7 +560,23 @@ func (pc *PodController) configureSecondaryInterface(
 	return &ipamResult.Result, ifConfigErr
 }
 
-func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkList []*netdefv1.NetworkSelectionElement, podCNIInfo *podCNIInfo) ([]netdefv1.NetworkStatus, error) {
+// validatedSecondaryNetwork holds the validated configuration of one requested
+// secondary network, ready for interface configuration.
+type validatedSecondaryNetwork struct {
+	network       *netdefv1.NetworkSelectionElement
+	networkConfig *SecondaryNetworkConfig
+	resourceName  string
+	mac           net.HardwareAddr
+}
+
+// validatePodSecondaryNetworks resolves and validates all requested networks
+// without allocating any resource. Networks with deterministic configuration
+// errors (invalid CNI config, unsupported network type, duplicate MAC, ...)
+// are skipped and never retried. A retryable error (a missing or incomplete
+// NetworkAttachmentDefinition which may be created or fixed later) fails the
+// whole validation, so that no interface is configured until every requested
+// network can be.
+func (pc *PodController) validatePodSecondaryNetworks(pod *corev1.Pod, networkList []*netdefv1.NetworkSelectionElement) ([]*validatedSecondaryNetwork, error) {
 	usedIFNames := sets.New[string]()
 	usedIFMAC := sets.New[string]()
 	for _, network := range networkList {
@@ -563,16 +586,16 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 	}
 
 	var savedErr error
-	interfacesConfigured := 0
-	var netStatus []netdefv1.NetworkStatus
-
+	validated := make([]*validatedSecondaryNetwork, 0, len(networkList))
 	for _, network := range networkList {
 		klog.V(2).InfoS("Secondary Network attached to Pod", "network", network, "Pod", klog.KObj(pod))
 		netAttachDef, err := pc.netAttachDefClient.NetworkAttachmentDefinitions(network.Namespace).Get(context.TODO(), network.Name, metav1.GetOptions{})
 		if err != nil {
 			klog.ErrorS(err, "Failed to get NetworkAttachmentDefinition", "network", network, "Pod", klog.KObj(pod))
+			// Retry as the NetworkAttachmentDefinition may not have been created yet.
+			// Note that NetworkAttachmentDefinition events do not requeue the Pod.
 			savedErr = err
-			break
+			continue
 		}
 
 		cniConfig, err := netdefutils.GetCNIConfig(netAttachDef, "")
@@ -606,7 +629,7 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 				// It is probably worth retrying as the NetworkAttachmentDefinition
 				// may eventually be updated with the missing annotation.
 				savedErr = err
-				break
+				continue
 			}
 			resourceName = v
 		}
@@ -654,8 +677,35 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 			continue
 		}
 
+		validated = append(validated, &validatedSecondaryNetwork{
+			network:       network,
+			networkConfig: networkConfig,
+			resourceName:  resourceName,
+			mac:           mac,
+		})
+	}
+	return validated, savedErr
+}
+
+func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkList []*netdefv1.NetworkSelectionElement, podCNIInfo *podCNIInfo) ([]netdefv1.NetworkStatus, error) {
+	// Validate every requested network before configuring anything, so that
+	// configuration errors fail fast without create/delete churn and retries
+	// after a validation failure require no rollback.
+	validated, err := pc.validatePodSecondaryNetworks(pod, networkList)
+	if err != nil {
+		pc.recorder.Eventf(pod, nil, corev1.EventTypeWarning, "SecondaryNetworkNotReady", "SecondaryNetworkConfiguration",
+			"Secondary network validation failed, will retry: %v", err)
+		return nil, err
+	}
+
+	var savedErr error
+	interfacesConfigured := 0
+	var netStatus []netdefv1.NetworkStatus
+
+	for _, vn := range validated {
+		network, networkConfig := vn.network, vn.networkConfig
 		// Secondary network information retrieved from API server. Proceed to configure secondary interface now.
-		res, err := pc.configureSecondaryInterface(pod, network, resourceName, podCNIInfo, networkConfig, mac)
+		res, err := pc.configureSecondaryInterface(pod, network, vn.resourceName, podCNIInfo, networkConfig, vn.mac)
 		if err != nil {
 			klog.ErrorS(err, "Secondary interface configuration failed",
 				"Pod", klog.KObj(pod), "interface", network.InterfaceRequest,
@@ -697,6 +747,8 @@ func (pc *PodController) configurePodSecondaryNetwork(pod *corev1.Pod, networkLi
 			// on retry.
 			klog.InfoS("Rolling back partially configured secondary interfaces due to configuration failure",
 				"Pod", klog.KObj(pod), "interfacesConfigured", interfacesConfigured)
+			pc.recorder.Eventf(pod, nil, corev1.EventTypeWarning, "SecondaryNetworkNotReady", "SecondaryNetworkConfiguration",
+				"Rolling back %d partially configured secondary interfaces after a failure, will retry: %v", interfacesConfigured, savedErr)
 			var storedInterfaces []*interfacestore.InterfaceConfig
 			for _, iface := range pc.interfaceStore.GetContainerInterfacesByPod(pod.Name, pod.Namespace) {
 				if iface.ContainerID == podCNIInfo.containerID {
@@ -761,6 +813,9 @@ func (pc *PodController) Run(stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync(controllerName, stopCh, pc.podInformer.HasSynced) {
 		return
 	}
+	pc.eventBroadcaster.StartStructuredLogging(0)
+	pc.eventBroadcaster.StartRecordingToSink(stopCh)
+	defer pc.eventBroadcaster.Shutdown()
 
 	// Failure of initializeSRIOVSecondaryInterfaceStore() won't stop agent from starting.
 	if err := pc.initializeSRIOVSecondaryInterfaceStore(); err != nil {

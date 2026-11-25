@@ -45,7 +45,9 @@ import (
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
 	ktesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 
 	"antrea.io/antrea/v2/pkg/agent/cniserver"
@@ -1239,6 +1241,52 @@ func TestConfigurePodSecondaryNetworkPartialFailureRollback(t *testing.T) {
 	assert.Empty(t, pc.interfaceStore.GetContainerInterfacesByPod(podName, testNamespace))
 }
 
+func TestConfigurePodSecondaryNetworkValidatesBeforeConfiguring(t *testing.T) {
+	ctx := context.Background()
+	element1 := netdefv1.NetworkSelectionElement{
+		Namespace: testNamespace, Name: "net1", InterfaceRequest: "eth1",
+	}
+	element2 := netdefv1.NetworkSelectionElement{
+		Namespace: testNamespace, Name: "net2", InterfaceRequest: "eth2",
+	}
+	pod, cniInfo := testPod(podName, containerID, podIP, element1, element2)
+	ctrl := gomock.NewController(t)
+	pc, mockIPAM, interfaceConfigurator := testPodControllerStart(ctrl)
+
+	_, err := pc.kubeClient.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// net2 does not exist yet.
+	network1 := testNetworkExt("net1", "", "", vlanNetworkType, "", "", 1500, 101, false)
+	_, err = pc.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(ctx, network1, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// No IPAM allocation or interface configuration call is expected:
+	// validation fails before anything is configured, so retries while net2 is
+	// missing cause no create/delete churn.
+	_, err = pc.configurePodSecondaryNetwork(pod, []*netdefv1.NetworkSelectionElement{&element1, &element2}, cniInfo)
+	require.ErrorContains(t, err, `"net2" not found`)
+	assert.Empty(t, pc.interfaceStore.GetContainerInterfacesByPod(pod.Name, pod.Namespace))
+
+	// Once the missing NetworkAttachmentDefinition is created, both networks
+	// are configured.
+	network2 := testNetworkExt("net2", "", "", vlanNetworkType, "", "", 1500, 102, false)
+	_, err = pc.netAttachDefClient.NetworkAttachmentDefinitions(testNamespace).Create(ctx, network2, metav1.CreateOptions{})
+	require.NoError(t, err)
+	for i, element := range []netdefv1.NetworkSelectionElement{element1, element2} {
+		result := testIPAMResult(fmt.Sprintf("148.14.24.%d/24", 101+i), 101+i)
+		mockIPAM.EXPECT().SecondaryNetworkAllocate(&crdv1beta1.PodOwner{
+			Name: pod.Name, Namespace: pod.Namespace, ContainerID: containerID, IFName: element.InterfaceRequest,
+		}, gomock.Any()).Return(result, nil)
+		interfaceConfigurator.EXPECT().ConfigureVLANSecondaryInterface(
+			podName, testNamespace, containerID, cniInfo.netNS, element.InterfaceRequest, 1500, result, nil,
+		)
+	}
+	status, err := pc.configurePodSecondaryNetwork(pod, []*netdefv1.NetworkSelectionElement{&element1, &element2}, cniInfo)
+	require.NoError(t, err)
+	assert.Len(t, status, 2)
+}
+
 func TestConfigurePodSecondaryNetworkSriovPartialFailureRollback(t *testing.T) {
 	ctx := context.Background()
 	element1 := netdefv1.NetworkSelectionElement{
@@ -2189,6 +2237,8 @@ func testPodController(ctrl *gomock.Controller) (
 	gateway := &config.GatewayConfig{Name: "", IPv4: net.ParseIP(gatewayIP)}
 	nodeConfig := &config.NodeConfig{Name: "", PodIPv4CIDR: nil, GatewayConfig: gateway}
 
+	eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: client.EventsV1()})
+
 	// PodController without event handlers.
 	return &PodController{
 		kubeClient:         client,
@@ -2206,6 +2256,8 @@ func testPodController(ctrl *gomock.Controller) (
 		ipamAllocator:         mockIPAM,
 		interfaceStore:        interfacestore.NewInterfaceStore(),
 		primaryInterfaceStore: interfacestore.NewInterfaceStore(),
+		eventBroadcaster:      eventBroadcaster,
+		recorder:              eventBroadcaster.NewRecorder(scheme.Scheme, controllerName),
 		nodeConfig:            nodeConfig,
 	}, mockIPAM, interfaceConfigurator, mockOVSBridgeClient
 }
